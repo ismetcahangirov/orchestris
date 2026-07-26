@@ -63,7 +63,6 @@ orchestris/
 ├─ apps/server/
 │  ├─ package.json
 │  ├─ tsconfig.json
-│  ├─ drizzle.config.ts
 │  └─ src/
 │     ├─ main.ts                          giriş nöqtəsi (bootstrap + listen)
 │     ├─ app.ts                           Fastify instansiyası qurulması
@@ -74,13 +73,13 @@ orchestris/
 │     │  └─ repo.ts                       query funksiyaları (tasks, runs, events)
 │     ├─ runners/
 │     │  ├─ resolve-exe.ts                PATH + .cmd shim resolver
+│     │  ├─ fixtures-path.ts              repo kökü (cwd-dən asılı DEYİL)
 │     │  ├─ spawn.ts                      spawn + sətir oxuma + tree-kill
 │     │  ├─ parse-claude.ts               claude stream-json → RunEvent
 │     │  ├─ parse-codex.ts                codex JSONL → RunEvent
 │     │  ├─ claude.ts                     ClaudeCliRunner
 │     │  ├─ codex.ts                      CodexCliRunner
-│     │  ├─ fake.ts                       FakeRunner (fixture təkrar oynadır)
-│     │  └─ registry.ts                   runner axtarışı
+│     │  └─ fake.ts                       FakeRunner (fixture təkrar oynadır)
 │     ├─ exec/
 │     │  ├─ budget.ts                     BudgetGuard
 │     │  └─ supervisor.ts                 RunSupervisor
@@ -1260,8 +1259,82 @@ tam ayrıdır → fixture ilə determinist test olunur, sıfır token.
 5. `rate_limit_event` → `rate_limit` hadisəsi. `resetsAt` unix saniyədir.
 
 **Files:**
+- Create: `apps/server/src/runners/fixtures-path.ts`
 - Create: `apps/server/src/runners/parse-claude.ts`
 - Test: `apps/server/src/runners/parse-claude.test.ts`
+
+- [ ] **Step 0: Fixture yolu helper-ini yaz**
+
+`vitest.workspace.ts` `apps/server`-i AYRI proyekt kimi qaçırır, ona görə
+`process.cwd()` repo kökü DEYİL — `apps/server` olur. `process.cwd()` ilə
+fixture axtarmaq sınar. Bu helper repo kökünü modul yolundan tapır.
+
+`apps/server/src/runners/fixtures-path.ts`:
+
+```ts
+import { existsSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+/**
+ * Repo kökünü tapır — `pnpm-workspace.yaml` faylının olduğu qovluq.
+ *
+ * `process.cwd()` işlətmək OLMAZ: vitest `apps/server`-i ayrı proyekt kimi
+ * qaçırır və cwd repo kökü olmur.
+ */
+export function repoRoot(): string {
+  let dir = dirname(fileURLToPath(import.meta.url))
+  for (let i = 0; i < 10; i++) {
+    if (existsSync(join(dir, 'pnpm-workspace.yaml'))) return dir
+    const parent = resolve(dir, '..')
+    if (parent === dir) break
+    dir = parent
+  }
+  throw new Error('Repo kökü tapılmadı (pnpm-workspace.yaml axtarıldı)')
+}
+
+export function fixturesDir(): string {
+  return join(repoRoot(), 'fixtures', 'cli')
+}
+
+export function fixturePath(name: string): string {
+  return join(fixturesDir(), name)
+}
+```
+
+Test `apps/server/src/runners/fixtures-path.test.ts`:
+
+```ts
+import { existsSync } from 'node:fs'
+import { describe, expect, it } from 'vitest'
+import { fixturePath, repoRoot } from './fixtures-path.js'
+
+describe('repoRoot', () => {
+  it('pnpm-workspace.yaml olan qovluğu tapır', () => {
+    expect(existsSync(`${repoRoot()}/pnpm-workspace.yaml`)).toBe(true)
+  })
+
+  it('cwd-dən asılı deyil', () => {
+    const before = repoRoot()
+    const old = process.cwd()
+    try {
+      process.chdir('apps/server')
+      expect(repoRoot()).toBe(before)
+    } finally {
+      process.chdir(old)
+    }
+  })
+})
+
+describe('fixturePath', () => {
+  it('mövcud fixture faylına işarə edir', () => {
+    expect(existsSync(fixturePath('claude-safe-mode.jsonl'))).toBe(true)
+  })
+})
+```
+
+Run: `pnpm vitest run apps/server/src/runners/fixtures-path.test.ts`
+Expected: PASS — 3 test.
 
 - [ ] **Step 1: Uğursuz testi yaz**
 
@@ -1269,18 +1342,16 @@ tam ayrıdır → fixture ilə determinist test olunur, sıfır token.
 
 ```ts
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { RunEvent } from '@orchestris/shared'
 import { RunEventSchema } from '@orchestris/shared'
+import { fixturePath } from './fixtures-path.js'
 import { ClaudeStreamParser } from './parse-claude.js'
-
-const FIXTURES = join(process.cwd(), 'fixtures', 'cli')
 
 function parseFixture(name: string): { events: RunEvent[]; parser: ClaudeStreamParser } {
   const parser = new ClaudeStreamParser()
   const events: RunEvent[] = []
-  const text = readFileSync(join(FIXTURES, name), 'utf8')
+  const text = readFileSync(fixturePath(name), 'utf8')
   for (const line of text.split('\n')) {
     if (!line.trim()) continue
     events.push(...parser.push(line))
@@ -1740,17 +1811,15 @@ xəta yolunu və JSON-olmayan sətir dözümlülüyünü tam örtür.
 
 ```ts
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { RunEventSchema, type RunEvent } from '@orchestris/shared'
+import { fixturePath } from './fixtures-path.js'
 import { CodexStreamParser } from './parse-codex.js'
-
-const FIXTURES = join(process.cwd(), 'fixtures', 'cli')
 
 function parseFixture(name: string): { events: RunEvent[]; parser: CodexStreamParser } {
   const parser = new CodexStreamParser()
   const events: RunEvent[] = []
-  for (const line of readFileSync(join(FIXTURES, name), 'utf8').split('\n')) {
+  for (const line of readFileSync(fixturePath(name), 'utf8').split('\n')) {
     if (!line.trim()) continue
     events.push(...parser.push(line))
   }
@@ -2132,7 +2201,6 @@ Expected: FAIL — `Failed to resolve import "./fake.js"`
 
 ```ts
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import type {
   Capabilities,
   DetectResult,
@@ -2141,6 +2209,7 @@ import type {
   RunRequest,
   Runner,
 } from '@orchestris/shared'
+import { fixturePath } from './fixtures-path.js'
 import { ClaudeStreamParser } from './parse-claude.js'
 import { CodexStreamParser } from './parse-codex.js'
 
@@ -2209,8 +2278,7 @@ export class FakeRunner implements Runner {
       throw new Error('FakeRunner: `fixture` və ya `events` verilməlidir')
     }
 
-    const path = join(process.cwd(), 'fixtures', 'cli', fixture)
-    const text = readFileSync(path, 'utf8')
+    const text = readFileSync(fixturePath(fixture), 'utf8')
     const parser =
       flavor === 'codex' ? new CodexStreamParser() : new ClaudeStreamParser()
 
@@ -4772,4 +4840,1225 @@ Server yalnız 127.0.0.1-ə bind olunur. Start-da yetim icralar təmizlənir."
 
 ---
 
-**PLANIN QALAN HİSSƏSİ:** Task 16–18 (web UI, codex uğur fixture-i, `CLAUDE.md` + yekun yoxlama) ardıcıl olaraq bu sənədə əlavə olunur.
+## Task 16: Web UI — Vite + React + Tailwind skeleti
+
+**Files:**
+- Create: `apps/web/package.json`
+- Create: `apps/web/tsconfig.json`
+- Create: `apps/web/vite.config.ts`
+- Create: `apps/web/index.html`
+- Create: `apps/web/src/main.tsx`
+- Create: `apps/web/src/index.css`
+- Create: `apps/web/src/App.tsx`
+- Create: `apps/web/src/components/Sidebar.tsx`
+- Create: `apps/web/src/lib/api.ts`
+
+- [ ] **Step 1: Paket və Vite konfiqurasiyası**
+
+`apps/web/package.json`:
+
+```json
+{
+  "name": "@orchestris/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@orchestris/shared": "workspace:*",
+    "@tanstack/react-query": "^5.62.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router-dom": "^7.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "tailwindcss": "^4.0.0",
+    "vite": "^6.0.0"
+  }
+}
+```
+
+`apps/web/vite.config.ts`:
+
+```ts
+import tailwindcss from '@tailwindcss/vite'
+import react from '@vitejs/plugin-react'
+import { defineConfig } from 'vite'
+
+const SERVER = 'http://127.0.0.1:4319'
+
+export default defineConfig({
+  plugins: [react(), tailwindcss()],
+  server: {
+    port: 5319,
+    // Proxy sayəsində frontend eyni origin-dən danışır — CORS lazım deyil.
+    proxy: {
+      '/api': { target: SERVER, changeOrigin: true },
+      '/ws': { target: SERVER, ws: true, changeOrigin: true },
+    },
+  },
+})
+```
+
+`apps/web/tsconfig.json`:
+
+```json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "noEmit": true,
+    "types": ["vite/client"]
+  },
+  "include": ["src"]
+}
+```
+
+- [ ] **Step 2: HTML və giriş nöqtəsi**
+
+`apps/web/index.html`:
+
+```html
+<!doctype html>
+<html lang="az" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Orchestris</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+```
+
+`apps/web/src/index.css`:
+
+```css
+@import 'tailwindcss';
+
+@theme {
+  --color-surface: oklch(0.18 0.01 260);
+  --color-surface-2: oklch(0.23 0.012 260);
+  --color-ink: oklch(0.93 0.005 260);
+  --color-ink-dim: oklch(0.68 0.01 260);
+  --color-accent: oklch(0.72 0.14 195);
+  --color-warn: oklch(0.75 0.15 70);
+  --color-bad: oklch(0.65 0.19 25);
+  --color-good: oklch(0.72 0.16 150);
+}
+
+body {
+  @apply bg-surface text-ink antialiased;
+}
+```
+
+`apps/web/src/main.tsx`:
+
+```tsx
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
+import { BrowserRouter } from 'react-router-dom'
+import App from './App.js'
+import './index.css'
+
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { refetchOnWindowFocus: false } },
+})
+
+const root = document.getElementById('root')
+if (!root) throw new Error('#root tapılmadı')
+
+createRoot(root).render(
+  <StrictMode>
+    <QueryClientProvider client={queryClient}>
+      <BrowserRouter>
+        <App />
+      </BrowserRouter>
+    </QueryClientProvider>
+  </StrictMode>,
+)
+```
+
+- [ ] **Step 3: REST klienti yaz**
+
+`apps/web/src/lib/api.ts`:
+
+```ts
+import type { CreateContextBody, CreateTaskBody, RunEvent } from '@orchestris/shared'
+
+async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, {
+    ...init,
+    headers: { 'Content-Type': 'application/json', ...init?.headers },
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`${res.status} ${url}: ${text.slice(0, 300)}`)
+  }
+  return (await res.json()) as T
+}
+
+export interface ContextRow {
+  id: string
+  name: string
+  cwd: string | null
+  amplificationProfile: string
+  workerMode: string
+  maxParallel: number
+  createdAt: number
+}
+
+export interface ProviderRow {
+  id: string
+  kind: string
+  installed: boolean
+  authenticated: boolean
+  version?: string
+  execPath?: string
+  detail: string
+}
+
+export interface StoredEventRow {
+  seq: number
+  at: number
+  event: RunEvent
+}
+
+export interface RunRow {
+  id: string
+  runnerId: string
+  modelId: string
+  status: string
+  tokensIn: number
+  tokensOut: number
+  tokensCacheRead: number
+  tokensCacheWrite: number
+  costUsd: number
+  subscriptionBilled: boolean
+  errorClass: string | null
+  errorMessage: string | null
+  startedAt: number
+  endedAt: number | null
+  events: StoredEventRow[]
+}
+
+export interface TaskDetail {
+  task: { id: string; prompt: string; status: string; createdAt: number }
+  runs: RunRow[]
+}
+
+export const api = {
+  health: () => request<{ ok: boolean; runners: string[] }>('/api/health'),
+  listContexts: () => request<ContextRow[]>('/api/contexts'),
+  createContext: (body: CreateContextBody) =>
+    request<ContextRow>('/api/contexts', { method: 'POST', body: JSON.stringify(body) }),
+  listProviders: () => request<ProviderRow[]>('/api/providers'),
+  createTask: (body: CreateTaskBody) =>
+    request<{ taskId: string }>('/api/tasks', { method: 'POST', body: JSON.stringify(body) }),
+  getTask: (id: string) => request<TaskDetail>(`/api/tasks/${id}`),
+  cancelTask: (id: string) =>
+    request<{ cancelled: string[] }>(`/api/tasks/${id}/cancel`, { method: 'POST' }),
+}
+```
+
+- [ ] **Step 4: Sidebar və App**
+
+`apps/web/src/components/Sidebar.tsx`:
+
+```tsx
+import { NavLink } from 'react-router-dom'
+
+const LINKS = [
+  { to: '/', label: 'İdarə paneli' },
+  { to: '/contexts', label: 'Kontekstlər' },
+  { to: '/providers', label: 'Provayderlər' },
+] as const
+
+export default function Sidebar(): React.JSX.Element {
+  return (
+    <nav className="w-56 shrink-0 border-r border-white/10 bg-surface-2 p-4">
+      <div className="mb-6 text-lg font-semibold tracking-tight">Orchestris</div>
+      <ul className="space-y-1">
+        {LINKS.map((l) => (
+          <li key={l.to}>
+            <NavLink
+              to={l.to}
+              end={l.to === '/'}
+              className={({ isActive }) =>
+                `block rounded px-3 py-2 text-sm transition ${
+                  isActive ? 'bg-accent/15 text-accent' : 'text-ink-dim hover:bg-white/5'
+                }`
+              }
+            >
+              {l.label}
+            </NavLink>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  )
+}
+```
+
+`apps/web/src/App.tsx`:
+
+```tsx
+import { Route, Routes } from 'react-router-dom'
+import Sidebar from './components/Sidebar.js'
+import Contexts from './pages/Contexts.js'
+import Dashboard from './pages/Dashboard.js'
+import Providers from './pages/Providers.js'
+import TaskView from './pages/TaskView.js'
+
+export default function App(): React.JSX.Element {
+  return (
+    <div className="flex min-h-screen">
+      <Sidebar />
+      <main className="flex-1 overflow-x-hidden p-6">
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/contexts" element={<Contexts />} />
+          <Route path="/providers" element={<Providers />} />
+          <Route path="/tasks/:id" element={<TaskView />} />
+        </Routes>
+      </main>
+    </div>
+  )
+}
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/web
+git commit -m "feat(web): Vite + React + Tailwind skeleti, REST klienti"
+```
+
+---
+
+## Task 17: Canlı icra səhifəsi
+
+**Files:**
+- Create: `apps/web/src/lib/useRunStream.ts`
+- Create: `apps/web/src/components/EventTimeline.tsx`
+- Create: `apps/web/src/components/UsageBadge.tsx`
+- Create: `apps/web/src/pages/Dashboard.tsx`
+- Create: `apps/web/src/pages/Contexts.tsx`
+- Create: `apps/web/src/pages/Providers.tsx`
+- Create: `apps/web/src/pages/TaskView.tsx`
+
+- [ ] **Step 1: WebSocket hook-u yaz**
+
+`apps/web/src/lib/useRunStream.ts`:
+
+```ts
+import type { WsServerMessage } from '@orchestris/shared'
+import { useEffect, useRef, useState } from 'react'
+import type { StoredEventRow } from './api.js'
+
+export interface LiveRun {
+  runId: string
+  events: StoredEventRow[]
+}
+
+/**
+ * Task-a WebSocket ilə abunə olur və hadisələri run-a görə qruplaşdırır.
+ *
+ * `seq` unikaldır — təkrar gələn hadisə (yenidən qoşulma halında) atılır.
+ */
+export function useRunStream(taskId: string | undefined): {
+  runs: Map<string, LiveRun>
+  connected: boolean
+} {
+  const [runs, setRuns] = useState<Map<string, LiveRun>>(new Map())
+  const [connected, setConnected] = useState(false)
+  const seenRef = useRef<Set<string>>(new Set())
+
+  useEffect(() => {
+    if (!taskId) return
+    seenRef.current = new Set()
+    setRuns(new Map())
+
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+    const ws = new WebSocket(`${proto}://${location.host}/ws`)
+
+    ws.onopen = () => {
+      setConnected(true)
+      ws.send(JSON.stringify({ type: 'subscribe', taskId }))
+    }
+    ws.onclose = () => setConnected(false)
+
+    ws.onmessage = (raw: MessageEvent<string>) => {
+      let msg: WsServerMessage
+      try {
+        msg = JSON.parse(raw.data) as WsServerMessage
+      } catch {
+        return
+      }
+      if (msg.type !== 'event') return
+
+      const key = `${msg.runId}#${msg.seq}`
+      if (seenRef.current.has(key)) return
+      seenRef.current.add(key)
+
+      setRuns((prev) => {
+        const next = new Map(prev)
+        const existing = next.get(msg.runId) ?? { runId: msg.runId, events: [] }
+        next.set(msg.runId, {
+          runId: msg.runId,
+          events: [...existing.events, { seq: msg.seq, at: msg.at, event: msg.event }],
+        })
+        return next
+      })
+    }
+
+    return () => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'unsubscribe', taskId }))
+      }
+      ws.close()
+    }
+  }, [taskId])
+
+  return { runs, connected }
+}
+```
+
+- [ ] **Step 2: Hadisə timeline komponentini yaz**
+
+`apps/web/src/components/EventTimeline.tsx`:
+
+```tsx
+import type { RunEvent } from '@orchestris/shared'
+import { useState } from 'react'
+import type { StoredEventRow } from '../lib/api.js'
+
+const LABEL: Record<RunEvent['t'], string> = {
+  text: 'Cavab',
+  think: 'Düşünmə',
+  tool: 'Alət',
+  result: 'Alət nəticəsi',
+  usage: 'İstifadə',
+  rate_limit: 'Limit',
+  done: 'Bitdi',
+  error: 'Xəta',
+}
+
+const TONE: Record<RunEvent['t'], string> = {
+  text: 'text-ink',
+  think: 'text-ink-dim italic',
+  tool: 'text-accent',
+  result: 'text-ink-dim',
+  usage: 'text-ink-dim',
+  rate_limit: 'text-warn',
+  done: 'text-good',
+  error: 'text-bad',
+}
+
+function summary(e: RunEvent): string {
+  switch (e.t) {
+    case 'text':
+    case 'think':
+      return e.delta
+    case 'tool':
+      return `${e.name}(${JSON.stringify(e.input).slice(0, 120)})`
+    case 'result':
+      return `${e.ok ? 'OK' : 'XƏTA'} — ${(e.output ?? '').slice(0, 160)}`
+    case 'usage':
+      return `giriş ${e.inputTokens} · çıxış ${e.outputTokens} · keş oxunuş ${
+        e.cacheReadTokens ?? 0
+      } · $${e.costUsd.toFixed(5)}`
+    case 'rate_limit':
+      return `${e.limitType}: ${e.status}`
+    case 'done':
+      return e.stopReason
+    case 'error':
+      return `[${e.class}] ${e.message}`
+  }
+}
+
+export default function EventTimeline({
+  events,
+}: {
+  events: readonly StoredEventRow[]
+}): React.JSX.Element {
+  const [showThinking, setShowThinking] = useState(false)
+  const visible = showThinking ? events : events.filter((r) => r.event.t !== 'think')
+
+  return (
+    <div>
+      <label className="mb-2 flex items-center gap-2 text-xs text-ink-dim">
+        <input
+          type="checkbox"
+          checked={showThinking}
+          onChange={(e) => setShowThinking(e.target.checked)}
+        />
+        Düşünmə addımlarını göstər
+      </label>
+
+      <ol className="space-y-1 font-mono text-xs">
+        {visible.map((row) => (
+          <li key={row.seq} className="flex gap-2">
+            <span className="w-10 shrink-0 text-right text-ink-dim">{row.seq}</span>
+            <span className="w-24 shrink-0 text-ink-dim">{LABEL[row.event.t]}</span>
+            <span className={`min-w-0 break-words ${TONE[row.event.t]}`}>
+              {summary(row.event)}
+            </span>
+          </li>
+        ))}
+      </ol>
+
+      {visible.length === 0 && (
+        <p className="text-sm text-ink-dim">Hələ hadisə yoxdur.</p>
+      )}
+    </div>
+  )
+}
+```
+
+- [ ] **Step 3: UsageBadge komponentini yaz**
+
+`apps/web/src/components/UsageBadge.tsx`:
+
+```tsx
+import type { RunRow } from '../lib/api.js'
+
+export default function UsageBadge({ run }: { run: RunRow }): React.JSX.Element {
+  const cacheTotal = run.tokensCacheRead + run.tokensCacheWrite
+  const cacheHitPct =
+    cacheTotal > 0 ? Math.round((run.tokensCacheRead / cacheTotal) * 100) : 0
+
+  return (
+    <div className="flex flex-wrap gap-3 text-xs text-ink-dim">
+      <span>giriş {run.tokensIn.toLocaleString('az')}</span>
+      <span>çıxış {run.tokensOut.toLocaleString('az')}</span>
+      <span>keş oxunuş {run.tokensCacheRead.toLocaleString('az')}</span>
+      <span title="Keşdən oxunan nisbət — yüksək olması yaxşıdır (10x ucuzdur)">
+        keş effektivliyi {cacheHitPct}%
+      </span>
+      <span className={run.subscriptionBilled ? 'text-good' : 'text-ink'}>
+        {run.subscriptionBilled
+          ? `abunəlik (istinad $${run.costUsd.toFixed(5)})`
+          : `$${run.costUsd.toFixed(5)}`}
+      </span>
+    </div>
+  )
+}
+```
+
+- [ ] **Step 4: Providers səhifəsini yaz**
+
+`apps/web/src/pages/Providers.tsx`:
+
+```tsx
+import { useQuery } from '@tanstack/react-query'
+import { api } from '../lib/api.js'
+
+export default function Providers(): React.JSX.Element {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['providers'],
+    queryFn: api.listProviders,
+  })
+
+  if (isLoading) return <p className="text-ink-dim">Aşkarlanır…</p>
+  if (error) return <p className="text-bad">{String(error)}</p>
+
+  return (
+    <div>
+      <h1 className="mb-1 text-xl font-semibold">Provayderlər</h1>
+      <p className="mb-6 text-sm text-ink-dim">
+        Lokal CLI-lar avtomatik aşkarlanır və sənin abunəliyindən istifadə edir.
+      </p>
+
+      <div className="space-y-3">
+        {data?.map((p) => (
+          <div key={p.id} className="rounded-lg border border-white/10 bg-surface-2 p-4">
+            <div className="flex items-center justify-between gap-4">
+              <div className="font-medium">{p.id}</div>
+              <span
+                className={`rounded px-2 py-0.5 text-xs ${
+                  p.authenticated
+                    ? 'bg-good/15 text-good'
+                    : p.installed
+                      ? 'bg-warn/15 text-warn'
+                      : 'bg-bad/15 text-bad'
+                }`}
+              >
+                {p.authenticated ? 'hazır' : p.installed ? 'login lazımdır' : 'quraşdırılmayıb'}
+              </span>
+            </div>
+            <p className="mt-2 text-sm text-ink-dim">{p.detail}</p>
+            {p.version && (
+              <p className="mt-1 font-mono text-xs text-ink-dim">{p.version}</p>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+```
+
+- [ ] **Step 5: Contexts səhifəsini yaz**
+
+`apps/web/src/pages/Contexts.tsx`:
+
+```tsx
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
+import { api } from '../lib/api.js'
+
+export default function Contexts(): React.JSX.Element {
+  const qc = useQueryClient()
+  const [name, setName] = useState('')
+  const [cwd, setCwd] = useState('')
+
+  const { data } = useQuery({ queryKey: ['contexts'], queryFn: api.listContexts })
+
+  const create = useMutation({
+    mutationFn: () =>
+      api.createContext({ name, ...(cwd.trim() ? { cwd: cwd.trim() } : {}) }),
+    onSuccess: () => {
+      setName('')
+      setCwd('')
+      void qc.invalidateQueries({ queryKey: ['contexts'] })
+    },
+  })
+
+  return (
+    <div>
+      <h1 className="mb-1 text-xl font-semibold">Kontekstlər</h1>
+      <p className="mb-6 text-sm text-ink-dim">
+        Hər kontekst öz iş qovluğu, büdcəsi və yoxlama əmrləri ilə ayrı iş sahəsidir.
+      </p>
+
+      <form
+        className="mb-8 flex flex-wrap items-end gap-3"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (name.trim()) create.mutate()
+        }}
+      >
+        <label className="flex flex-col gap-1 text-xs text-ink-dim">
+          Ad
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Layihəm"
+            className="w-56 rounded border border-white/15 bg-surface px-3 py-2 text-sm text-ink"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-ink-dim">
+          İş qovluğu (opsional)
+          <input
+            value={cwd}
+            onChange={(e) => setCwd(e.target.value)}
+            placeholder="C:\\Users\\me\\proj"
+            className="w-80 rounded border border-white/15 bg-surface px-3 py-2 font-mono text-sm text-ink"
+          />
+        </label>
+        <button
+          type="submit"
+          disabled={!name.trim() || create.isPending}
+          className="rounded bg-accent/20 px-4 py-2 text-sm text-accent disabled:opacity-40"
+        >
+          {create.isPending ? 'Yaradılır…' : 'Yarat'}
+        </button>
+      </form>
+
+      {create.error && <p className="mb-4 text-sm text-bad">{String(create.error)}</p>}
+
+      <ul className="space-y-2">
+        {data?.map((c) => (
+          <li key={c.id} className="rounded-lg border border-white/10 bg-surface-2 p-4">
+            <div className="font-medium">{c.name}</div>
+            <div className="mt-1 font-mono text-xs text-ink-dim">
+              {c.cwd ?? '(iş qovluğu yoxdur)'}
+            </div>
+            <div className="mt-1 text-xs text-ink-dim">
+              profil: {c.amplificationProfile} · işçi rejimi: {c.workerMode}
+            </div>
+          </li>
+        ))}
+      </ul>
+
+      {data?.length === 0 && (
+        <p className="text-sm text-ink-dim">Hələ kontekst yoxdur.</p>
+      )}
+    </div>
+  )
+}
+```
+
+- [ ] **Step 6: Dashboard səhifəsini yaz**
+
+`apps/web/src/pages/Dashboard.tsx`:
+
+```tsx
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { api } from '../lib/api.js'
+
+export default function Dashboard(): React.JSX.Element {
+  const navigate = useNavigate()
+  const [contextId, setContextId] = useState('')
+  const [runner, setRunner] = useState<'cli:claude' | 'cli:codex'>('cli:claude')
+  const [model, setModel] = useState('claude-haiku-4-5-20251001')
+  const [prompt, setPrompt] = useState('')
+
+  const { data: contexts } = useQuery({ queryKey: ['contexts'], queryFn: api.listContexts })
+  const { data: providers } = useQuery({ queryKey: ['providers'], queryFn: api.listProviders })
+
+  const submit = useMutation({
+    mutationFn: () =>
+      api.createTask({
+        contextId,
+        prompt,
+        runner,
+        model,
+        // Sərt limit: ilk versiyada hər task ən çox 30k output token və 10 dəqiqə.
+        maxOutputTokens: 30_000,
+        maxSeconds: 600,
+      }),
+    onSuccess: (r) => navigate(`/tasks/${r.taskId}`),
+  })
+
+  const selectedProvider = providers?.find((p) => p.id === runner)
+  const blocked = selectedProvider !== undefined && !selectedProvider.authenticated
+
+  return (
+    <div className="max-w-3xl">
+      <h1 className="mb-1 text-xl font-semibold">İdarə paneli</h1>
+      <p className="mb-6 text-sm text-ink-dim">Yeni task başlat və canlı izlə.</p>
+
+      <form
+        className="space-y-4 rounded-lg border border-white/10 bg-surface-2 p-5"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (contextId && prompt.trim() && !blocked) submit.mutate()
+        }}
+      >
+        <div className="flex flex-wrap gap-3">
+          <label className="flex flex-col gap-1 text-xs text-ink-dim">
+            Kontekst
+            <select
+              value={contextId}
+              onChange={(e) => setContextId(e.target.value)}
+              className="w-56 rounded border border-white/15 bg-surface px-3 py-2 text-sm text-ink"
+            >
+              <option value="">— seç —</option>
+              {contexts?.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex flex-col gap-1 text-xs text-ink-dim">
+            İşçi
+            <select
+              value={runner}
+              onChange={(e) => setRunner(e.target.value as typeof runner)}
+              className="w-44 rounded border border-white/15 bg-surface px-3 py-2 text-sm text-ink"
+            >
+              <option value="cli:claude">cli:claude</option>
+              <option value="cli:codex">cli:codex</option>
+            </select>
+          </label>
+
+          <label className="flex flex-col gap-1 text-xs text-ink-dim">
+            Model
+            <input
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              className="w-72 rounded border border-white/15 bg-surface px-3 py-2 font-mono text-sm text-ink"
+            />
+          </label>
+        </div>
+
+        <label className="flex flex-col gap-1 text-xs text-ink-dim">
+          Task
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            rows={4}
+            placeholder="Bu funksiyaya test yaz…"
+            className="w-full rounded border border-white/15 bg-surface px-3 py-2 text-sm text-ink"
+          />
+        </label>
+
+        {blocked && (
+          <p className="text-sm text-warn">
+            {runner} hazır deyil: {selectedProvider?.detail}
+          </p>
+        )}
+
+        <button
+          type="submit"
+          disabled={!contextId || !prompt.trim() || blocked || submit.isPending}
+          className="rounded bg-accent/20 px-4 py-2 text-sm text-accent disabled:opacity-40"
+        >
+          {submit.isPending ? 'Başladılır…' : 'İşə sal'}
+        </button>
+
+        {submit.error && <p className="text-sm text-bad">{String(submit.error)}</p>}
+      </form>
+    </div>
+  )
+}
+```
+
+- [ ] **Step 7: TaskView səhifəsini yaz**
+
+`apps/web/src/pages/TaskView.tsx`:
+
+```tsx
+import { useQuery } from '@tanstack/react-query'
+import { useParams } from 'react-router-dom'
+import EventTimeline from '../components/EventTimeline.js'
+import UsageBadge from '../components/UsageBadge.js'
+import { api, type StoredEventRow } from '../lib/api.js'
+import { useRunStream } from '../lib/useRunStream.js'
+
+const TERMINAL = new Set(['succeeded', 'failed', 'interrupted', 'budget_exceeded'])
+
+export default function TaskView(): React.JSX.Element {
+  const { id } = useParams<{ id: string }>()
+  const { runs: live, connected } = useRunStream(id)
+
+  const { data, error } = useQuery({
+    queryKey: ['task', id],
+    queryFn: () => api.getTask(id!),
+    enabled: Boolean(id),
+    // Fon icrası bitənə qədər qısa interval; sonra dayanır.
+    refetchInterval: (q) =>
+      q.state.data?.runs.every((r) => TERMINAL.has(r.status)) ? false : 1500,
+  })
+
+  if (error) return <p className="text-bad">{String(error)}</p>
+  if (!data) return <p className="text-ink-dim">Yüklənir…</p>
+
+  return (
+    <div className="max-w-4xl">
+      <div className="mb-4 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-semibold">Task</h1>
+          <p className="mt-1 whitespace-pre-wrap text-sm text-ink-dim">
+            {data.task.prompt}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-3">
+          <span className={`text-xs ${connected ? 'text-good' : 'text-ink-dim'}`}>
+            {connected ? '● canlı' : '○ bağlı deyil'}
+          </span>
+          {!TERMINAL.has(data.task.status) && (
+            <button
+              onClick={() => void api.cancelTask(data.task.id)}
+              className="rounded bg-bad/15 px-3 py-1.5 text-xs text-bad"
+            >
+              Dayandır
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="space-y-5">
+        {data.runs.map((run) => {
+          // DB-dən gələn hadisələr + WS-dən gələn yeni hadisələr birləşdirilir.
+          // `seq` unikaldır, ona görə dublikatları asanca atırıq.
+          const seen = new Set(run.events.map((e) => e.seq))
+          const extra = (live.get(run.id)?.events ?? []).filter((e) => !seen.has(e.seq))
+          const merged: StoredEventRow[] = [...run.events, ...extra].sort(
+            (a, b) => a.seq - b.seq,
+          )
+
+          return (
+            <section key={run.id} className="rounded-lg border border-white/10 bg-surface-2 p-4">
+              <header className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div className="text-sm">
+                  <span className="font-medium">{run.runnerId}</span>
+                  <span className="text-ink-dim"> · {run.modelId}</span>
+                </div>
+                <span
+                  className={`rounded px-2 py-0.5 text-xs ${
+                    run.status === 'succeeded'
+                      ? 'bg-good/15 text-good'
+                      : run.status === 'running'
+                        ? 'bg-accent/15 text-accent'
+                        : 'bg-bad/15 text-bad'
+                  }`}
+                >
+                  {run.status}
+                </span>
+              </header>
+
+              <div className="mb-3">
+                <UsageBadge run={run} />
+              </div>
+
+              {run.errorMessage && (
+                <p className="mb-3 rounded bg-bad/10 p-2 font-mono text-xs text-bad">
+                  [{run.errorClass}] {run.errorMessage}
+                </p>
+              )}
+
+              <EventTimeline events={merged} />
+            </section>
+          )
+        })}
+      </div>
+
+      {data.runs.length === 0 && (
+        <p className="text-sm text-ink-dim">İcra hələ başlamayıb.</p>
+      )}
+    </div>
+  )
+}
+```
+
+- [ ] **Step 8: Tipləri yoxla**
+
+Run: `pnpm install && pnpm --filter @orchestris/web typecheck`
+Expected: xəta yoxdur.
+
+- [ ] **Step 9: Uçdan-uca əl ilə yoxla**
+
+Terminal 1: `pnpm --filter @orchestris/server dev`
+Terminal 2: `pnpm --filter @orchestris/web dev`
+
+Brauzerdə `http://127.0.0.1:5319` aç və bu ardıcıllığı yerinə yetir:
+
+1. `/providers` → `cli:claude` **hazır**, `cli:codex` **login lazımdır** görünür.
+2. `/contexts` → "Test" adlı kontekst yarat.
+3. `/` → kontekst seç, model `claude-haiku-4-5-20251001`, task:
+   `Yalnız bu sözü yaz: SALAM`. "İşə sal" bas.
+4. `/tasks/:id` səhifəsinə keçir. `● canlı` görünür, hadisələr axır, sonunda
+   `SALAM` mətn hadisəsi və `usage` sətri (`keş effektivliyi %`) görünür.
+
+**Bu addım real token xərcləyir** (Haiku ilə ~$0.01). Faza 1A-nın bitmə
+kriteriyası budur.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add apps/web
+git commit -m "feat(web): canlı icra səhifəsi, dashboard, kontekstlər, provayderlər
+
+WebSocket hadisələri DB-dən gələnlərlə seq üzrə birləşdirilir — dublikat yox.
+UsageBadge keş effektivliyini göstərir (keş oxunuşu 10x ucuzdur)."
+```
+
+---
+
+## Task 18: Codex uğur fixture-i (istifadəçi hərəkəti tələb edir)
+
+**⚠️ BLOKLANMIŞ:** Bu task `codex login` tələb edir. Onsuz codex-in uğurlu
+hadisə formaları bilinmir və parser-in uğur yolu **yoxlanılmamış qalır**.
+Task 8 xəta yolunu tam örtür, bu task uğur yolunu tamamlayır.
+
+**Files:**
+- Create: `fixtures/cli/codex-success.jsonl`
+- Modify: `apps/server/src/runners/parse-codex.ts` (yalnız uyğunsuzluq varsa)
+- Modify: `apps/server/src/runners/parse-codex.test.ts`
+
+- [ ] **Step 1: İstifadəçidən login xahiş et**
+
+İstifadəçi terminalda işlətməlidir:
+
+```
+codex login
+```
+
+Yoxla: `codex login status` → "Not logged in" **olmamalıdır**.
+
+Login mümkün deyilsə bu task atlanır və `CodexCliRunner` `authenticated: false`
+qaytarmağa davam edir — sistem `cli:claude` ilə tam işləkdir.
+
+- [ ] **Step 2: Uğur fixture-ini tut**
+
+```bash
+codex exec --json --sandbox read-only --skip-git-repo-check \
+  'Yalniz bu sozu yaz: SALAM' < /dev/null > /tmp/codex-raw.jsonl 2>&1
+python fixtures/sanitize.py /tmp/codex-raw.jsonl fixtures/cli/codex-success.jsonl
+```
+
+- [ ] **Step 3: Sızma yoxlaması**
+
+```bash
+grep -riE 'cahan|alievsteams|Users' fixtures/cli/codex-success.jsonl && echo "SIZMA VAR" || echo "OK"
+```
+
+Expected: `OK`. Sızma varsa `fixtures/sanitize.py`-də `REDACT_FIELDS`-ə yeni
+sahə əlavə et və yenidən təmizlə.
+
+- [ ] **Step 4: Real hadisə tiplərini sadala**
+
+```bash
+python - <<'PY'
+import json, collections
+c = collections.Counter()
+for line in open('fixtures/cli/codex-success.jsonl', encoding='utf8'):
+    line = line.strip()
+    if not line.startswith('{'): c['<non-json>'] += 1; continue
+    o = json.loads(line)
+    t = o.get('type')
+    if t == 'item.completed': t += f":{(o.get('item') or {}).get('type')}"
+    c[t] += 1
+for k, v in c.most_common(): print(f"{v:>3}  {k}")
+PY
+```
+
+Bu siyahını Task 8-də yazılmış `CodexStreamParser`-in `onItem` switch-i ilə
+müqayisə et. Uyğunsuzluq varsa (məs. `agent_message` əvəzinə başqa ad) parser-i
+real adlara uyğunlaşdır.
+
+- [ ] **Step 5: Fixture testi əlavə et**
+
+`apps/server/src/runners/parse-codex.test.ts` faylının sonuna:
+
+```ts
+describe('CodexStreamParser — uğur fixture-i', () => {
+  it('mətn cavabını çıxarır', () => {
+    const { events } = parseFixture('codex-success.jsonl')
+    const texts = events.filter((e) => e.t === 'text')
+    expect(texts.length).toBeGreaterThan(0)
+    expect(texts.map((e) => (e.t === 'text' ? e.delta : '')).join('')).toContain('SALAM')
+  })
+
+  it('usage və done hadisələrini verir', () => {
+    const { events } = parseFixture('codex-success.jsonl')
+    expect(events.filter((e) => e.t === 'usage')).toHaveLength(1)
+    expect(events.filter((e) => e.t === 'done')).toHaveLength(1)
+  })
+
+  it('heç bir xəta hadisəsi vermir', () => {
+    const { events } = parseFixture('codex-success.jsonl')
+    expect(events.filter((e) => e.t === 'error')).toHaveLength(0)
+  })
+})
+```
+
+- [ ] **Step 6: Testi qaçır**
+
+Run: `pnpm vitest run apps/server/src/runners/parse-codex.test.ts`
+Expected: PASS — 14 test.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add fixtures/cli/codex-success.jsonl apps/server/src/runners/parse-codex.ts apps/server/src/runners/parse-codex.test.ts
+git commit -m "test(server): codex uğur fixture-i və parser təsdiqi"
+```
+
+---
+
+## Task 19: `CLAUDE.md` və yekun yoxlama
+
+**Files:**
+- Create: `CLAUDE.md`
+- Modify: `README.md`
+
+- [ ] **Step 1: `CLAUDE.md` yaz**
+
+````markdown
+# Orchestris — Layihə Təlimatı
+
+Lokal AI orkestrasiya sistemi. **Əsas məqsəd:** zəif/ucuz modelləri işlədərək
+güclü modelin performansını əldə etmək. Hər qərar buna tabedir.
+
+Dizayn: `docs/superpowers/specs/2026-07-26-orchestris-design.md`
+
+## Quruluş
+
+```
+packages/shared/     Zod sxemləri + Runner interfeysi (server və web üçün tək mənbə)
+apps/server/         Fastify — CLI spawn, parse, SQLite, WebSocket
+apps/web/            Vite + React + Tailwind
+fixtures/cli/        Real CLI çıxışları (təmizlənmiş) — parser testləri üçün
+```
+
+## Əmrlər
+
+```bash
+pnpm install
+pnpm test                                  # bütün testlər — SIFIR token xərcləyir
+pnpm typecheck
+pnpm --filter @orchestris/server dev       # http://127.0.0.1:4319
+pnpm --filter @orchestris/web dev          # http://127.0.0.1:5319
+```
+
+## Dəyişməz qaydalar
+
+### 1. `CLAUDE_STABLE_FLAGS`-a toxunma
+
+`apps/server/src/runners/claude.ts`-dəki bayraq dəsti **sabitdir**.
+
+Ölçülmüş səbəb: prompt prefiksi dəyişəndə Anthropic prompt-cache-i sınır və
+~21.7k token `cache_creation` tarifi (1.25x) ilə yenidən ödənilir. Ölçmədə öz
+`--system-prompt`-unu vermək promptu KİÇİLTDİ, amma xərci **5x ARTIRDI**
+($0.0085 → $0.0444).
+
+Task-a xas heç nə sistem promptuna girmir — yalnız istifadəçi mesajına.
+
+### 2. `usage` kumulyativdir — heç vaxt toplama
+
+`claude` hər `assistant` hadisəsində və `result` sətrində yekun `usage` verir.
+Onları toplamaq tokenləri ikiqat sayar. Qayda:
+- Parser `usage`-i YALNIZ `result` sətrindən emit edir
+- `applyUsageToRun` `+=` deyil, `=` istifadə edir
+- `BudgetGuard.check` mütləq dəyəri müqayisə edir
+
+### 3. `--bare` istifadə etmə
+
+O, OAuth və keychain oxumasını söndürür → abunəlik işləmir
+(`apiKeySource: "none"`, `is_error: true`). Fərdiləşdirmə overhead-ini
+söndürmək üçün `--safe-mode` işlədilir — o auth-u saxlayır.
+
+### 4. Proses ağacını öldür, prosesi yox
+
+Windows-da shim-i öldürmək uşaq `.exe`-ni öldürmür — o işləməyə davam edir və
+**token yandırır**. Hər cancel/timeout yolunda `taskkill /T /F` işlədilir
+(`spawn.ts` → `kill()`).
+
+### 5. `codex exec` üçün stdin bağlı olmalıdır
+
+Açıq stdin ilə codex "Reading additional input from stdin..." deyib əbədi
+donur. `spawnLines` `stdio: ['ignore', 'pipe', 'pipe']` istifadə edir.
+
+### 6. Codex stderr-i JSON axınına qarışdırır
+
+JSON olmayan sətirlər **atılır**, `parse_error` yaradılmır. Yoxsa hər Rust log
+sətri xəta kimi görünərdi.
+
+### 7. Testlər token xərcləməməlidir
+
+Yeni funksionallıq `FakeRunner` + `fixtures/cli/` ilə test olunur. Real CLI
+çağırışı yalnız `ORCHESTRIS_E2E=1` bayrağı arxasında ola bilər.
+
+Fixture yeniləyəndə həmişə `fixtures/sanitize.py`-dən keçir — o, şəxsi
+konfiqurasiyanı (CLAUDE.md, hook çıxışı, MCP adları, yollar, session ID)
+təmizləyir.
+
+### 8. API açarları OS keychain-də saxlanılır
+
+`~/.orchestris/` içinə və ya `.env`-ə **heç vaxt** yazılmır. DB-də yalnız
+`credential_ref`.
+
+### 9. Server yalnız 127.0.0.1-ə bind olunur
+
+Xarici şəbəkəyə açılmır.
+
+## Amplification Ladder (Faza 2+)
+
+Pillələr ucuzdan bahaya: cache → qayda routing → **zəif model + alət
+yoxlaması** → best-of-N razılaşma → ipucu (10-30% prefiks) → plan güclü/icra
+zəif → self-escalation → tam güclü model.
+
+Ən vacib pillə **alət-əsaslı yoxlamadır** (`tsc`/`eslint`/`test`, 0 token):
+araşdırma göstərir ki, kiçik modellər öz-özünü yoxlamaqda pisdir, ona görə
+yoxlama determinist alətlərə verilir. Bu, 1B modelin 8B-ni üstələməsinə imkan
+verir.
+
+## Fazalar
+
+- **1A** (bu) — təməl və icra qatı: Runner, CLI parser-lər, DB, REST/WS, UI
+- **1B** — ApiRunner, API açarları, models.dev model kəşfi, hərf-hərf axın
+- **1C** — Pillə 0-2 amplifikasiya
+- **2** — tam Ladder, paralellik, git worktree
+- **3** — memory (claude-mem adapter arxasında)
+- **4** — task dekompozisiyası, workflow zəncirləri
+````
+
+- [ ] **Step 2: README-ni yenilə**
+
+```markdown
+# orchestris
+
+Lokal AI orkestrasiya sistemi — zəif/ucuz modellərdən güclü model performansı.
+
+- Dizayn: [`docs/superpowers/specs/2026-07-26-orchestris-design.md`](docs/superpowers/specs/2026-07-26-orchestris-design.md)
+- Faza 1A planı: [`docs/superpowers/plans/2026-07-26-faza1a-temel-icra-qati.md`](docs/superpowers/plans/2026-07-26-faza1a-temel-icra-qati.md)
+- İşçi təlimatı: [`CLAUDE.md`](CLAUDE.md)
+
+## Başlamaq
+
+```bash
+pnpm install
+pnpm test                                  # sıfır token
+pnpm --filter @orchestris/server dev       # http://127.0.0.1:4319
+pnpm --filter @orchestris/web dev          # http://127.0.0.1:5319
+```
+
+`cli:codex` istifadə etmək üçün bir dəfə `codex login` lazımdır.
+```
+
+- [ ] **Step 3: Yekun yoxlama — hamısı keçməlidir**
+
+```bash
+pnpm install
+pnpm typecheck
+pnpm test
+```
+
+Expected:
+- `typecheck` — 3 paketdə xəta yoxdur
+- `test` — 11+ fayl, 120+ test, hamısı PASS
+- Test müddəti 30 saniyədən az (şəbəkə sorğusu yoxdur)
+
+- [ ] **Step 4: Yetim proses yoxlaması**
+
+```bash
+powershell -NoProfile -Command "Get-Process claude,codex -ErrorAction SilentlyContinue | Select-Object Name,Id"
+```
+
+Expected: boş nəticə (test/dev prosesləri dayandırıldıqdan sonra). Proses
+qalırsa `spawn.ts` → `kill()` düzəldilməlidir.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add CLAUDE.md README.md
+git commit -m "docs: CLAUDE.md — dəyişməz qaydalar və ölçülmüş səbəblər
+
+9 qayda sənədləşdirilib, hər biri ölçülmüş və ya sınanmış səbəblə."
+```
+
+---
+
+## Faza 1A bitmə kriteriyası
+
+Bunların hamısı doğru olduqda Faza 1A tamamdır:
+
+- [ ] `pnpm test` — 120+ test keçir, **sıfır token** xərclənir
+- [ ] `pnpm typecheck` — 3 paketdə xəta yoxdur
+- [ ] `/providers` səhifəsi `cli:claude` üçün `hazır`, `cli:codex` üçün doğru
+      auth vəziyyətini göstərir
+- [ ] Kontekst yaratmaq işləyir
+- [ ] Real task `claude` CLI ilə işə düşür, `/tasks/:id`-də canlı axır
+- [ ] `usage` sətri keş effektivliyini göstərir
+- [ ] Büdcə limiti aşıldıqda icra kəsilir və `budget_exceeded` yazılır
+- [ ] Server yenidən başladıqda yetim icralar `interrupted` olur, hadisə
+      jurnalı itmir
+- [ ] Dayandırmadan sonra yetim `claude.exe` prosesi qalmır
+- [ ] `fixtures/cli/`-də şəxsi məlumat sızması yoxdur
+
+## Növbəti plan
+
+Faza 1B: `ApiRunner` (AI SDK 6), API açarlarının keychain-də saxlanması,
+`models.dev` ilə model + qiymət kəşfi, `--include-partial-messages` hərf-hərf
+axını (öz fixture-i ilə), `/history` səhifəsi.
