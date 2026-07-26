@@ -1,17 +1,17 @@
-import { existsSync } from 'node:fs'
 import { defineConfig } from 'vitest/config'
 
-// Vitest 3 resolves `test.projects` entries eagerly: a literal (non-glob)
-// path that doesn't exist yet throws a hard startup error instead of just
-// matching nothing. At this point in the monorepo, apps/server and
-// packages/* don't exist yet (later tasks create them), so we only list a
-// project entry once its directory is actually present. When nothing exists
-// yet, `projects` is omitted entirely and vitest falls back to its normal
-// single-project mode (reporting "No test files found").
-const projects: string[] = []
-if (existsSync('packages')) projects.push('packages/*')
-if (existsSync('apps/server')) projects.push('apps/server')
-
+// Yalnız glob istifadə olunur. Vitest 3 `projects` içindəki LİTERAL (glob
+// olmayan) yolu erkən həll edir və qovluq yoxdursa startup xətası atır —
+// `apps/server` kimi yazsaydıq, o qovluq yaranana qədər test runner sınardı.
+// Glob isə heç nəyə uyğun gəlməsə sadəcə boş qalır.
+//
+// `apps/web` də glob-a düşür, amma orada test faylı yoxdur (UI testləri bu
+// fazada nəzərdə tutulmayıb) — vitest onu boş proyekt kimi keçir.
+//
+// QEYD: heç bir paket mövcud olmayanda vitest "No projects were found" xətası
+// verir. Bu, yalnız `packages/shared` yaranana qədər davam edir.
 export default defineConfig({
-  test: projects.length > 0 ? { projects } : {},
+  test: {
+    projects: ['packages/*', 'apps/*'],
+  },
 })
