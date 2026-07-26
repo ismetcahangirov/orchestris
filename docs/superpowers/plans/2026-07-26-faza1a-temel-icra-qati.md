@@ -16,6 +16,84 @@
 
 ---
 
+# ⚠️ DÜZƏLİŞ 1 — sxem müqaviləsi dəyişdi (2026-07-27)
+
+Task 2–4 və Task 7 icra edildikdən sonra keyfiyyət yoxlaması `packages/shared`-də
+**4 blocker** tapdı. Hər biri işləyən kodla təkrarlandı və düzəldildi
+(commit-lər `661c1cb`, `8172bb7`, `32654b1`).
+
+**Aşağıdaki Task 2, 3, 4 və 7 kod blokları artıq KÖHNƏDİR.** Tarixi qeyd kimi
+saxlanılır. Task 8 və sonrakı taskları icra edərkən bu bölmədəki müqaviləyə
+əsaslan, yuxarıdaki köhnə kod bloklarına yox. Həqiqət mənbəyi repodaki
+`packages/shared/src/*.ts` fayllarıdır.
+
+### Tapılan və düzəldilən blocker-lər
+
+| # | Qüsur | Sübut | Düzəliş |
+|---|---|---|---|
+| B1 | `classifyErrorText` status kodlarını **substring** kimi tuturdu | Real codex mesajının `cf-ray: a2140175bd9ce8ee` hex-i **"401" ehtiva edir** → təkrarlanabilən 429 xətası təkrarsız `auth` kimi təsnif olunurdu | Söz sərhədi (`\b429\b`) + rate-limit/overload yoxlaması auth-dan **əvvəl** + status kodu yoxlaması **ən sonda** |
+| B2 | `class: z.string()` | `class:'rateLimit'` və `class:''` qəbul olunurdu; istehlakçılar `as ErrorClass` cast-a məcbur olurdu | `class: z.enum(ERROR_CLASSES)` |
+| B3 | `input: z.unknown()` **açarı opsional edir** | `parse({t:'tool',id,name})` uğurlu olurdu, `input` açarı olmurdu → UI-da `JSON.stringify(undefined).slice()` **TypeError** atırdı | `input: z.record(z.string(), z.unknown())` |
+| B4 | `usage`-in kumulyativ/bir-dəfəlik invariantı sənədləşdirilməmişdi | API runner müəllifi addım-addım `usage` emit etsə, `BudgetGuard` (son-dəyər-qalib) yalnız son kiçik addımı görər və **səssizcə yan keçər** | Müqavilə `events.ts`-də açıq yazıldı |
+
+B1-in incə tərəfi: söz sərhədi hex ID-ləri həll edir, amma adi rəqəmləri yox —
+`'Request timed out after 401 seconds'` mətnində "401" **həqiqətən müstəqil
+sözdür**. Ona görə status kodu yoxlaması bütün spesifik mətn siqnallarından
+(`timed out`, `unauthorized`, `permission denied`) **sonra** gəlir.
+
+### Yeni `RunEvent` müqaviləsi — Task 8+ bunu işlətməlidir
+
+```ts
+type RunEvent =
+  // YENİ variant. İcranın başında, ən çox bir dəfə.
+  // sessionId burada verilir, `done`-da gözlənilmir: icra xəta ilə bitsə
+  // `done` gəlməz, halbuki `--resume` məhz o halda lazımdır.
+  // model FAKTİKİ işlədilən modeldir (CLI fallback model işlədə bilər).
+  | { t:'start',  sessionId?: string, model?: string }
+  | { t:'text',   delta: string }
+  | { t:'think',  delta: string }
+  // input MƏCBURİDİR və obyekt olmalıdır (B3)
+  | { t:'tool',   id: string, name: string, input: Record<string, unknown> }
+  | { t:'result', id: string, ok: boolean, output?: string }
+  | { t:'usage',
+      inputTokens: number, outputTokens: number,
+      cacheReadTokens?: number, cacheWriteTokens?: number,
+      // YOXLUĞU "bilinmir"; 0 isə "həqiqətən pulsuz". Codex xərc vermir →
+      // sahə BURAXILIR, `0` yazılmır.
+      costUsd?: number,
+      // MƏCBURİ. 'subscription' → real pul çıxmır, costUsd istinad qiymətidir.
+      billed: 'real' | 'subscription' }
+  | { t:'rate_limit',
+      status: string,          // xam CLI dəyəri, enum deyil
+      blocked: boolean,        // YENİ. status === 'rejected'
+      limitType: string,
+      resetsAtUnixSec?: number } // ADI DƏYİŞDİ (əvvəl `resetsAt`), unix SANİYƏ
+  | { t:'done',   sessionId?: string, stopReason: string }
+  // `retryable` SAHƏSİ SİLİNDİ — `isRetryable(class)` çağır.
+  // sessionId əlavə edildi: uğursuz icranı davam etdirmək üçün.
+  | { t:'error',  class: ErrorClass, message: string, sessionId?: string }
+```
+
+### Sonrakı taskların hansı hissələri dəyişir
+
+| Task | Nə dəyişir |
+|---|---|
+| **8** (codex parser) | `retryable` verilmir · `billed: 'subscription'` (codex ChatGPT abunəliyi ilə işləyir) · `costUsd` **buraxılır** (codex xərc vermir), `0` yazılmır · `thread.started` → `start` hadisəsi · `tool.input` obyekt olmalıdır · `turn.completed` → `resetsAtUnixSec` |
+| **12** (BudgetGuard) | `event.costUsd` artıq **opsionaldır** — `undefined` halı idarə olunmalıdır (yoxdursa dollar limiti yoxlanmır) |
+| **14** (RunSupervisor) | `error` hadisəsində `retryable` yoxdur → lazım olsa `isRetryable(e.class)` · `sessionId` həm `start`, həm `error`, həm `done`-dan gələ bilər — supervisor hər üçündən oxumalıdır |
+| **15/17** (UI) | `EventTimeline` `usage` xülasəsi `costUsd` yoxluğunu idarə etməli və `billed`-i göstərməlidir (abunəlik xərcini "$0.0085 xərcləndi" kimi göstərmək yalandır) · `resetsAt` → `resetsAtUnixSec` |
+
+### Əlavə struktur düzəlişi
+
+`packages/shared/tsconfig.json` (typecheck, **testlər daxil**) və
+`tsconfig.build.json` (build, testlər xaric) ayrıldı. Səbəb: `exclude` əsas
+tsconfig-də olsa, test faylları tip yoxlamasından da çıxır və
+`runner.test.ts`-dəki kompilyasiya-vaxtı tamlıq yoxlaması ölü qalır.
+
+---
+
+---
+
 ## Ölçülmüş faktlar — bu plan onlara əsaslanır
 
 Bunlar bu maşında real işlədilərək təsdiqlənib. Kodu yazarkən bunlara etibar et:
