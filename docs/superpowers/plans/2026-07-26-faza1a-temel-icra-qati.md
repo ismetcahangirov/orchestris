@@ -2033,4 +2033,784 @@ yaradılmır. thread_id sessionId kimi tutulur."
 
 ---
 
-**PLANIN QALAN HİSSƏSİ:** Task 9–16 (`FakeRunner`, `ClaudeCliRunner`, `CodexCliRunner`, `BudgetGuard`, `RunSupervisor`, DB qatı, REST + WebSocket, web UI, `CLAUDE.md`) ardıcıl olaraq bu sənədə əlavə olunur.
+## Task 9: `FakeRunner` — layihənin ən vacib test infrastrukturu
+
+`FakeRunner` real fixture-ləri təkrar oynadır. Onun sayəsində bütün pipeline
+(supervisor, büdcə, DB, WebSocket, UI) **sıfır token** ilə test olunur. Bu
+olmadan hər test qaçırışı pul yandırardı.
+
+**Files:**
+- Create: `apps/server/src/runners/fake.ts`
+- Test: `apps/server/src/runners/fake.test.ts`
+
+- [ ] **Step 1: Uğursuz testi yaz**
+
+`apps/server/src/runners/fake.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest'
+import type { RunEvent } from '@orchestris/shared'
+import { FakeRunner } from './fake.js'
+
+async function collect(it: AsyncIterable<RunEvent>): Promise<RunEvent[]> {
+  const out: RunEvent[] = []
+  for await (const e of it) out.push(e)
+  return out
+}
+
+describe('FakeRunner', () => {
+  it('fixture faylını RunEvent axınına çevirir', async () => {
+    const runner = new FakeRunner({ fixture: 'claude-safe-mode.jsonl', flavor: 'claude' })
+    const events = await collect(runner.run({ prompt: 'x', model: 'm' }))
+    expect(events.filter((e) => e.t === 'text')).toEqual([{ t: 'text', delta: 'SALAM' }])
+    expect(events.filter((e) => e.t === 'done')).toHaveLength(1)
+  })
+
+  it('codex fixture-ini codex parser-i ilə oynadır', async () => {
+    const runner = new FakeRunner({ fixture: 'codex-auth-error.jsonl', flavor: 'codex' })
+    const events = await collect(runner.run({ prompt: 'x', model: 'm' }))
+    expect(events.some((e) => e.t === 'error' && e.class === 'auth')).toBe(true)
+  })
+
+  it('detect() konfiqurasiya olunmuş nəticəni qaytarır', async () => {
+    const runner = new FakeRunner({
+      fixture: 'claude-safe-mode.jsonl',
+      flavor: 'claude',
+      detect: { installed: true, authenticated: false, detail: 'test' },
+    })
+    expect(await runner.detect()).toEqual({
+      installed: true,
+      authenticated: false,
+      detail: 'test',
+    })
+  })
+
+  it('AbortSignal ilə axını yarıda kəsir', async () => {
+    const ac = new AbortController()
+    const runner = new FakeRunner({ fixture: 'claude-safe-mode.jsonl', flavor: 'claude' })
+    const out: RunEvent[] = []
+    for await (const e of runner.run({ prompt: 'x', model: 'm' }, { signal: ac.signal })) {
+      out.push(e)
+      if (out.length === 1) ac.abort()
+    }
+    expect(out.length).toBeLessThan(4)
+  })
+
+  it('birbaşa verilmiş hadisə siyahısını da oynadır', async () => {
+    const runner = new FakeRunner({
+      events: [
+        { t: 'text', delta: 'a' },
+        { t: 'done', stopReason: 'end_turn' },
+      ],
+    })
+    const events = await collect(runner.run({ prompt: 'x', model: 'm' }))
+    expect(events).toEqual([
+      { t: 'text', delta: 'a' },
+      { t: 'done', stopReason: 'end_turn' },
+    ])
+  })
+
+  it('capabilities sahələri override edilə bilir', () => {
+    const runner = new FakeRunner({
+      events: [],
+      capabilities: { fileAccess: false },
+    })
+    expect(runner.capabilities.fileAccess).toBe(false)
+    expect(runner.capabilities.toolUse).toBe(true)
+  })
+})
+```
+
+- [ ] **Step 2: Testi qaçır — uğursuz olduğunu təsdiqlə**
+
+Run: `pnpm vitest run apps/server/src/runners/fake.test.ts`
+Expected: FAIL — `Failed to resolve import "./fake.js"`
+
+- [ ] **Step 3: FakeRunner-i yaz**
+
+`apps/server/src/runners/fake.ts`:
+
+```ts
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import type {
+  Capabilities,
+  DetectResult,
+  RunEvent,
+  RunOptions,
+  RunRequest,
+  Runner,
+} from '@orchestris/shared'
+import { ClaudeStreamParser } from './parse-claude.js'
+import { CodexStreamParser } from './parse-codex.js'
+
+const DEFAULT_CAPS: Capabilities = {
+  fileAccess: true,
+  toolUse: true,
+  sessions: true,
+  structuredOutput: true,
+  subscriptionBilled: true,
+}
+
+export interface FakeRunnerConfig {
+  /** `fixtures/cli/` içindəki fayl adı */
+  fixture?: string
+  flavor?: 'claude' | 'codex'
+  /** Fixture yerinə birbaşa hadisə siyahısı */
+  events?: readonly RunEvent[]
+  detect?: DetectResult
+  capabilities?: Partial<Capabilities>
+  /** Hər hadisə arasında gecikmə (ms). Default 0 — testlər sürətli olsun. */
+  delayMs?: number
+}
+
+/**
+ * Real fixture-ləri təkrar oynadan Runner.
+ *
+ * Bu sinif layihənin test strategiyasının təməlidir: supervisor, büdcə
+ * qoruması, DB yazması, WebSocket yayımı və UI — hamısı bunun üzərində
+ * SIFIR token xərcləyərək test olunur.
+ */
+export class FakeRunner implements Runner {
+  readonly id = 'fake'
+  readonly kind = 'fake' as const
+  readonly capabilities: Capabilities
+
+  constructor(private readonly config: FakeRunnerConfig) {
+    this.capabilities = { ...DEFAULT_CAPS, ...config.capabilities }
+  }
+
+  async detect(): Promise<DetectResult> {
+    return (
+      this.config.detect ?? {
+        installed: true,
+        authenticated: true,
+        version: 'fake-1.0.0',
+        detail: 'FakeRunner — fixture təkrar oynadır',
+      }
+    )
+  }
+
+  async *run(_req: RunRequest, opts?: RunOptions): AsyncIterable<RunEvent> {
+    for (const event of this.materialize()) {
+      if (opts?.signal?.aborted) return
+      if (this.config.delayMs) {
+        await new Promise((r) => setTimeout(r, this.config.delayMs))
+      }
+      yield event
+    }
+  }
+
+  private materialize(): RunEvent[] {
+    if (this.config.events) return [...this.config.events]
+
+    const { fixture, flavor } = this.config
+    if (!fixture) {
+      throw new Error('FakeRunner: `fixture` və ya `events` verilməlidir')
+    }
+
+    const path = join(process.cwd(), 'fixtures', 'cli', fixture)
+    const text = readFileSync(path, 'utf8')
+    const parser =
+      flavor === 'codex' ? new CodexStreamParser() : new ClaudeStreamParser()
+
+    const out: RunEvent[] = []
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue
+      out.push(...parser.push(line))
+    }
+    return out
+  }
+}
+```
+
+- [ ] **Step 4: Testi qaçır — keçdiyini təsdiqlə**
+
+Run: `pnpm vitest run apps/server/src/runners/fake.test.ts`
+Expected: PASS — 6 test.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/server/src/runners/fake.ts apps/server/src/runners/fake.test.ts
+git commit -m "feat(server): FakeRunner — fixture təkrar oynadan test runner
+
+Bütün pipeline-ı sıfır token ilə test etməyə imkan verir."
+```
+
+---
+
+## Task 10: `ClaudeCliRunner`
+
+Bayraq dəsti **sabit sabit** kimi saxlanılır. Səbəb ölçülüb: prefiks dəyişəndə
+prompt-cache sınır və ~21.7k token 1.25x tarifi ilə yenidən ödənilir.
+
+**Files:**
+- Create: `apps/server/src/runners/claude.ts`
+- Test: `apps/server/src/runners/claude.test.ts`
+
+- [ ] **Step 1: Uğursuz testi yaz**
+
+`apps/server/src/runners/claude.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { buildClaudeArgs, CLAUDE_STABLE_FLAGS } from './claude.js'
+
+describe('CLAUDE_STABLE_FLAGS', () => {
+  it('--verbose daxildir — stream-json bunsuz xəta verir', () => {
+    expect(CLAUDE_STABLE_FLAGS).toContain('--verbose')
+  })
+
+  it('--safe-mode daxildir — hook/skill/MCP overhead-ini söndürür', () => {
+    expect(CLAUDE_STABLE_FLAGS).toContain('--safe-mode')
+  })
+
+  it('--bare DAXİL DEYİL — o, OAuth-u söndürür və abunəliyi sındırır', () => {
+    expect(CLAUDE_STABLE_FLAGS).not.toContain('--bare')
+  })
+
+  it('--exclude-dynamic-system-prompt-sections daxildir — keş təkrar istifadəsi', () => {
+    expect(CLAUDE_STABLE_FLAGS).toContain('--exclude-dynamic-system-prompt-sections')
+  })
+})
+
+describe('buildClaudeArgs', () => {
+  it('sabit bayraqları həmişə eyni sırada verir', () => {
+    const a = buildClaudeArgs({ prompt: 'p1', model: 'm' })
+    const b = buildClaudeArgs({ prompt: 'p2', model: 'm' })
+    const stripPrompt = (args: string[]): string[] =>
+      args.filter((x) => x !== 'p1' && x !== 'p2')
+    expect(stripPrompt(a)).toEqual(stripPrompt(b))
+  })
+
+  it('promptu -p bayrağından sonra ötürür', () => {
+    const args = buildClaudeArgs({ prompt: 'salam', model: 'm' })
+    expect(args[0]).toBe('-p')
+    expect(args[1]).toBe('salam')
+  })
+
+  it('model bayrağını əlavə edir', () => {
+    const args = buildClaudeArgs({ prompt: 'x', model: 'claude-haiku-4-5-20251001' })
+    const i = args.indexOf('--model')
+    expect(args[i + 1]).toBe('claude-haiku-4-5-20251001')
+  })
+
+  it('cwd verildikdə --add-dir əlavə edir', () => {
+    const args = buildClaudeArgs({ prompt: 'x', model: 'm', cwd: '/work/proj' })
+    const i = args.indexOf('--add-dir')
+    expect(args[i + 1]).toBe('/work/proj')
+  })
+
+  it('cwd verilmədikdə --add-dir əlavə etmir', () => {
+    expect(buildClaudeArgs({ prompt: 'x', model: 'm' })).not.toContain('--add-dir')
+  })
+
+  it('resumeSessionId verildikdə --resume istifadə edir', () => {
+    const args = buildClaudeArgs({ prompt: 'x', model: 'm', resumeSessionId: 's-1' })
+    const i = args.indexOf('--resume')
+    expect(args[i + 1]).toBe('s-1')
+    expect(args).not.toContain('--session-id')
+  })
+
+  it('resume yoxdursa --session-id ilə yeni UUID təyin edir', () => {
+    const args = buildClaudeArgs({ prompt: 'x', model: 'm' }, { sessionId: 'fixed-uuid' })
+    const i = args.indexOf('--session-id')
+    expect(args[i + 1]).toBe('fixed-uuid')
+  })
+
+  it('promptu heç vaxt sistem promptuna qoymur — keş prefiksi sabit qalsın', () => {
+    const args = buildClaudeArgs({ prompt: 'gizli task mətni', model: 'm' })
+    expect(args).not.toContain('--system-prompt')
+    expect(args).not.toContain('--append-system-prompt')
+  })
+
+  it('permissionMode ötürülür', () => {
+    const args = buildClaudeArgs(
+      { prompt: 'x', model: 'm' },
+      { permissionMode: 'acceptEdits' },
+    )
+    const i = args.indexOf('--permission-mode')
+    expect(args[i + 1]).toBe('acceptEdits')
+  })
+})
+```
+
+- [ ] **Step 2: Testi qaçır — uğursuz olduğunu təsdiqlə**
+
+Run: `pnpm vitest run apps/server/src/runners/claude.test.ts`
+Expected: FAIL — `Failed to resolve import "./claude.js"`
+
+- [ ] **Step 3: Runner-i yaz**
+
+`apps/server/src/runners/claude.ts`:
+
+```ts
+import { randomUUID } from 'node:crypto'
+import type {
+  Capabilities,
+  DetectResult,
+  RunEvent,
+  RunOptions,
+  RunRequest,
+  Runner,
+} from '@orchestris/shared'
+import { ClaudeStreamParser } from './parse-claude.js'
+import { resolveExecutable, type ResolvedExecutable } from './resolve-exe.js'
+import { spawnLines } from './spawn.js'
+
+/**
+ * DƏYİŞMƏZ bayraq dəsti.
+ *
+ * ÖLÇÜLMÜŞ SƏBƏB: prompt prefiksi dəyişəndə Anthropic prompt-cache-i sınır və
+ * ~21.7k token `cache_creation` tarifi (1.25x) ilə yenidən ödənilir. Ölçmədə
+ * öz `--system-prompt`-unu vermək promptu KİÇİLTDİ, amma xərci 5x ARTIRDI
+ * ($0.0085 → $0.0444).
+ *
+ * Buraya yeni bayraq əlavə etmək = bütün mövcud keşlərin bir dəfəlik sınması.
+ * Task-a xas heç nə bura girmir — yalnız istifadəçi mesajına.
+ */
+export const CLAUDE_STABLE_FLAGS: readonly string[] = [
+  '--output-format',
+  'stream-json',
+  // `stream-json` bunsuz xəta verir:
+  // "When using --print, --output-format=stream-json requires --verbose"
+  '--verbose',
+  // İstifadəçinin CLAUDE.md-si, hook-ları, skill-ləri və MCP serverləri hər
+  // çağırışa yüklənir (~6-9k əlavə token). Bu onları söndürür, AUTH qalır.
+  '--safe-mode',
+  '--strict-mcp-config',
+  // Per-maşın bölmələri sistem promptundan çıxarır → keş təkrar istifadəsi artır
+  '--exclude-dynamic-system-prompt-sections',
+  '--disable-slash-commands',
+]
+
+export interface ClaudeArgOptions {
+  sessionId?: string
+  permissionMode?: 'acceptEdits' | 'plan' | 'dontAsk' | 'manual'
+  fallbackModel?: string
+}
+
+export function buildClaudeArgs(
+  req: RunRequest,
+  opts: ClaudeArgOptions = {},
+): string[] {
+  const args: string[] = ['-p', req.prompt, ...CLAUDE_STABLE_FLAGS]
+
+  args.push('--model', req.model)
+
+  if (req.resumeSessionId) {
+    args.push('--resume', req.resumeSessionId)
+  } else {
+    args.push('--session-id', opts.sessionId ?? randomUUID())
+  }
+
+  if (req.cwd) args.push('--add-dir', req.cwd)
+  if (opts.permissionMode) args.push('--permission-mode', opts.permissionMode)
+  if (opts.fallbackModel) args.push('--fallback-model', opts.fallbackModel)
+
+  return args
+}
+
+export class ClaudeCliRunner implements Runner {
+  readonly id = 'cli:claude'
+  readonly kind = 'cli' as const
+  readonly capabilities: Capabilities = {
+    fileAccess: true,
+    toolUse: true,
+    sessions: true,
+    structuredOutput: true,
+    // Abunəlikdən ödənilir → real pul çıxmır. `total_cost_usd` istinad qiymətidir.
+    subscriptionBilled: true,
+  }
+
+  private resolved: ResolvedExecutable | null | undefined
+
+  constructor(private readonly argOptions: ClaudeArgOptions = {}) {}
+
+  private resolve(): ResolvedExecutable | null {
+    if (this.resolved === undefined) this.resolved = resolveExecutable('claude')
+    return this.resolved
+  }
+
+  async detect(): Promise<DetectResult> {
+    const exe = this.resolve()
+    if (!exe) {
+      return {
+        installed: false,
+        authenticated: false,
+        detail: 'claude PATH-da tapılmadı. `npm i -g @anthropic-ai/claude-code`',
+      }
+    }
+
+    const proc = spawnLines({
+      command: exe.command,
+      args: ['--version'],
+      useShell: exe.useShell,
+    })
+    const lines: string[] = []
+    for await (const l of proc.lines) lines.push(l)
+    const code = await proc.exitCode
+
+    if (code !== 0) {
+      return {
+        installed: true,
+        authenticated: false,
+        execPath: exe.command,
+        detail: `claude --version xəta verdi (kod ${code}): ${proc.stderrText().slice(0, 200)}`,
+      }
+    }
+
+    // `--version` auth yoxlamır. Auth yalnız ilk real icrada bilinir; onda
+    // parser `auth` sinifli xəta emit edir və status yenilənir.
+    return {
+      installed: true,
+      authenticated: true,
+      version: (lines[0] ?? '').trim(),
+      execPath: exe.command,
+      detail: 'Hazırdır (auth ilk icrada təsdiqlənir)',
+    }
+  }
+
+  async *run(req: RunRequest, opts?: RunOptions): AsyncIterable<RunEvent> {
+    const exe = this.resolve()
+    if (!exe) {
+      yield {
+        t: 'error',
+        class: 'crashed',
+        message: 'claude icra faylı tapılmadı',
+        retryable: false,
+      }
+      return
+    }
+
+    const proc = spawnLines({
+      command: exe.command,
+      args: buildClaudeArgs(req, this.argOptions),
+      useShell: exe.useShell,
+      cwd: req.cwd,
+    })
+
+    const onAbort = (): void => void proc.kill()
+    opts?.signal?.addEventListener('abort', onAbort, { once: true })
+
+    const parser = new ClaudeStreamParser()
+    try {
+      for await (const line of proc.lines) {
+        for (const event of parser.push(line)) yield event
+        if (opts?.signal?.aborted) break
+      }
+
+      const code = await proc.exitCode
+      if (code !== 0 && !proc.killed) {
+        const stderr = proc.stderrText().trim()
+        if (stderr) {
+          yield {
+            t: 'error',
+            class: 'crashed',
+            message: `claude çıxış kodu ${code}: ${stderr.slice(0, 500)}`,
+            retryable: true,
+          }
+        }
+      }
+    } finally {
+      opts?.signal?.removeEventListener('abort', onAbort)
+      await proc.kill()
+    }
+  }
+}
+```
+
+- [ ] **Step 4: Testi qaçır — keçdiyini təsdiqlə**
+
+Run: `pnpm vitest run apps/server/src/runners/claude.test.ts`
+Expected: PASS — 14 test.
+
+- [ ] **Step 5: Real `detect()`-i yoxla (token xərcləmir)**
+
+`--version` model çağırmır, ona görə pulsuzdur:
+
+```bash
+node --experimental-strip-types -e "
+import { ClaudeCliRunner } from './apps/server/src/runners/claude.ts'
+console.log(await new ClaudeCliRunner().detect())
+"
+```
+
+Expected: `{ installed: true, authenticated: true, version: '2.1.220 (Claude Code)', execPath: '...claude.exe', ... }`
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add apps/server/src/runners/claude.ts apps/server/src/runners/claude.test.ts
+git commit -m "feat(server): ClaudeCliRunner sabit bayraq dəsti ilə
+
+Bayraqlar sabitdir çünki prefiks dəyişməsi prompt-cache-i sındırır və
+~21.7k tokeni 1.25x tarifi ilə yenidən ödədir (ölçülüb: 5x baha)."
+```
+
+---
+
+## Task 11: `CodexCliRunner`
+
+**Files:**
+- Create: `apps/server/src/runners/codex.ts`
+- Test: `apps/server/src/runners/codex.test.ts`
+
+- [ ] **Step 1: Uğursuz testi yaz**
+
+`apps/server/src/runners/codex.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { buildCodexArgs, CODEX_STABLE_FLAGS, parseLoginStatus } from './codex.js'
+
+describe('CODEX_STABLE_FLAGS', () => {
+  it('--json daxildir', () => {
+    expect(CODEX_STABLE_FLAGS).toContain('--json')
+  })
+
+  it('--skip-git-repo-check daxildir — repo olmayan qovluqda da işləsin', () => {
+    expect(CODEX_STABLE_FLAGS).toContain('--skip-git-repo-check')
+  })
+})
+
+describe('buildCodexArgs', () => {
+  it('exec subkomandası ilə başlayır', () => {
+    expect(buildCodexArgs({ prompt: 'x', model: 'm' })[0]).toBe('exec')
+  })
+
+  it('promptu SON arqument kimi verir', () => {
+    const args = buildCodexArgs({ prompt: 'salam dunya', model: 'm' })
+    expect(args.at(-1)).toBe('salam dunya')
+  })
+
+  it('model bayrağını əlavə edir', () => {
+    const args = buildCodexArgs({ prompt: 'x', model: 'gpt-5.2-codex' })
+    const i = args.indexOf('--model')
+    expect(args[i + 1]).toBe('gpt-5.2-codex')
+  })
+
+  it('default sandbox read-only-dir — təsadüfi fayl dəyişikliyi olmasın', () => {
+    const args = buildCodexArgs({ prompt: 'x', model: 'm' })
+    const i = args.indexOf('--sandbox')
+    expect(args[i + 1]).toBe('read-only')
+  })
+
+  it('workspace-write açıq şəkildə tələb olunanda ötürülür', () => {
+    const args = buildCodexArgs({ prompt: 'x', model: 'm' }, { sandbox: 'workspace-write' })
+    const i = args.indexOf('--sandbox')
+    expect(args[i + 1]).toBe('workspace-write')
+  })
+
+  it('resumeSessionId verildikdə exec resume formasını qurur', () => {
+    const args = buildCodexArgs({ prompt: 'x', model: 'm', resumeSessionId: 'th_5' })
+    expect(args.slice(0, 3)).toEqual(['exec', 'resume', 'th_5'])
+  })
+})
+
+describe('parseLoginStatus', () => {
+  it('"Not logged in" mətnini authenticated:false kimi oxuyur', () => {
+    expect(parseLoginStatus('Not logged in', 0)).toBe(false)
+  })
+
+  it('login olunmuş cavabı authenticated:true kimi oxuyur', () => {
+    expect(parseLoginStatus('Logged in using ChatGPT account', 0)).toBe(true)
+  })
+
+  it('sıfırdan fərqli çıxış kodunu authenticated:false kimi sayır', () => {
+    expect(parseLoginStatus('', 1)).toBe(false)
+  })
+})
+```
+
+- [ ] **Step 2: Testi qaçır — uğursuz olduğunu təsdiqlə**
+
+Run: `pnpm vitest run apps/server/src/runners/codex.test.ts`
+Expected: FAIL — `Failed to resolve import "./codex.js"`
+
+- [ ] **Step 3: Runner-i yaz**
+
+`apps/server/src/runners/codex.ts`:
+
+```ts
+import type {
+  Capabilities,
+  DetectResult,
+  RunEvent,
+  RunOptions,
+  RunRequest,
+  Runner,
+} from '@orchestris/shared'
+import { CodexStreamParser } from './parse-codex.js'
+import { resolveExecutable, type ResolvedExecutable } from './resolve-exe.js'
+import { spawnLines } from './spawn.js'
+
+export const CODEX_STABLE_FLAGS: readonly string[] = [
+  '--json',
+  '--skip-git-repo-check',
+]
+
+export interface CodexArgOptions {
+  sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access'
+  outputSchemaPath?: string
+}
+
+export function buildCodexArgs(
+  req: RunRequest,
+  opts: CodexArgOptions = {},
+): string[] {
+  const args: string[] = ['exec']
+
+  if (req.resumeSessionId) args.push('resume', req.resumeSessionId)
+
+  args.push(...CODEX_STABLE_FLAGS)
+  args.push('--model', req.model)
+  // Default `read-only`: yazma icazəsi yalnız açıq tələb olunanda verilir.
+  args.push('--sandbox', opts.sandbox ?? 'read-only')
+  if (opts.outputSchemaPath) args.push('--output-schema', opts.outputSchemaPath)
+
+  // Prompt SON arqumentdir — codex pozitional prompt gözləyir.
+  args.push(req.prompt)
+  return args
+}
+
+export function parseLoginStatus(stdout: string, exitCode: number | null): boolean {
+  if (exitCode !== 0) return false
+  return !/not logged in/i.test(stdout)
+}
+
+export class CodexCliRunner implements Runner {
+  readonly id = 'cli:codex'
+  readonly kind = 'cli' as const
+  readonly capabilities: Capabilities = {
+    fileAccess: true,
+    toolUse: true,
+    sessions: true,
+    structuredOutput: true,
+    subscriptionBilled: true,
+  }
+
+  private resolved: ResolvedExecutable | null | undefined
+
+  constructor(private readonly argOptions: CodexArgOptions = {}) {}
+
+  private resolve(): ResolvedExecutable | null {
+    if (this.resolved === undefined) this.resolved = resolveExecutable('codex')
+    return this.resolved
+  }
+
+  async detect(): Promise<DetectResult> {
+    const exe = this.resolve()
+    if (!exe) {
+      return {
+        installed: false,
+        authenticated: false,
+        detail: 'codex PATH-da tapılmadı',
+      }
+    }
+
+    const versionProc = spawnLines({
+      command: exe.command,
+      args: ['--version'],
+      useShell: exe.useShell,
+    })
+    const versionLines: string[] = []
+    for await (const l of versionProc.lines) versionLines.push(l)
+    await versionProc.exitCode
+
+    // Codex-in `login status` subkomandası var — auth-u ÖNCƏDƏN bilirik,
+    // claude-dan fərqli olaraq ilk icranı gözləmək lazım deyil.
+    const loginProc = spawnLines({
+      command: exe.command,
+      args: ['login', 'status'],
+      useShell: exe.useShell,
+    })
+    const loginLines: string[] = []
+    for await (const l of loginProc.lines) loginLines.push(l)
+    const loginCode = await loginProc.exitCode
+    const stdout = loginLines.join('\n')
+    const authenticated = parseLoginStatus(stdout, loginCode)
+
+    return {
+      installed: true,
+      authenticated,
+      version: (versionLines[0] ?? '').trim(),
+      execPath: exe.command,
+      detail: authenticated
+        ? stdout.trim() || 'Login olunmuş'
+        : 'Login olunmayıb — terminalda `codex login` işlət',
+    }
+  }
+
+  async *run(req: RunRequest, opts?: RunOptions): AsyncIterable<RunEvent> {
+    const exe = this.resolve()
+    if (!exe) {
+      yield {
+        t: 'error',
+        class: 'crashed',
+        message: 'codex icra faylı tapılmadı',
+        retryable: false,
+      }
+      return
+    }
+
+    // spawnLines stdin-i `ignore` edir — bu olmadan codex
+    // "Reading additional input from stdin..." deyib əbədi donur.
+    const proc = spawnLines({
+      command: exe.command,
+      args: buildCodexArgs(req, this.argOptions),
+      useShell: exe.useShell,
+      cwd: req.cwd,
+    })
+
+    const onAbort = (): void => void proc.kill()
+    opts?.signal?.addEventListener('abort', onAbort, { once: true })
+
+    const parser = new CodexStreamParser()
+    try {
+      for await (const line of proc.lines) {
+        for (const event of parser.push(line)) yield event
+        if (opts?.signal?.aborted) break
+      }
+      await proc.exitCode
+    } finally {
+      opts?.signal?.removeEventListener('abort', onAbort)
+      await proc.kill()
+    }
+  }
+}
+```
+
+- [ ] **Step 4: Testi qaçır — keçdiyini təsdiqlə**
+
+Run: `pnpm vitest run apps/server/src/runners/codex.test.ts`
+Expected: PASS — 11 test.
+
+- [ ] **Step 5: Real `detect()`-i yoxla**
+
+```bash
+node --experimental-strip-types -e "
+import { CodexCliRunner } from './apps/server/src/runners/codex.ts'
+console.log(await new CodexCliRunner().detect())
+"
+```
+
+Expected (bu maşında, login olunmayıb):
+`{ installed: true, authenticated: false, version: 'codex-cli 0.145.0', detail: 'Login olunmayıb — terminalda `codex login` işlət' }`
+
+`authenticated: true` gəlirsə istifadəçi arada login olmuşdur — bu da düzgün nəticədir.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add apps/server/src/runners/codex.ts apps/server/src/runners/codex.test.ts
+git commit -m "feat(server): CodexCliRunner
+
+`codex login status` ilə auth öncədən yoxlanılır. Sandbox default read-only.
+stdin bağlıdır — açıq stdin ilə codex exec donur."
+```
+
+---
+
+**PLANIN QALAN HİSSƏSİ:** Task 12–17 (`BudgetGuard`, `RunSupervisor`, DB qatı, REST + WebSocket, web UI, codex uğur fixture-i, `CLAUDE.md`) ardıcıl olaraq bu sənədə əlavə olunur.
