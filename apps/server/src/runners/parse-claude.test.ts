@@ -49,6 +49,7 @@ describe('ClaudeStreamParser — safe-mode fixture', () => {
       cacheReadTokens: 22411,
       cacheWriteTokens: 2655,
       costUsd: 0.008450099999999999,
+      billed: 'subscription',
     })
   })
 
@@ -59,8 +60,9 @@ describe('ClaudeStreamParser — safe-mode fixture', () => {
     expect(rl[0]).toEqual({
       t: 'rate_limit',
       status: 'allowed',
+      blocked: false,
       limitType: 'five_hour',
-      resetsAt: 1785097800,
+      resetsAtUnixSec: 1785097800,
     })
   })
 
@@ -173,7 +175,7 @@ describe('ClaudeStreamParser — xəta halları', () => {
       t: 'error',
       class: 'auth',
       message: 'Invalid API key',
-      retryable: false,
+      sessionId: 's1',
     })
   })
 
@@ -185,7 +187,6 @@ describe('ClaudeStreamParser — xəta halları', () => {
         t: 'error',
         class: 'parse_error',
         message: 'JSON parse alınmadı: { bu json deyil',
-        retryable: false,
       },
     ])
   })
@@ -207,10 +208,76 @@ describe('ClaudeStreamParser — tam fərdiləşdirmə fixture-i', () => {
   it('tam rejimin daha bahalı olduğunu ölçür — safe-mode-un dəyərini sübut edir', () => {
     const full = parseFixture('claude-full-customizations.jsonl')
     const safe = parseFixture('claude-safe-mode.jsonl')
+    // `costUsd` artıq opsionaldır (`0` ≠ "bilinmir"). Yoxluğu 0-a çevirmək
+    // müqayisəni səssizcə zəiflədərdi, ona görə açıq şəkildə sınırıq.
     const cost = (r: ReturnType<typeof parseFixture>): number => {
       const u = r.events.find((e) => e.t === 'usage')
-      return u?.t === 'usage' ? u.costUsd : 0
+      if (u?.t !== 'usage' || u.costUsd === undefined) {
+        throw new Error('fixture-də costUsd yoxdur')
+      }
+      return u.costUsd
     }
     expect(cost(full)).toBeGreaterThan(cost(safe) * 2)
+  })
+})
+
+describe('ClaudeStreamParser — start hadisəsi', () => {
+  it('init-dən start hadisəsi verir', () => {
+    const parser = new ClaudeStreamParser()
+    const events = parser.push(
+      JSON.stringify({
+        type: 'system',
+        subtype: 'init',
+        session_id: 's-1',
+        model: 'claude-haiku-4-5-20251001',
+        apiKeySource: 'none',
+      }),
+    )
+    expect(events).toEqual([
+      { t: 'start', sessionId: 's-1', model: 'claude-haiku-4-5-20251001' },
+    ])
+  })
+
+  it('apiKeySource "none" olduqda abunəlik kimi işarələyir', () => {
+    const parser = new ClaudeStreamParser()
+    parser.push(
+      JSON.stringify({ type: 'system', subtype: 'init', apiKeySource: 'none' }),
+    )
+    expect(parser.billed).toBe('subscription')
+  })
+
+  it('apiKeySource API açarı göstərdikdə real ödəniş kimi işarələyir', () => {
+    const parser = new ClaudeStreamParser()
+    parser.push(
+      JSON.stringify({
+        type: 'system',
+        subtype: 'init',
+        apiKeySource: 'ANTHROPIC_API_KEY',
+      }),
+    )
+    expect(parser.billed).toBe('real')
+  })
+
+  it('safe-mode fixture-i start hadisəsi ilə başlayır', () => {
+    const { events } = parseFixture('claude-safe-mode.jsonl')
+    expect(events[0]?.t).toBe('start')
+    expect(events.filter((e) => e.t === 'start')).toHaveLength(1)
+  })
+})
+
+describe('ClaudeStreamParser — costUsd yoxluğu', () => {
+  it('total_cost_usd yoxdursa costUsd sahəsini BURAXIR', () => {
+    const parser = new ClaudeStreamParser()
+    const events = parser.push(
+      JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 1, output_tokens: 2 },
+      }),
+    )
+    const u = events.find((e) => e.t === 'usage')
+    expect(u && 'costUsd' in u).toBe(false)
   })
 })

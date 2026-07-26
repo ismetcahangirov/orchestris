@@ -1,4 +1,4 @@
-import { classifyErrorText, isRetryable, type RunEvent } from '@orchestris/shared'
+import { classifyErrorText, type RunEvent } from '@orchestris/shared'
 
 /** Atılan `system` subtype-ları — bunlar model çıxışı deyil, telemetriyadır. */
 const IGNORED_SYSTEM_SUBTYPES = new Set([
@@ -45,6 +45,12 @@ function blockText(value: unknown): string {
 export class ClaudeStreamParser {
   sessionId: string | undefined
   model: string | undefined
+  /**
+   * `init` hadisəsindəki `apiKeySource` sahəsindən oxunur: `'none'` →
+   * abunəlik (OAuth), başqa dəyər → API açarı ilə real ödəniş. Default
+   * `'subscription'`, çünki `--safe-mode` ilə işləyən CLI abunəlikdən gedir.
+   */
+  billed: 'real' | 'subscription' = 'subscription'
   private sawResult = false
 
   push(rawLine: string): RunEvent[] {
@@ -60,7 +66,6 @@ export class ClaudeStreamParser {
           t: 'error',
           class: 'parse_error',
           message: `JSON parse alınmadı: ${line.slice(0, 200)}`,
-          retryable: false,
         },
       ]
     }
@@ -81,11 +86,25 @@ export class ClaudeStreamParser {
   private onSystem(obj: Record<string, unknown>): RunEvent[] {
     const subtype = String(obj['subtype'] ?? '')
     if (IGNORED_SYSTEM_SUBTYPES.has(subtype)) return []
-    if (subtype === 'init') {
-      if (typeof obj['session_id'] === 'string') this.sessionId = obj['session_id']
-      if (typeof obj['model'] === 'string') this.model = obj['model']
+    if (subtype !== 'init') return []
+
+    if (typeof obj['session_id'] === 'string') this.sessionId = obj['session_id']
+    if (typeof obj['model'] === 'string') this.model = obj['model']
+
+    const keySource = obj['apiKeySource']
+    if (typeof keySource === 'string' && keySource !== 'none') {
+      this.billed = 'real'
     }
-    return []
+
+    // `start` hadisəsi burada emit olunur, `done`-da gözlənilmir: icra xəta
+    // ilə bitsə sessionId heç vaxt çıxmazdı və `--resume` mümkün olmazdı.
+    return [
+      {
+        t: 'start',
+        ...(this.sessionId !== undefined ? { sessionId: this.sessionId } : {}),
+        ...(this.model !== undefined ? { model: this.model } : {}),
+      },
+    ]
   }
 
   private onAssistant(obj: Record<string, unknown>): RunEvent[] {
@@ -100,11 +119,17 @@ export class ClaudeStreamParser {
         // `signature` qəsdən buraxılır — UI-a və DB-yə getməməlidir.
         out.push({ t: 'think', delta: b.thinking })
       } else if (b.type === 'tool_use') {
+        // `input` sxemdə MƏCBURİ obyektdir — obyekt olmayan dəyər gəlsə boş
+        // obyektə çevrilir, yoxsa UI-da `JSON.stringify(undefined)` çökür.
+        const input =
+          typeof b.input === 'object' && b.input !== null && !Array.isArray(b.input)
+            ? (b.input as Record<string, unknown>)
+            : {}
         out.push({
           t: 'tool',
           id: String(b.id ?? ''),
           name: String(b.name ?? ''),
-          input: b.input,
+          input,
         })
       }
     }
@@ -133,20 +158,28 @@ export class ClaudeStreamParser {
   private onRateLimit(obj: Record<string, unknown>): RunEvent[] {
     const info = obj['rate_limit_info'] as Record<string, unknown> | undefined
     if (!info) return []
-    const event: RunEvent = {
-      t: 'rate_limit',
-      status: String(info['status'] ?? 'unknown'),
-      limitType: String(info['rateLimitType'] ?? 'unknown'),
-      ...(typeof info['resetsAt'] === 'number'
-        ? { resetsAt: info['resetsAt'] }
-        : {}),
-    }
-    return [event]
+    const status = String(info['status'] ?? 'unknown')
+    return [
+      {
+        t: 'rate_limit',
+        status,
+        // Bu hadisə sağlam icrada da `'allowed'` ilə gəlir. Yalnız rədd
+        // olunma bloklayıcıdır — bunu qarışdırsaq hər icrada saatlarla
+        // gözləyərdik.
+        blocked: status === 'rejected',
+        limitType: String(info['rateLimitType'] ?? 'unknown'),
+        ...(typeof info['resetsAt'] === 'number'
+          ? { resetsAtUnixSec: info['resetsAt'] }
+          : {}),
+      },
+    ]
   }
 
   private onResult(obj: Record<string, unknown>): RunEvent[] {
     if (this.sawResult) return []
     this.sawResult = true
+
+    if (typeof obj['session_id'] === 'string') this.sessionId = obj['session_id']
 
     const out: RunEvent[] = []
     const usage = (obj['usage'] ?? {}) as Record<string, unknown>
@@ -161,32 +194,31 @@ export class ClaudeStreamParser {
       outputTokens: num('output_tokens'),
       ...(cacheRead > 0 ? { cacheReadTokens: cacheRead } : {}),
       ...(cacheWrite > 0 ? { cacheWriteTokens: cacheWrite } : {}),
-      costUsd:
-        typeof obj['total_cost_usd'] === 'number'
-          ? (obj['total_cost_usd'] as number)
-          : 0,
+      // `total_cost_usd` yoxdursa sahə BURAXILIR — `0` yazmaq "pulsuz" kimi
+      // oxunar və büdcə mühafizəsini yan keçər.
+      ...(typeof obj['total_cost_usd'] === 'number'
+        ? { costUsd: obj['total_cost_usd'] }
+        : {}),
+      billed: this.billed,
     })
-
-    if (typeof obj['session_id'] === 'string') this.sessionId = obj['session_id']
 
     if (obj['is_error'] === true) {
       const text =
         typeof obj['result'] === 'string' && obj['result']
           ? (obj['result'] as string)
           : String(obj['subtype'] ?? 'bilinməyən xəta')
-      const cls = classifyErrorText(text)
       out.push({
         t: 'error',
-        class: cls,
+        class: classifyErrorText(text),
         message: text,
-        retryable: isRetryable(cls),
+        ...(this.sessionId !== undefined ? { sessionId: this.sessionId } : {}),
       })
       return out
     }
 
     out.push({
       t: 'done',
-      ...(this.sessionId ? { sessionId: this.sessionId } : {}),
+      ...(this.sessionId !== undefined ? { sessionId: this.sessionId } : {}),
       stopReason: String(obj['stop_reason'] ?? 'unknown'),
     })
     return out
