@@ -140,21 +140,24 @@ Router, UI, ledger və ladder **yalnız** bu interfeysi görür. Yeni provayder 
 
 ### CliRunner — dəqiq əmrlər
 
-Hər ikisi lokal olaraq yoxlanılıb (`claude` v2.1.220, `codex-cli` v0.145.0):
+Hər ikisi lokal olaraq **real işlədilib və ölçülüb** (`claude` v2.1.220, `codex-cli` v0.145.0).
 
 ```bash
-# Claude Code
+# Claude Code — bu bayraq dəsti dəyişməz saxlanılmalıdır (aşağıda səbəb)
 claude -p \
   --output-format stream-json \
+  --verbose \                                  # MƏCBURİ: stream-json bunsuz xəta verir
   --include-partial-messages \
   --model <model> \
   --session-id <uuid> \
   --permission-mode <acceptEdits|plan|dontAsk> \
   --add-dir <workdir> \
+  --safe-mode \                                # fərdiləşdirmələri söndürür, auth-u saxlayır
+  --strict-mcp-config \
   --exclude-dynamic-system-prompt-sections \
   --fallback-model <model2>
 
-# Codex
+# Codex — stdin MÜTLƏQ bağlanmalıdır, yoxsa proses əbədi gözləyir
 codex exec --json \
   --model <model> \
   --sandbox <read-only|workspace-write> \
@@ -165,7 +168,59 @@ codex exec --json \
 
 Sessiya davamı: `claude -p --resume <session-id>` / `codex exec resume <id>`.
 
-`--exclude-dynamic-system-prompt-sections` bayrağı per-maşın bölmələri sistem promptundan çıxarır → prompt-cache təkrar istifadəsi artır → token qənaəti.
+### Ölçülmüş CLI overhead — dizaynı təyin edən faktlar
+
+Eyni trivial task (`"Yalnız bu sözü yaz: SALAM"`, Haiku 4.5) üç konfiqurasiya ilə işlədildi:
+
+| Konfiqurasiya | Prompt token | Output | Xərc |
+|---|---|---|---|
+| Tam (istifadəçinin hook/skill/MCP-ləri ilə) | 31,447 | 632 | $0.0251 |
+| `--safe-mode --strict-mcp-config` | 25,076 | 59 | **$0.0085** |
+| `--safe-mode` + öz `--system-prompt`-u | 21,718 | 70 | $0.0444 ⚠️ |
+
+**Nəticə 1 — hook/skill/MCP overhead-i real və böyükdür.** İstifadəçinin qlobal `CLAUDE.md`-si, SessionStart hook-ları, 45 skill və 6 MCP serveri **hər headless işçi çağırışına** yüklənir. `--safe-mode` bunları söndürür (auth və daxili alətlər qalır) → xərc 3x azalır, output 10x azalır (skill təlimatları olmadan model qısa cavab verir).
+
+**Nəticə 2 — prompt prefiksi bayt-bayt sabit qalmalıdır.** Üçüncü sətir ən kiçik prompta sahibdir, amma **ən bahalıdır**: `--system-prompt` prefiksi dəyişdiyi üçün prompt-cache sındı və 21.7k token `cache_creation` tarifi (1.25x) ilə yenidən ödənildi. `safe-mode` variantı isə `cache_read` tarifi ($0.30/Mtok) ilə oxudu.
+
+> **Dizayn qaydası:** CliRunner-in bayraq dəsti və sistem promptu **runtime-da dəyişməməlidir**. Task-a xas məlumat yalnız istifadəçi mesajına gedir, heç vaxt sistem promptuna. Hər bayraq dəyişikliyi bütün işçi çağırışlarının keşini sındırır.
+
+**Nəticə 3 — `claude` CLI-nın ~21.7k token döşəməsi var** (baza sistem promptu + 32 daxili alət təyini + 45 skill adı + agent təyinləri). `--safe-mode` bunu silmir. API çağırışının döşəməsi ~0-dır. Buradan router qaydası çıxır:
+
+| Task tipi | Runner | Səbəb |
+|---|---|---|
+| Fayl/kod işi | **CliRunner** | Alətlər lazımdır; döşəmə uzun agentik sessiyada amortizasiya olunur; abunəlikdən gedir (əlavə pul yox) |
+| Saf mətn/analiz | **ApiRunner** | Döşəmə yoxdur; kiçik task üçün 21.7k overhead ödəmək mənasızdır |
+
+Bu qayda Pillə 1-in (qayda-əsaslı routing) əsas qaydalarından biridir.
+
+### Aşkarlanmış CLI tələləri və həlləri
+
+| Tələ | Sübut | Həll |
+|---|---|---|
+| `--output-format stream-json` tək işləmir | `Error: When using --print, --output-format=stream-json requires --verbose` | `--verbose` həmişə əlavə olunur |
+| `--bare` OAuth-u söndürür | `apiKeySource: "none"`, `model: "<synthetic>"`, `is_error: true` | `--bare` **istifadə olunmur**. Abunəlik üçün `--safe-mode` işlədilir. |
+| `codex exec` stdin gözləyir və donur | `"Reading additional input from stdin..."` → 2 dəq timeout | Spawn-da `stdin: 'ignore'` (və ya dərhal `end()`) |
+| Codex stderr loglarını JSON axınına qarışdırır | `2026-07-26T...Z ERROR codex_api::...` sətirləri | Parser JSON olmayan sətirləri **atlayır**, xəta kimi saymır |
+| `claude` result sətri JSON açar sırasına görə tanınmamalıdır | Sətir `{"is_error":false,...}` ilə başlayır, amma `"type":"result"` sahəsi **var** (sonrakı mövqedə) | Tanıma `type === 'result'` ilə edilir, sətrin başlanğıcına görə yox |
+| `--allowed-tools ''` alətləri söndürmür | `init` hadisəsində 32 alət hələ də var | Alət məhdudlaşdırması `--disallowed-tools <ad...>` ilə açıq siyahı şəklində edilir |
+
+### CLI-dan pulsuz gələn dəyərli data
+
+Fixture-lərdə aşkarlandı — bunları özümüz hesablamağa ehtiyac yoxdur:
+
+- **`total_cost_usd`** — result sətrində CLI özü verir. CLI icraları üçün xərc hesablamırıq, oxuyuruq.
+- **`rate_limit_event`** — `{status, resetsAt, rateLimitType: "five_hour", overageStatus, isUsingOverage}`. Rate-limit idarəsi üçün birbaşa siqnal; kor-koranə backoff lazım deyil.
+- **`usage.cache_read_input_tokens` / `cache_creation_input_tokens`** — keş effektivliyini ölçmək üçün. `savings_ledger` bunları istifadə edir.
+- **`session_id`** — `init` hadisəsində, davam etdirmə üçün.
+
+### Auth vəziyyəti (2026-07-26 tarixinə, bu maşında)
+
+| CLI | Status | Tələb |
+|---|---|---|
+| `claude` v2.1.220 | ✅ Login olunmuş (abunəlik, `five_hour` rate limit) | — |
+| `codex` v0.145.0 | ❌ `codex login status` → **"Not logged in"** | İstifadəçi `codex login` etməlidir |
+
+`detect()` bu vəziyyəti aşkarlayır və `/providers` səhifəsində göstərir. Login olunmayan CLI namizəd siyahısına düşmür.
 
 ### Windows-a xas tələlər və həlləri
 
