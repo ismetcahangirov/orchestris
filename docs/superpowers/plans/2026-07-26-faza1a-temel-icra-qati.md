@@ -2813,4 +2813,854 @@ stdin bağlıdır — açıq stdin ilə codex exec donur."
 
 ---
 
-**PLANIN QALAN HİSSƏSİ:** Task 12–17 (`BudgetGuard`, `RunSupervisor`, DB qatı, REST + WebSocket, web UI, codex uğur fixture-i, `CLAUDE.md`) ardıcıl olaraq bu sənədə əlavə olunur.
+## Task 12: `BudgetGuard` — sərt limit
+
+Spesifikasiyanın ən vacib qoruması. Araşdırma xəbərdarlığı: testdə $0.50 olan
+axın 100K icrada $50,000/ay-a çıxa bilər. Limit **sərtdir** — aşıldıqda proses
+ağacı öldürülür, xahiş edilmir.
+
+**Files:**
+- Create: `apps/server/src/exec/budget.ts`
+- Test: `apps/server/src/exec/budget.test.ts`
+
+- [ ] **Step 1: Uğursuz testi yaz**
+
+`apps/server/src/exec/budget.test.ts`:
+
+```ts
+import { describe, expect, it, vi } from 'vitest'
+import { BudgetGuard } from './budget.js'
+
+describe('BudgetGuard — token limiti', () => {
+  it('limit altında icazə verir', () => {
+    const g = new BudgetGuard({ maxOutputTokens: 100 })
+    expect(g.check({ t: 'usage', inputTokens: 0, outputTokens: 50, costUsd: 0 })).toBeNull()
+  })
+
+  it('limit aşıldıqda budget_exceeded qaytarır', () => {
+    const g = new BudgetGuard({ maxOutputTokens: 100 })
+    const v = g.check({ t: 'usage', inputTokens: 0, outputTokens: 101, costUsd: 0 })
+    expect(v?.class).toBe('budget_exceeded')
+    expect(v?.retryable).toBe(false)
+    expect(v?.message).toContain('101')
+    expect(v?.message).toContain('100')
+  })
+
+  it('limit dəqiq bərabərdirsə icazə verir (>= yox, > istifadə olunur)', () => {
+    const g = new BudgetGuard({ maxOutputTokens: 100 })
+    expect(g.check({ t: 'usage', inputTokens: 0, outputTokens: 100, costUsd: 0 })).toBeNull()
+  })
+})
+
+describe('BudgetGuard — xərc limiti', () => {
+  it('xərc limiti aşıldıqda budget_exceeded qaytarır', () => {
+    const g = new BudgetGuard({ maxCostUsd: 0.01 })
+    const v = g.check({ t: 'usage', inputTokens: 0, outputTokens: 0, costUsd: 0.011 })
+    expect(v?.class).toBe('budget_exceeded')
+  })
+
+  it('abunəlikdən ödənilən icralarda xərc limiti tətbiq edilmir', () => {
+    const g = new BudgetGuard({ maxCostUsd: 0.001, subscriptionBilled: true })
+    expect(
+      g.check({ t: 'usage', inputTokens: 0, outputTokens: 0, costUsd: 0.5 }),
+    ).toBeNull()
+  })
+
+  it('abunəlikdə də TOKEN limiti tətbiq edilir', () => {
+    const g = new BudgetGuard({ maxOutputTokens: 10, subscriptionBilled: true })
+    expect(
+      g.check({ t: 'usage', inputTokens: 0, outputTokens: 11, costUsd: 0 }),
+    )?.class === 'budget_exceeded'
+  })
+})
+
+describe('BudgetGuard — vaxt limiti', () => {
+  it('vaxt limiti aşıldıqda budget_exceeded qaytarır', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-26T00:00:00Z'))
+    const g = new BudgetGuard({ maxSeconds: 30 })
+    expect(g.checkClock()).toBeNull()
+    vi.advanceTimersByTime(31_000)
+    const v = g.checkClock()
+    expect(v?.class).toBe('budget_exceeded')
+    expect(v?.message).toContain('30')
+    vi.useRealTimers()
+  })
+})
+
+describe('BudgetGuard — limitsiz hal', () => {
+  it('heç bir limit verilməyəndə həmişə icazə verir', () => {
+    const g = new BudgetGuard({})
+    expect(g.check({ t: 'usage', inputTokens: 1e9, outputTokens: 1e9, costUsd: 1e6 })).toBeNull()
+    expect(g.checkClock()).toBeNull()
+  })
+
+  it('usage olmayan hadisələri sakitcə buraxır', () => {
+    const g = new BudgetGuard({ maxOutputTokens: 1 })
+    expect(g.check({ t: 'text', delta: 'uzun uzun mətn' })).toBeNull()
+  })
+})
+
+describe('BudgetGuard — kumulyativ toplama YOXDUR', () => {
+  it('usage kumulyativ gəldiyi üçün ən son dəyəri götürür, toplamır', () => {
+    // claude hər result-da yekun usage verir. İki dəfə check çağırmaq
+    // limiti süni şəkildə aşdırmamalıdır.
+    const g = new BudgetGuard({ maxOutputTokens: 100 })
+    expect(g.check({ t: 'usage', inputTokens: 0, outputTokens: 60, costUsd: 0 })).toBeNull()
+    expect(g.check({ t: 'usage', inputTokens: 0, outputTokens: 60, costUsd: 0 })).toBeNull()
+  })
+})
+```
+
+- [ ] **Step 2: Testi qaçır — uğursuz olduğunu təsdiqlə**
+
+Run: `pnpm vitest run apps/server/src/exec/budget.test.ts`
+Expected: FAIL — `Failed to resolve import "./budget.js"`
+
+- [ ] **Step 3: BudgetGuard-ı yaz**
+
+`apps/server/src/exec/budget.ts`:
+
+```ts
+import type { ErrorClass, RunEvent } from '@orchestris/shared'
+
+export interface BudgetLimits {
+  maxOutputTokens?: number
+  maxCostUsd?: number
+  maxSeconds?: number
+  /**
+   * Abunəlikdən ödənilən icralar (CLI) üçün DOLLAR limiti tətbiq edilmir —
+   * `total_cost_usd` orada istinad qiymətidir, real pul çıxmır. Token və vaxt
+   * limitləri isə hər halda tətbiq edilir.
+   */
+  subscriptionBilled?: boolean
+}
+
+export interface BudgetViolation {
+  class: ErrorClass
+  message: string
+  retryable: false
+}
+
+/**
+ * Sərt büdcə qoruması.
+ *
+ * SƏBƏB: kaskad orkestrasiyada orchestrator hər task üçün əlavə çağırışlar
+ * edir. Testdə $0.50 olan axın 100K icrada $50,000/ay-a çıxa bilər. Bu sinif
+ * o riski kəsir — pozuntu halında proses AĞACI öldürülür.
+ */
+export class BudgetGuard {
+  private readonly startedAt: number
+
+  constructor(private readonly limits: BudgetLimits) {
+    this.startedAt = Date.now()
+  }
+
+  /**
+   * Hadisə əsasında yoxlama. `usage` hadisələri KUMULYATİVDİR — burada
+   * toplama aparılmır, hər dəfə mütləq dəyər müqayisə olunur.
+   */
+  check(event: RunEvent): BudgetViolation | null {
+    if (event.t !== 'usage') return null
+
+    const { maxOutputTokens, maxCostUsd, subscriptionBilled } = this.limits
+
+    if (maxOutputTokens !== undefined && event.outputTokens > maxOutputTokens) {
+      return this.violation(
+        `Output token limiti aşıldı: ${event.outputTokens} > ${maxOutputTokens}`,
+      )
+    }
+
+    if (
+      maxCostUsd !== undefined &&
+      !subscriptionBilled &&
+      event.costUsd > maxCostUsd
+    ) {
+      return this.violation(
+        `Xərc limiti aşıldı: $${event.costUsd.toFixed(6)} > $${maxCostUsd.toFixed(6)}`,
+      )
+    }
+
+    return null
+  }
+
+  /** Vaxt yoxlaması — hadisədən asılı deyil, dövri çağırılır. */
+  checkClock(): BudgetViolation | null {
+    const { maxSeconds } = this.limits
+    if (maxSeconds === undefined) return null
+    const elapsed = (Date.now() - this.startedAt) / 1000
+    if (elapsed > maxSeconds) {
+      return this.violation(
+        `Vaxt limiti aşıldı: ${elapsed.toFixed(1)}s > ${maxSeconds}s`,
+      )
+    }
+    return null
+  }
+
+  private violation(message: string): BudgetViolation {
+    return { class: 'budget_exceeded', message, retryable: false }
+  }
+}
+```
+
+- [ ] **Step 4: Testi qaçır — keçdiyini təsdiqlə**
+
+Run: `pnpm vitest run apps/server/src/exec/budget.test.ts`
+Expected: PASS — 11 test.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/server/src/exec/budget.ts apps/server/src/exec/budget.test.ts
+git commit -m "feat(server): BudgetGuard — sərt token/xərc/vaxt limiti
+
+Abunəlik icralarında dollar limiti tətbiq edilmir (real pul çıxmır),
+token və vaxt limitləri isə hər halda tətbiq edilir."
+```
+
+---
+
+## Task 13: DB qatı — sxem, klient, repo
+
+**Files:**
+- Create: `apps/server/src/paths.ts`
+- Create: `apps/server/src/db/schema.ts`
+- Create: `apps/server/src/db/client.ts`
+- Create: `apps/server/src/db/repo.ts`
+- Test: `apps/server/src/db/repo.test.ts`
+
+Faza 1A yalnız 4 cədvəl istifadə edir: `contexts`, `tasks`, `runs`,
+`run_events`. Qalan cədvəllər (`models`, `cache_entries`, `savings_ledger` və s.)
+Faza 1B/1C planlarında əlavə olunur — indi yaratmaq YAGNI olardı.
+
+- [ ] **Step 1: Yol modulunu yaz**
+
+`apps/server/src/paths.ts`:
+
+```ts
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+
+/**
+ * Bütün vəziyyət `~/.orchestris/` altındadır. API açarları BURAYA YAZILMIR —
+ * onlar OS keychain-də saxlanılır (Faza 1B).
+ *
+ * `ORCHESTRIS_HOME` testlərdə müvəqqəti qovluğa yönləndirmək üçündür.
+ */
+export function orchestrisHome(): string {
+  return process.env['ORCHESTRIS_HOME'] ?? join(homedir(), '.orchestris')
+}
+
+export function dbPath(): string {
+  return join(orchestrisHome(), 'orchestris.db')
+}
+
+export function worktreesDir(): string {
+  return join(orchestrisHome(), 'worktrees')
+}
+```
+
+- [ ] **Step 2: Drizzle sxemini yaz**
+
+`apps/server/src/db/schema.ts`:
+
+```ts
+import { relations } from 'drizzle-orm'
+import {
+  index,
+  integer,
+  real,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from 'drizzle-orm/sqlite-core'
+
+/** İş sahəsi — istifadəçinin "yeni kontekst başlat" dediyi şey. */
+export const contexts = sqliteTable('contexts', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  cwd: text('cwd'),
+  amplificationProfile: text('amplification_profile')
+    .notNull()
+    .default('balanced'),
+  workerMode: text('worker_mode').notNull().default('auto'),
+  autoSubmode: text('auto_submode').notNull().default('cheap'),
+  defaultWorkerModelId: text('default_worker_model_id'),
+  /** JSON massiv: yoxlama əmrləri, məs. ["pnpm typecheck","pnpm test"] */
+  verifyCommandsJson: text('verify_commands_json').notNull().default('[]'),
+  budgetTokens: integer('budget_tokens'),
+  budgetUsd: real('budget_usd'),
+  budgetSeconds: integer('budget_seconds'),
+  maxParallel: integer('max_parallel').notNull().default(1),
+  createdAt: integer('created_at').notNull(),
+  archivedAt: integer('archived_at'),
+})
+
+export const tasks = sqliteTable(
+  'tasks',
+  {
+    id: text('id').primaryKey(),
+    contextId: text('context_id')
+      .notNull()
+      .references(() => contexts.id, { onDelete: 'cascade' }),
+    parentTaskId: text('parent_task_id'),
+    prompt: text('prompt').notNull(),
+    taskType: text('task_type').notNull().default('unknown'),
+    status: text('status').notNull().default('pending'),
+    createdAt: integer('created_at').notNull(),
+    completedAt: integer('completed_at'),
+  },
+  (t) => [index('tasks_context_idx').on(t.contextId, t.createdAt)],
+)
+
+export const runs = sqliteTable(
+  'runs',
+  {
+    id: text('id').primaryKey(),
+    taskId: text('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    runnerId: text('runner_id').notNull(),
+    modelId: text('model_id').notNull(),
+    ladderRung: integer('ladder_rung').notNull().default(7),
+    status: text('status').notNull().default('running'),
+    tokensIn: integer('tokens_in').notNull().default(0),
+    tokensOut: integer('tokens_out').notNull().default(0),
+    tokensCacheRead: integer('tokens_cache_read').notNull().default(0),
+    tokensCacheWrite: integer('tokens_cache_write').notNull().default(0),
+    costUsd: real('cost_usd').notNull().default(0),
+    /** true → abunəlikdən getdi, real pul çıxmadı */
+    subscriptionBilled: integer('subscription_billed', { mode: 'boolean' })
+      .notNull()
+      .default(false),
+    cachedHit: integer('cached_hit', { mode: 'boolean' }).notNull().default(false),
+    escalatedFromRunId: text('escalated_from_run_id'),
+    sessionId: text('session_id'),
+    worktreePath: text('worktree_path'),
+    startedAt: integer('started_at').notNull(),
+    endedAt: integer('ended_at'),
+    errorClass: text('error_class'),
+    errorMessage: text('error_message'),
+  },
+  (t) => [index('runs_task_idx').on(t.taskId, t.startedAt)],
+)
+
+/** Append-only hadisə jurnalı — "modellərin gördüyü işi görə bilək" budur. */
+export const runEvents = sqliteTable(
+  'run_events',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    runId: text('run_id')
+      .notNull()
+      .references(() => runs.id, { onDelete: 'cascade' }),
+    seq: integer('seq').notNull(),
+    type: text('type').notNull(),
+    payloadJson: text('payload_json').notNull(),
+    at: integer('at').notNull(),
+  },
+  (t) => [uniqueIndex('run_events_seq_idx').on(t.runId, t.seq)],
+)
+
+export const contextsRelations = relations(contexts, ({ many }) => ({
+  tasks: many(tasks),
+}))
+export const tasksRelations = relations(tasks, ({ one, many }) => ({
+  context: one(contexts, { fields: [tasks.contextId], references: [contexts.id] }),
+  runs: many(runs),
+}))
+export const runsRelations = relations(runs, ({ one, many }) => ({
+  task: one(tasks, { fields: [runs.taskId], references: [tasks.id] }),
+  events: many(runEvents),
+}))
+```
+
+- [ ] **Step 3: Klienti yaz**
+
+`apps/server/src/db/client.ts`:
+
+```ts
+import { mkdirSync } from 'node:fs'
+import { dirname } from 'node:path'
+import Database from 'better-sqlite3'
+import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
+import { dbPath } from '../paths.js'
+import * as schema from './schema.js'
+
+export type Db = BetterSQLite3Database<typeof schema>
+
+/** Cədvəlləri yaradan DDL. drizzle-kit migrasiyaları Faza 1B-də əlavə olunur. */
+const DDL = `
+CREATE TABLE IF NOT EXISTS contexts (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  cwd TEXT,
+  amplification_profile TEXT NOT NULL DEFAULT 'balanced',
+  worker_mode TEXT NOT NULL DEFAULT 'auto',
+  auto_submode TEXT NOT NULL DEFAULT 'cheap',
+  default_worker_model_id TEXT,
+  verify_commands_json TEXT NOT NULL DEFAULT '[]',
+  budget_tokens INTEGER,
+  budget_usd REAL,
+  budget_seconds INTEGER,
+  max_parallel INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  archived_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS tasks (
+  id TEXT PRIMARY KEY,
+  context_id TEXT NOT NULL REFERENCES contexts(id) ON DELETE CASCADE,
+  parent_task_id TEXT,
+  prompt TEXT NOT NULL,
+  task_type TEXT NOT NULL DEFAULT 'unknown',
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at INTEGER NOT NULL,
+  completed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS tasks_context_idx ON tasks(context_id, created_at);
+CREATE TABLE IF NOT EXISTS runs (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  runner_id TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  ladder_rung INTEGER NOT NULL DEFAULT 7,
+  status TEXT NOT NULL DEFAULT 'running',
+  tokens_in INTEGER NOT NULL DEFAULT 0,
+  tokens_out INTEGER NOT NULL DEFAULT 0,
+  tokens_cache_read INTEGER NOT NULL DEFAULT 0,
+  tokens_cache_write INTEGER NOT NULL DEFAULT 0,
+  cost_usd REAL NOT NULL DEFAULT 0,
+  subscription_billed INTEGER NOT NULL DEFAULT 0,
+  cached_hit INTEGER NOT NULL DEFAULT 0,
+  escalated_from_run_id TEXT,
+  session_id TEXT,
+  worktree_path TEXT,
+  started_at INTEGER NOT NULL,
+  ended_at INTEGER,
+  error_class TEXT,
+  error_message TEXT
+);
+CREATE INDEX IF NOT EXISTS runs_task_idx ON runs(task_id, started_at);
+CREATE TABLE IF NOT EXISTS run_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS run_events_seq_idx ON run_events(run_id, seq);
+`
+
+export function openDb(file = dbPath()): Db {
+  if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true })
+  const sqlite = new Database(file)
+  // WAL: oxuma yazmanı bloklamır — UI icra zamanı hadisələri oxuyur.
+  sqlite.pragma('journal_mode = WAL')
+  sqlite.pragma('foreign_keys = ON')
+  sqlite.exec(DDL)
+  return drizzle(sqlite, { schema })
+}
+```
+
+- [ ] **Step 4: Uğursuz repo testini yaz**
+
+`apps/server/src/db/repo.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { openDb } from './client.js'
+import {
+  appendEvent,
+  createContext,
+  createRun,
+  createTask,
+  finishRun,
+  listEvents,
+  markOrphanedRunsInterrupted,
+  applyUsageToRun,
+} from './repo.js'
+
+function db() {
+  return openDb(':memory:')
+}
+
+describe('createContext / createTask / createRun', () => {
+  it('kontekst yaradır və default dəyərləri qoyur', () => {
+    const d = db()
+    const ctx = createContext(d, { name: 'Test' })
+    expect(ctx.name).toBe('Test')
+    expect(ctx.amplificationProfile).toBe('balanced')
+    expect(ctx.workerMode).toBe('auto')
+    expect(ctx.maxParallel).toBe(1)
+  })
+
+  it('task yaradır və konteksti bağlayır', () => {
+    const d = db()
+    const ctx = createContext(d, { name: 'C' })
+    const task = createTask(d, { contextId: ctx.id, prompt: 'salam' })
+    expect(task.contextId).toBe(ctx.id)
+    expect(task.status).toBe('pending')
+  })
+
+  it('run yaradır və running statusu ilə başlayır', () => {
+    const d = db()
+    const ctx = createContext(d, { name: 'C' })
+    const task = createTask(d, { contextId: ctx.id, prompt: 'p' })
+    const run = createRun(d, {
+      taskId: task.id,
+      runnerId: 'cli:claude',
+      modelId: 'claude-haiku-4-5-20251001',
+      subscriptionBilled: true,
+    })
+    expect(run.status).toBe('running')
+    expect(run.subscriptionBilled).toBe(true)
+  })
+})
+
+describe('appendEvent / listEvents', () => {
+  it('hadisələri sıra nömrəsi ilə yazır və eyni sırada oxuyur', () => {
+    const d = db()
+    const ctx = createContext(d, { name: 'C' })
+    const task = createTask(d, { contextId: ctx.id, prompt: 'p' })
+    const run = createRun(d, { taskId: task.id, runnerId: 'fake', modelId: 'm' })
+
+    appendEvent(d, run.id, { t: 'text', delta: 'bir' })
+    appendEvent(d, run.id, { t: 'text', delta: 'iki' })
+    appendEvent(d, run.id, { t: 'done', stopReason: 'end_turn' })
+
+    const events = listEvents(d, run.id)
+    expect(events.map((e) => e.seq)).toEqual([1, 2, 3])
+    expect(events[0]?.event).toEqual({ t: 'text', delta: 'bir' })
+    expect(events[2]?.event).toEqual({ t: 'done', stopReason: 'end_turn' })
+  })
+
+  it('offset ilə səhifələmə edir', () => {
+    const d = db()
+    const ctx = createContext(d, { name: 'C' })
+    const task = createTask(d, { contextId: ctx.id, prompt: 'p' })
+    const run = createRun(d, { taskId: task.id, runnerId: 'fake', modelId: 'm' })
+    for (let i = 0; i < 5; i++) appendEvent(d, run.id, { t: 'text', delta: String(i) })
+
+    const page = listEvents(d, run.id, { afterSeq: 2, limit: 2 })
+    expect(page.map((e) => e.seq)).toEqual([3, 4])
+  })
+})
+
+describe('applyUsageToRun', () => {
+  it('usage hadisəsini run sətrinə yazır (toplamır, əvəz edir)', () => {
+    const d = db()
+    const ctx = createContext(d, { name: 'C' })
+    const task = createTask(d, { contextId: ctx.id, prompt: 'p' })
+    const run = createRun(d, { taskId: task.id, runnerId: 'fake', modelId: 'm' })
+
+    applyUsageToRun(d, run.id, {
+      t: 'usage',
+      inputTokens: 10,
+      outputTokens: 59,
+      cacheReadTokens: 22411,
+      cacheWriteTokens: 2655,
+      costUsd: 0.00845,
+    })
+    // İkinci dəfə eyni kumulyativ dəyər gəlsə nəticə dəyişməməlidir
+    applyUsageToRun(d, run.id, {
+      t: 'usage',
+      inputTokens: 10,
+      outputTokens: 59,
+      cacheReadTokens: 22411,
+      cacheWriteTokens: 2655,
+      costUsd: 0.00845,
+    })
+
+    const updated = finishRun(d, run.id, { status: 'succeeded' })
+    expect(updated.tokensOut).toBe(59)
+    expect(updated.tokensCacheRead).toBe(22411)
+    expect(updated.costUsd).toBeCloseTo(0.00845, 6)
+  })
+})
+
+describe('finishRun', () => {
+  it('statusu və bitmə vaxtını yazır', () => {
+    const d = db()
+    const ctx = createContext(d, { name: 'C' })
+    const task = createTask(d, { contextId: ctx.id, prompt: 'p' })
+    const run = createRun(d, { taskId: task.id, runnerId: 'fake', modelId: 'm' })
+    const done = finishRun(d, run.id, { status: 'succeeded', sessionId: 's-9' })
+    expect(done.status).toBe('succeeded')
+    expect(done.endedAt).toBeGreaterThan(0)
+    expect(done.sessionId).toBe('s-9')
+  })
+
+  it('xəta sinfini və mesajını yazır', () => {
+    const d = db()
+    const ctx = createContext(d, { name: 'C' })
+    const task = createTask(d, { contextId: ctx.id, prompt: 'p' })
+    const run = createRun(d, { taskId: task.id, runnerId: 'fake', modelId: 'm' })
+    const done = finishRun(d, run.id, {
+      status: 'failed',
+      errorClass: 'auth',
+      errorMessage: 'Not logged in',
+    })
+    expect(done.errorClass).toBe('auth')
+    expect(done.errorMessage).toBe('Not logged in')
+  })
+})
+
+describe('markOrphanedRunsInterrupted', () => {
+  it('server yenidən başladıqda yetim running icraları interrupted edir', () => {
+    const d = db()
+    const ctx = createContext(d, { name: 'C' })
+    const task = createTask(d, { contextId: ctx.id, prompt: 'p' })
+    const run = createRun(d, { taskId: task.id, runnerId: 'fake', modelId: 'm' })
+    appendEvent(d, run.id, { t: 'text', delta: 'yarımçıq' })
+
+    const count = markOrphanedRunsInterrupted(d)
+    expect(count).toBe(1)
+
+    // Hadisə jurnalı İTMİR — spesifikasiyanın tələbi
+    expect(listEvents(d, run.id)).toHaveLength(1)
+  })
+
+  it('artıq bitmiş icralara toxunmur', () => {
+    const d = db()
+    const ctx = createContext(d, { name: 'C' })
+    const task = createTask(d, { contextId: ctx.id, prompt: 'p' })
+    const run = createRun(d, { taskId: task.id, runnerId: 'fake', modelId: 'm' })
+    finishRun(d, run.id, { status: 'succeeded' })
+    expect(markOrphanedRunsInterrupted(d)).toBe(0)
+  })
+})
+```
+
+- [ ] **Step 5: Testi qaçır — uğursuz olduğunu təsdiqlə**
+
+Run: `pnpm vitest run apps/server/src/db/repo.test.ts`
+Expected: FAIL — `Failed to resolve import "./repo.js"`
+
+- [ ] **Step 6: Repo-nu yaz**
+
+`apps/server/src/db/repo.ts`:
+
+```ts
+import { randomUUID } from 'node:crypto'
+import { and, asc, eq, gt, inArray, sql } from 'drizzle-orm'
+import type { ErrorClass, RunEvent } from '@orchestris/shared'
+import type { Db } from './client.js'
+import { contexts, runEvents, runs, tasks } from './schema.js'
+
+type Context = typeof contexts.$inferSelect
+type Task = typeof tasks.$inferSelect
+type Run = typeof runs.$inferSelect
+
+const now = (): number => Date.now()
+
+function requireRow<T>(row: T | undefined, what: string): T {
+  if (row === undefined) throw new Error(`${what} tapılmadı`)
+  return row
+}
+
+export function createContext(
+  db: Db,
+  input: { name: string; cwd?: string; verifyCommands?: readonly string[] },
+): Context {
+  const row = {
+    id: randomUUID(),
+    name: input.name,
+    cwd: input.cwd ?? null,
+    verifyCommandsJson: JSON.stringify(input.verifyCommands ?? []),
+    createdAt: now(),
+  }
+  db.insert(contexts).values(row).run()
+  return requireRow(
+    db.select().from(contexts).where(eq(contexts.id, row.id)).get(),
+    'contexts',
+  )
+}
+
+export function listContexts(db: Db): Context[] {
+  return db.select().from(contexts).orderBy(asc(contexts.createdAt)).all()
+}
+
+export function getContext(db: Db, id: string): Context | undefined {
+  return db.select().from(contexts).where(eq(contexts.id, id)).get()
+}
+
+export function createTask(
+  db: Db,
+  input: { contextId: string; prompt: string; taskType?: string },
+): Task {
+  const row = {
+    id: randomUUID(),
+    contextId: input.contextId,
+    prompt: input.prompt,
+    taskType: input.taskType ?? 'unknown',
+    createdAt: now(),
+  }
+  db.insert(tasks).values(row).run()
+  return requireRow(db.select().from(tasks).where(eq(tasks.id, row.id)).get(), 'tasks')
+}
+
+export function getTask(db: Db, id: string): Task | undefined {
+  return db.select().from(tasks).where(eq(tasks.id, id)).get()
+}
+
+export function setTaskStatus(db: Db, id: string, status: string): void {
+  db.update(tasks)
+    .set({ status, ...(status === 'succeeded' || status === 'failed' ? { completedAt: now() } : {}) })
+    .where(eq(tasks.id, id))
+    .run()
+}
+
+export function createRun(
+  db: Db,
+  input: {
+    taskId: string
+    runnerId: string
+    modelId: string
+    ladderRung?: number
+    subscriptionBilled?: boolean
+    worktreePath?: string
+  },
+): Run {
+  const row = {
+    id: randomUUID(),
+    taskId: input.taskId,
+    runnerId: input.runnerId,
+    modelId: input.modelId,
+    ladderRung: input.ladderRung ?? 7,
+    subscriptionBilled: input.subscriptionBilled ?? false,
+    worktreePath: input.worktreePath ?? null,
+    startedAt: now(),
+  }
+  db.insert(runs).values(row).run()
+  return requireRow(db.select().from(runs).where(eq(runs.id, row.id)).get(), 'runs')
+}
+
+export function listRunsForTask(db: Db, taskId: string): Run[] {
+  return db.select().from(runs).where(eq(runs.taskId, taskId)).orderBy(asc(runs.startedAt)).all()
+}
+
+/**
+ * `usage` hadisəsini run sətrinə yazır.
+ *
+ * DİQQƏT: dəyərlər KUMULYATİVDİR — `+=` deyil, `=` istifadə olunur. Toplama
+ * eyni tokenləri bir neçə dəfə sayardı.
+ */
+export function applyUsageToRun(
+  db: Db,
+  runId: string,
+  event: Extract<RunEvent, { t: 'usage' }>,
+): void {
+  db.update(runs)
+    .set({
+      tokensIn: event.inputTokens,
+      tokensOut: event.outputTokens,
+      tokensCacheRead: event.cacheReadTokens ?? 0,
+      tokensCacheWrite: event.cacheWriteTokens ?? 0,
+      costUsd: event.costUsd,
+    })
+    .where(eq(runs.id, runId))
+    .run()
+}
+
+export function finishRun(
+  db: Db,
+  runId: string,
+  input: {
+    status: 'succeeded' | 'failed' | 'interrupted' | 'budget_exceeded'
+    sessionId?: string
+    errorClass?: ErrorClass
+    errorMessage?: string
+  },
+): Run {
+  db.update(runs)
+    .set({
+      status: input.status,
+      endedAt: now(),
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+      ...(input.errorClass ? { errorClass: input.errorClass } : {}),
+      ...(input.errorMessage ? { errorMessage: input.errorMessage.slice(0, 2000) } : {}),
+    })
+    .where(eq(runs.id, runId))
+    .run()
+  return requireRow(db.select().from(runs).where(eq(runs.id, runId)).get(), 'runs')
+}
+
+export interface StoredEvent {
+  seq: number
+  at: number
+  event: RunEvent
+}
+
+export function appendEvent(db: Db, runId: string, event: RunEvent): StoredEvent {
+  const maxSeq =
+    db
+      .select({ v: sql<number>`COALESCE(MAX(${runEvents.seq}), 0)` })
+      .from(runEvents)
+      .where(eq(runEvents.runId, runId))
+      .get()?.v ?? 0
+  const seq = maxSeq + 1
+  const at = now()
+  db.insert(runEvents)
+    .values({ runId, seq, type: event.t, payloadJson: JSON.stringify(event), at })
+    .run()
+  return { seq, at, event }
+}
+
+export function listEvents(
+  db: Db,
+  runId: string,
+  opts: { afterSeq?: number; limit?: number } = {},
+): StoredEvent[] {
+  const where =
+    opts.afterSeq !== undefined
+      ? and(eq(runEvents.runId, runId), gt(runEvents.seq, opts.afterSeq))
+      : eq(runEvents.runId, runId)
+
+  let q = db.select().from(runEvents).where(where).orderBy(asc(runEvents.seq)).$dynamic()
+  if (opts.limit !== undefined) q = q.limit(opts.limit)
+
+  return q.all().map((r) => ({
+    seq: r.seq,
+    at: r.at,
+    event: JSON.parse(r.payloadJson) as RunEvent,
+  }))
+}
+
+/**
+ * Server çökdükdən sonra qalan `running` icraları `interrupted` işarələyir.
+ * Hadisə jurnalına TOXUNMUR — spesifikasiya onun itməməsini tələb edir.
+ */
+export function markOrphanedRunsInterrupted(db: Db): number {
+  const orphans = db
+    .select({ id: runs.id })
+    .from(runs)
+    .where(inArray(runs.status, ['running', 'pending']))
+    .all()
+  if (orphans.length === 0) return 0
+
+  db.update(runs)
+    .set({ status: 'interrupted', endedAt: now() })
+    .where(inArray(runs.status, ['running', 'pending']))
+    .run()
+  return orphans.length
+}
+```
+
+- [ ] **Step 7: Testi qaçır — keçdiyini təsdiqlə**
+
+Run: `pnpm vitest run apps/server/src/db/repo.test.ts`
+Expected: PASS — 10 test.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add apps/server/src/paths.ts apps/server/src/db
+git commit -m "feat(server): SQLite qatı — contexts, tasks, runs, run_events
+
+Kumulyativ usage tələsi burada da həll olunub: applyUsageToRun toplamır,
+əvəz edir. markOrphanedRunsInterrupted hadisə jurnalını itirmir."
+```
+
+---
+
+**PLANIN QALAN HİSSƏSİ:** Task 14–18 (`RunSupervisor`, REST route-lar, WebSocket hub, web UI, codex uğur fixture-i, `CLAUDE.md`) ardıcıl olaraq bu sənədə əlavə olunur.
