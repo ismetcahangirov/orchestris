@@ -3663,4 +3663,1113 @@ Kumulyativ usage tələsi burada da həll olunub: applyUsageToRun toplamır,
 
 ---
 
-**PLANIN QALAN HİSSƏSİ:** Task 14–18 (`RunSupervisor`, REST route-lar, WebSocket hub, web UI, codex uğur fixture-i, `CLAUDE.md`) ardıcıl olaraq bu sənədə əlavə olunur.
+## Task 14: `RunSupervisor` — hər şeyi birləşdirən qat
+
+Supervisor `Runner`, `BudgetGuard`, DB və dinləyiciləri birləşdirir. O, bütün
+Faza 1A-nın mərkəzidir və `FakeRunner` ilə tam test olunur.
+
+**Files:**
+- Create: `apps/server/src/exec/supervisor.ts`
+- Test: `apps/server/src/exec/supervisor.test.ts`
+
+- [ ] **Step 1: Uğursuz testi yaz**
+
+`apps/server/src/exec/supervisor.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest'
+import type { RunEvent } from '@orchestris/shared'
+import { openDb } from '../db/client.js'
+import { createContext, createTask, listEvents, listRunsForTask } from '../db/repo.js'
+import { FakeRunner } from '../runners/fake.js'
+import { RunSupervisor } from './supervisor.js'
+
+function setup() {
+  const db = openDb(':memory:')
+  const ctx = createContext(db, { name: 'C' })
+  const task = createTask(db, { contextId: ctx.id, prompt: 'salam' })
+  return { db, ctx, task }
+}
+
+describe('RunSupervisor — uğurlu icra', () => {
+  it('fixture axınını DB-yə yazır və run-u succeeded edir', async () => {
+    const { db, task } = setup()
+    const sup = new RunSupervisor(db)
+    const runner = new FakeRunner({ fixture: 'claude-safe-mode.jsonl', flavor: 'claude' })
+
+    const result = await sup.execute({
+      taskId: task.id,
+      runner,
+      model: 'claude-haiku-4-5-20251001',
+      prompt: 'salam',
+    })
+
+    expect(result.status).toBe('succeeded')
+    const runsRows = listRunsForTask(db, task.id)
+    expect(runsRows).toHaveLength(1)
+    expect(runsRows[0]?.status).toBe('succeeded')
+    expect(runsRows[0]?.tokensOut).toBe(59)
+    expect(runsRows[0]?.sessionId).toBe('00000000-0000-4000-8000-000000000001')
+  })
+
+  it('bütün hadisələri sıra ilə jurnala yazır', async () => {
+    const { db, task } = setup()
+    const sup = new RunSupervisor(db)
+    const result = await sup.execute({
+      taskId: task.id,
+      runner: new FakeRunner({ fixture: 'claude-safe-mode.jsonl', flavor: 'claude' }),
+      model: 'm',
+      prompt: 'p',
+    })
+    const events = listEvents(db, result.runId)
+    expect(events.length).toBeGreaterThan(3)
+    expect(events.map((e) => e.seq)).toEqual(events.map((_, i) => i + 1))
+    expect(events.at(-1)?.event.t).toBe('done')
+  })
+
+  it('dinləyiciyə hadisələri canlı ötürür', async () => {
+    const { db, task } = setup()
+    const sup = new RunSupervisor(db)
+    const seen: RunEvent[] = []
+    sup.onEvent(() => seen.push({ t: 'text', delta: 'x' }))
+
+    await sup.execute({
+      taskId: task.id,
+      runner: new FakeRunner({
+        events: [
+          { t: 'text', delta: 'a' },
+          { t: 'done', stopReason: 'end_turn' },
+        ],
+      }),
+      model: 'm',
+      prompt: 'p',
+    })
+    expect(seen).toHaveLength(2)
+  })
+})
+
+describe('RunSupervisor — xəta halları', () => {
+  it('auth xətasını failed + errorClass kimi yazır', async () => {
+    const { db, task } = setup()
+    const sup = new RunSupervisor(db)
+    const result = await sup.execute({
+      taskId: task.id,
+      runner: new FakeRunner({ fixture: 'codex-auth-error.jsonl', flavor: 'codex' }),
+      model: 'm',
+      prompt: 'p',
+    })
+    expect(result.status).toBe('failed')
+    const row = listRunsForTask(db, task.id)[0]
+    expect(row?.errorClass).toBe('auth')
+  })
+
+  it('done gəlmədən axın bitərsə failed edir', async () => {
+    const { db, task } = setup()
+    const sup = new RunSupervisor(db)
+    const result = await sup.execute({
+      taskId: task.id,
+      runner: new FakeRunner({ events: [{ t: 'text', delta: 'yarımçıq' }] }),
+      model: 'm',
+      prompt: 'p',
+    })
+    expect(result.status).toBe('failed')
+  })
+})
+
+describe('RunSupervisor — büdcə qoruması', () => {
+  it('token limiti aşıldıqda icranı kəsir və budget_exceeded yazır', async () => {
+    const { db, task } = setup()
+    const sup = new RunSupervisor(db)
+    const result = await sup.execute({
+      taskId: task.id,
+      runner: new FakeRunner({
+        events: [
+          { t: 'text', delta: 'a' },
+          { t: 'usage', inputTokens: 0, outputTokens: 500, costUsd: 0 },
+          { t: 'done', stopReason: 'end_turn' },
+        ],
+      }),
+      model: 'm',
+      prompt: 'p',
+      limits: { maxOutputTokens: 10 },
+    })
+
+    expect(result.status).toBe('budget_exceeded')
+    const row = listRunsForTask(db, task.id)[0]
+    expect(row?.errorClass).toBe('budget_exceeded')
+
+    // `done` hadisəsi jurnala DÜŞMƏMƏLİDİR — icra kəsilib
+    const events = listEvents(db, result.runId)
+    expect(events.some((e) => e.event.t === 'done')).toBe(false)
+  })
+
+  it('abunəlik icralarında dollar limiti icranı kəsmir', async () => {
+    const { db, task } = setup()
+    const sup = new RunSupervisor(db)
+    const result = await sup.execute({
+      taskId: task.id,
+      runner: new FakeRunner({ fixture: 'claude-safe-mode.jsonl', flavor: 'claude' }),
+      model: 'm',
+      prompt: 'p',
+      subscriptionBilled: true,
+      limits: { maxCostUsd: 0.000001 },
+    })
+    expect(result.status).toBe('succeeded')
+  })
+})
+
+describe('RunSupervisor — dayandırma', () => {
+  it('cancel() icranı interrupted edir', async () => {
+    const { db, task } = setup()
+    const sup = new RunSupervisor(db)
+    const runner = new FakeRunner({
+      events: Array.from({ length: 50 }, (_, i) => ({ t: 'text' as const, delta: String(i) })),
+      delayMs: 5,
+    })
+
+    const p = sup.execute({ taskId: task.id, runner, model: 'm', prompt: 'p' })
+    await new Promise((r) => setTimeout(r, 30))
+    const active = sup.activeRunIds()
+    expect(active).toHaveLength(1)
+    sup.cancel(active[0]!)
+
+    const result = await p
+    expect(result.status).toBe('interrupted')
+  }, 15_000)
+
+  it('icra bitdikdən sonra aktiv siyahıdan çıxır', async () => {
+    const { db, task } = setup()
+    const sup = new RunSupervisor(db)
+    await sup.execute({
+      taskId: task.id,
+      runner: new FakeRunner({ events: [{ t: 'done', stopReason: 'end_turn' }] }),
+      model: 'm',
+      prompt: 'p',
+    })
+    expect(sup.activeRunIds()).toHaveLength(0)
+  })
+})
+```
+
+- [ ] **Step 2: Testi qaçır — uğursuz olduğunu təsdiqlə**
+
+Run: `pnpm vitest run apps/server/src/exec/supervisor.test.ts`
+Expected: FAIL — `Failed to resolve import "./supervisor.js"`
+
+- [ ] **Step 3: Supervisor-u yaz**
+
+`apps/server/src/exec/supervisor.ts`:
+
+```ts
+import type { ErrorClass, RunEvent, Runner } from '@orchestris/shared'
+import type { Db } from '../db/client.js'
+import {
+  appendEvent,
+  applyUsageToRun,
+  createRun,
+  finishRun,
+  setTaskStatus,
+  type StoredEvent,
+} from '../db/repo.js'
+import { BudgetGuard, type BudgetLimits } from './budget.js'
+
+export type RunStatus = 'succeeded' | 'failed' | 'interrupted' | 'budget_exceeded'
+
+export interface ExecuteInput {
+  taskId: string
+  runner: Runner
+  model: string
+  prompt: string
+  cwd?: string
+  resumeSessionId?: string
+  subscriptionBilled?: boolean
+  ladderRung?: number
+  limits?: BudgetLimits
+}
+
+export interface ExecuteResult {
+  runId: string
+  status: RunStatus
+  errorClass?: ErrorClass
+  errorMessage?: string
+}
+
+export type EventListener = (runId: string, stored: StoredEvent) => void
+
+/** Vaxt limiti bu intervalda yoxlanılır (ms). */
+const CLOCK_CHECK_INTERVAL_MS = 1000
+
+/**
+ * Bir icranı başdan-sona idarə edir: runner-i işə salır, hadisələri DB-yə
+ * yazır, dinləyicilərə ötürür, büdcəni yoxlayır və pozuntuda kəsir.
+ *
+ * `FakeRunner` ilə tam test olunur — sıfır token.
+ */
+export class RunSupervisor {
+  private readonly listeners = new Set<EventListener>()
+  private readonly active = new Map<string, AbortController>()
+
+  constructor(private readonly db: Db) {}
+
+  onEvent(listener: EventListener): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  activeRunIds(): string[] {
+    return [...this.active.keys()]
+  }
+
+  cancel(runId: string): boolean {
+    const ac = this.active.get(runId)
+    if (!ac) return false
+    ac.abort()
+    return true
+  }
+
+  cancelAll(): void {
+    for (const ac of this.active.values()) ac.abort()
+  }
+
+  async execute(input: ExecuteInput): Promise<ExecuteResult> {
+    const subscriptionBilled =
+      input.subscriptionBilled ?? input.runner.capabilities.subscriptionBilled
+
+    const run = createRun(this.db, {
+      taskId: input.taskId,
+      runnerId: input.runner.id,
+      modelId: input.model,
+      subscriptionBilled,
+      ...(input.ladderRung !== undefined ? { ladderRung: input.ladderRung } : {}),
+    })
+    setTaskStatus(this.db, input.taskId, 'running')
+
+    const ac = new AbortController()
+    this.active.set(run.id, ac)
+
+    const guard = new BudgetGuard({ ...input.limits, subscriptionBilled })
+    const clock = setInterval(() => {
+      if (guard.checkClock()) ac.abort()
+    }, CLOCK_CHECK_INTERVAL_MS)
+
+    let sessionId: string | undefined
+    let sawDone = false
+    let terminal: { status: RunStatus; cls?: ErrorClass; msg?: string } | null = null
+
+    try {
+      const stream = input.runner.run(
+        {
+          prompt: input.prompt,
+          model: input.model,
+          ...(input.cwd ? { cwd: input.cwd } : {}),
+          ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
+        },
+        { signal: ac.signal },
+      )
+
+      for await (const event of stream) {
+        // Büdcə pozuntusu — hadisəni jurnala YAZMADAN kəsirik.
+        const violation = guard.check(event)
+        if (violation) {
+          terminal = {
+            status: 'budget_exceeded',
+            cls: violation.class,
+            msg: violation.message,
+          }
+          ac.abort()
+          break
+        }
+
+        this.record(run.id, event)
+
+        if (event.t === 'usage') applyUsageToRun(this.db, run.id, event)
+        if (event.t === 'done') {
+          sawDone = true
+          sessionId = event.sessionId ?? sessionId
+        }
+        if (event.t === 'error' && !terminal) {
+          terminal = { status: 'failed', cls: event.class as ErrorClass, msg: event.message }
+        }
+
+        if (ac.signal.aborted) break
+      }
+
+      if (!terminal) {
+        if (ac.signal.aborted) {
+          terminal = { status: 'interrupted', msg: 'İstifadəçi və ya vaxt limiti kəsdi' }
+        } else if (!sawDone) {
+          terminal = {
+            status: 'failed',
+            cls: 'crashed',
+            msg: 'Axın `done` hadisəsi olmadan bitdi',
+          }
+        } else {
+          terminal = { status: 'succeeded' }
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      terminal = { status: 'failed', cls: 'crashed', msg }
+      this.record(run.id, {
+        t: 'error',
+        class: 'crashed',
+        message: msg,
+        retryable: false,
+      })
+    } finally {
+      clearInterval(clock)
+      this.active.delete(run.id)
+    }
+
+    finishRun(this.db, run.id, {
+      status: terminal.status,
+      ...(sessionId ? { sessionId } : {}),
+      ...(terminal.cls ? { errorClass: terminal.cls } : {}),
+      ...(terminal.msg ? { errorMessage: terminal.msg } : {}),
+    })
+    setTaskStatus(
+      this.db,
+      input.taskId,
+      terminal.status === 'succeeded' ? 'succeeded' : 'failed',
+    )
+
+    return {
+      runId: run.id,
+      status: terminal.status,
+      ...(terminal.cls ? { errorClass: terminal.cls } : {}),
+      ...(terminal.msg ? { errorMessage: terminal.msg } : {}),
+    }
+  }
+
+  private record(runId: string, event: RunEvent): void {
+    const stored = appendEvent(this.db, runId, event)
+    for (const l of this.listeners) {
+      try {
+        l(runId, stored)
+      } catch {
+        // Bir dinləyicinin xətası icranı dayandırmamalıdır.
+      }
+    }
+  }
+}
+```
+
+- [ ] **Step 4: Testi qaçır — keçdiyini təsdiqlə**
+
+Run: `pnpm vitest run apps/server/src/exec/supervisor.test.ts`
+Expected: PASS — 9 test.
+
+- [ ] **Step 5: Bütün server testlərini qaçır**
+
+Run: `pnpm test`
+Expected: PASS — 9 fayl, 90+ test. Sıfır token, sıfır şəbəkə sorğusu.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add apps/server/src/exec/supervisor.ts apps/server/src/exec/supervisor.test.ts
+git commit -m "feat(server): RunSupervisor — runner, büdcə, DB və dinləyiciləri birləşdirir
+
+Büdcə pozuntusunda hadisə jurnala yazılmadan icra kəsilir.
+`done` gəlmədən bitən axın failed sayılır — səssiz uğursuzluq olmasın."
+```
+
+---
+
+## Task 15: REST route-lar və WebSocket hub
+
+**Files:**
+- Create: `packages/shared/src/api.ts`
+- Create: `apps/server/src/ws/hub.ts`
+- Create: `apps/server/src/routes/contexts.ts`
+- Create: `apps/server/src/routes/tasks.ts`
+- Create: `apps/server/src/app.ts`
+- Create: `apps/server/src/main.ts`
+- Test: `apps/server/src/app.test.ts`
+
+- [ ] **Step 1: Paylaşılan API sxemlərini yaz**
+
+`packages/shared/src/api.ts`:
+
+```ts
+import { z } from 'zod'
+import { RunEventSchema } from './events.js'
+
+export const CreateContextBody = z.object({
+  name: z.string().min(1).max(200),
+  cwd: z.string().optional(),
+  verifyCommands: z.array(z.string()).optional(),
+})
+export type CreateContextBody = z.infer<typeof CreateContextBody>
+
+export const CreateTaskBody = z.object({
+  contextId: z.string().min(1),
+  prompt: z.string().min(1),
+  /** `runner` boş buraxılsa server default CLI runner-i seçir */
+  runner: z.enum(['cli:claude', 'cli:codex', 'fake']).optional(),
+  model: z.string().min(1),
+  maxOutputTokens: z.number().int().positive().optional(),
+  maxSeconds: z.number().int().positive().optional(),
+  maxCostUsd: z.number().positive().optional(),
+})
+export type CreateTaskBody = z.infer<typeof CreateTaskBody>
+
+/** Klientdən serverə gedən WebSocket mesajları */
+export const WsClientMessage = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('subscribe'), taskId: z.string() }),
+  z.object({ type: z.literal('unsubscribe'), taskId: z.string() }),
+  z.object({ type: z.literal('cancel'), runId: z.string() }),
+])
+export type WsClientMessage = z.infer<typeof WsClientMessage>
+
+/** Serverdən klientə gedən WebSocket mesajları */
+export const WsServerMessage = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('event'),
+    taskId: z.string(),
+    runId: z.string(),
+    seq: z.number().int(),
+    at: z.number().int(),
+    event: RunEventSchema,
+  }),
+  z.object({
+    type: z.literal('run_status'),
+    taskId: z.string(),
+    runId: z.string(),
+    status: z.string(),
+  }),
+  z.object({ type: z.literal('error'), message: z.string() }),
+])
+export type WsServerMessage = z.infer<typeof WsServerMessage>
+```
+
+`packages/shared/src/index.ts` faylına əlavə et:
+
+```ts
+export * from './api.js'
+```
+
+- [ ] **Step 2: WebSocket hub-ı yaz**
+
+`apps/server/src/ws/hub.ts`:
+
+```ts
+import type { WsServerMessage } from '@orchestris/shared'
+
+export interface Socket {
+  send(data: string): void
+}
+
+/**
+ * Task-a görə abunəlik idarəsi. Bir socket bir neçə task izləyə bilər.
+ *
+ * Yayım YALNIZ abunə olan socket-lərə gedir — 50 task açıqdırsa hər hadisəni
+ * hər socket-ə göndərmək lazımsız trafikdir.
+ */
+export class WsHub {
+  private readonly byTask = new Map<string, Set<Socket>>()
+
+  subscribe(taskId: string, socket: Socket): void {
+    let set = this.byTask.get(taskId)
+    if (!set) {
+      set = new Set()
+      this.byTask.set(taskId, set)
+    }
+    set.add(socket)
+  }
+
+  unsubscribe(taskId: string, socket: Socket): void {
+    const set = this.byTask.get(taskId)
+    if (!set) return
+    set.delete(socket)
+    if (set.size === 0) this.byTask.delete(taskId)
+  }
+
+  /** Socket bağlandıqda bütün abunəliklərini təmizləyir. */
+  removeSocket(socket: Socket): void {
+    for (const [taskId, set] of this.byTask) {
+      set.delete(socket)
+      if (set.size === 0) this.byTask.delete(taskId)
+    }
+  }
+
+  subscriberCount(taskId: string): number {
+    return this.byTask.get(taskId)?.size ?? 0
+  }
+
+  broadcast(taskId: string, message: WsServerMessage): void {
+    const set = this.byTask.get(taskId)
+    if (!set) return
+    const payload = JSON.stringify(message)
+    for (const socket of set) {
+      try {
+        socket.send(payload)
+      } catch {
+        // Bağlanmış socket — növbəti təmizləmədə silinəcək.
+      }
+    }
+  }
+}
+```
+
+- [ ] **Step 3: Uğursuz app testini yaz**
+
+`apps/server/src/app.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { buildApp } from './app.js'
+import { openDb } from './db/client.js'
+import { FakeRunner } from './runners/fake.js'
+
+function app() {
+  const db = openDb(':memory:')
+  const runners = new Map([
+    ['fake', new FakeRunner({ fixture: 'claude-safe-mode.jsonl', flavor: 'claude' })],
+  ])
+  return buildApp({ db, runners })
+}
+
+describe('GET /api/health', () => {
+  it('ok qaytarır', async () => {
+    const res = await app().inject({ method: 'GET', url: '/api/health' })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ ok: true })
+  })
+})
+
+describe('POST /api/contexts', () => {
+  it('kontekst yaradır', async () => {
+    const res = await app().inject({
+      method: 'POST',
+      url: '/api/contexts',
+      payload: { name: 'Layihəm', verifyCommands: ['pnpm typecheck'] },
+    })
+    expect(res.statusCode).toBe(201)
+    const body = res.json()
+    expect(body.name).toBe('Layihəm')
+    expect(body.id).toBeTruthy()
+  })
+
+  it('boş adı 400 ilə rədd edir', async () => {
+    const res = await app().inject({
+      method: 'POST',
+      url: '/api/contexts',
+      payload: { name: '' },
+    })
+    expect(res.statusCode).toBe(400)
+  })
+})
+
+describe('GET /api/contexts', () => {
+  it('yaradılmış kontekstləri sadalayır', async () => {
+    const a = app()
+    await a.inject({ method: 'POST', url: '/api/contexts', payload: { name: 'A' } })
+    await a.inject({ method: 'POST', url: '/api/contexts', payload: { name: 'B' } })
+    const res = await a.inject({ method: 'GET', url: '/api/contexts' })
+    expect(res.json()).toHaveLength(2)
+  })
+})
+
+describe('POST /api/tasks', () => {
+  it('taskı yaradır və icranı başladır', async () => {
+    const a = app()
+    const ctx = (
+      await a.inject({ method: 'POST', url: '/api/contexts', payload: { name: 'C' } })
+    ).json()
+
+    const res = await a.inject({
+      method: 'POST',
+      url: '/api/tasks',
+      payload: { contextId: ctx.id, prompt: 'salam', runner: 'fake', model: 'm' },
+    })
+    expect(res.statusCode).toBe(202)
+    expect(res.json().taskId).toBeTruthy()
+  })
+
+  it('mövcud olmayan kontekst üçün 404 verir', async () => {
+    const res = await app().inject({
+      method: 'POST',
+      url: '/api/tasks',
+      payload: { contextId: 'yoxdur', prompt: 'p', runner: 'fake', model: 'm' },
+    })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it('tanınmayan runner üçün 400 verir', async () => {
+    const a = app()
+    const ctx = (
+      await a.inject({ method: 'POST', url: '/api/contexts', payload: { name: 'C' } })
+    ).json()
+    const res = await a.inject({
+      method: 'POST',
+      url: '/api/tasks',
+      payload: { contextId: ctx.id, prompt: 'p', runner: 'cli:codex', model: 'm' },
+    })
+    expect(res.statusCode).toBe(400)
+  })
+})
+
+describe('GET /api/tasks/:id', () => {
+  it('task, run-lar və hadisələri qaytarır', async () => {
+    const a = app()
+    const ctx = (
+      await a.inject({ method: 'POST', url: '/api/contexts', payload: { name: 'C' } })
+    ).json()
+    const created = (
+      await a.inject({
+        method: 'POST',
+        url: '/api/tasks',
+        payload: { contextId: ctx.id, prompt: 'p', runner: 'fake', model: 'm' },
+      })
+    ).json()
+
+    // İcra fon rejimindədir — bitməsini gözləyirik
+    await new Promise((r) => setTimeout(r, 200))
+
+    const res = await a.inject({ method: 'GET', url: `/api/tasks/${created.taskId}` })
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.task.prompt).toBe('p')
+    expect(body.runs).toHaveLength(1)
+    expect(body.runs[0].events.length).toBeGreaterThan(2)
+  })
+
+  it('mövcud olmayan task üçün 404 verir', async () => {
+    const res = await app().inject({ method: 'GET', url: '/api/tasks/yoxdur' })
+    expect(res.statusCode).toBe(404)
+  })
+})
+
+describe('GET /api/providers', () => {
+  it('runner aşkarlama nəticələrini qaytarır', async () => {
+    const res = await app().inject({ method: 'GET', url: '/api/providers' })
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body).toHaveLength(1)
+    expect(body[0]).toMatchObject({ id: 'fake', installed: true })
+  })
+})
+```
+
+- [ ] **Step 4: Testi qaçır — uğursuz olduğunu təsdiqlə**
+
+Run: `pnpm vitest run apps/server/src/app.test.ts`
+Expected: FAIL — `Failed to resolve import "./app.js"`
+
+- [ ] **Step 5: Route-ları yaz**
+
+`apps/server/src/routes/contexts.ts`:
+
+```ts
+import { CreateContextBody } from '@orchestris/shared'
+import type { FastifyInstance } from 'fastify'
+import type { Db } from '../db/client.js'
+import { createContext, listContexts } from '../db/repo.js'
+
+export function registerContextRoutes(app: FastifyInstance, db: Db): void {
+  app.get('/api/contexts', async () => listContexts(db))
+
+  app.post('/api/contexts', async (req, reply) => {
+    const parsed = CreateContextBody.safeParse(req.body)
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.issues })
+    }
+    const ctx = createContext(db, parsed.data)
+    return reply.code(201).send(ctx)
+  })
+}
+```
+
+`apps/server/src/routes/tasks.ts`:
+
+```ts
+import { CreateTaskBody, type Runner } from '@orchestris/shared'
+import type { FastifyInstance } from 'fastify'
+import type { Db } from '../db/client.js'
+import {
+  createTask,
+  getContext,
+  getTask,
+  listEvents,
+  listRunsForTask,
+} from '../db/repo.js'
+import type { RunSupervisor } from '../exec/supervisor.js'
+
+export interface TaskRouteDeps {
+  db: Db
+  supervisor: RunSupervisor
+  runners: ReadonlyMap<string, Runner>
+}
+
+export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): void {
+  const { db, supervisor, runners } = deps
+
+  app.post('/api/tasks', async (req, reply) => {
+    const parsed = CreateTaskBody.safeParse(req.body)
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues })
+    const body = parsed.data
+
+    if (!getContext(db, body.contextId)) {
+      return reply.code(404).send({ error: 'Kontekst tapılmadı' })
+    }
+
+    const runnerId = body.runner ?? [...runners.keys()][0]
+    const runner = runnerId ? runners.get(runnerId) : undefined
+    if (!runner) {
+      return reply.code(400).send({
+        error: `Runner mövcud deyil: ${runnerId ?? '(yoxdur)'}`,
+        available: [...runners.keys()],
+      })
+    }
+
+    const ctx = getContext(db, body.contextId)!
+    const task = createTask(db, { contextId: body.contextId, prompt: body.prompt })
+
+    // İcra fon rejimində gedir — HTTP cavabı gözləmir. Vəziyyət WebSocket
+    // və `GET /api/tasks/:id` vasitəsilə izlənilir.
+    void supervisor
+      .execute({
+        taskId: task.id,
+        runner,
+        model: body.model,
+        prompt: body.prompt,
+        ...(ctx.cwd ? { cwd: ctx.cwd } : {}),
+        limits: {
+          ...(body.maxOutputTokens !== undefined
+            ? { maxOutputTokens: body.maxOutputTokens }
+            : ctx.budgetTokens !== null
+              ? { maxOutputTokens: ctx.budgetTokens }
+              : {}),
+          ...(body.maxSeconds !== undefined
+            ? { maxSeconds: body.maxSeconds }
+            : ctx.budgetSeconds !== null
+              ? { maxSeconds: ctx.budgetSeconds }
+              : {}),
+          ...(body.maxCostUsd !== undefined
+            ? { maxCostUsd: body.maxCostUsd }
+            : ctx.budgetUsd !== null
+              ? { maxCostUsd: ctx.budgetUsd }
+              : {}),
+        },
+      })
+      .catch((err: unknown) => {
+        app.log.error({ err }, 'supervisor.execute tutulmamış xəta')
+      })
+
+    return reply.code(202).send({ taskId: task.id })
+  })
+
+  app.get<{ Params: { id: string } }>('/api/tasks/:id', async (req, reply) => {
+    const task = getTask(db, req.params.id)
+    if (!task) return reply.code(404).send({ error: 'Task tapılmadı' })
+
+    const runRows = listRunsForTask(db, task.id).map((r) => ({
+      ...r,
+      events: listEvents(db, r.id),
+    }))
+    return { task, runs: runRows }
+  })
+
+  app.post<{ Params: { id: string } }>('/api/tasks/:id/cancel', async (req, reply) => {
+    const task = getTask(db, req.params.id)
+    if (!task) return reply.code(404).send({ error: 'Task tapılmadı' })
+
+    const cancelled = listRunsForTask(db, task.id)
+      .filter((r) => r.status === 'running')
+      .filter((r) => supervisor.cancel(r.id))
+      .map((r) => r.id)
+
+    return { cancelled }
+  })
+
+  app.get('/api/providers', async () =>
+    Promise.all(
+      [...runners.entries()].map(async ([id, runner]) => ({
+        id,
+        kind: runner.kind,
+        capabilities: runner.capabilities,
+        ...(await runner.detect()),
+      })),
+    ),
+  )
+}
+```
+
+- [ ] **Step 6: App-ı yaz**
+
+`apps/server/src/app.ts`:
+
+```ts
+import { WsClientMessage, type Runner } from '@orchestris/shared'
+import websocket from '@fastify/websocket'
+import Fastify, { type FastifyInstance } from 'fastify'
+import type { Db } from './db/client.js'
+import { getTask, markOrphanedRunsInterrupted } from './db/repo.js'
+import { RunSupervisor } from './exec/supervisor.js'
+import { registerContextRoutes } from './routes/contexts.js'
+import { registerTaskRoutes } from './routes/tasks.js'
+import { WsHub } from './ws/hub.js'
+
+export interface BuildAppInput {
+  db: Db
+  runners: ReadonlyMap<string, Runner>
+  logger?: boolean
+}
+
+export function buildApp(input: BuildAppInput): FastifyInstance {
+  const app = Fastify({ logger: input.logger ?? false })
+  const { db, runners } = input
+
+  // Server çökdükdən sonra qalan yetim icraları təmizlə.
+  const orphans = markOrphanedRunsInterrupted(db)
+  if (orphans > 0) app.log.warn(`${orphans} yetim icra interrupted işarələndi`)
+
+  const hub = new WsHub()
+  const supervisor = new RunSupervisor(db)
+
+  // Hər hadisəni abunə socket-lərə yayımla. runId → taskId çevirməsi üçün
+  // run sətrinə baxmaq lazımdır; kiçik keş bunu ucuz saxlayır.
+  const runToTask = new Map<string, string>()
+  supervisor.onEvent((runId, stored) => {
+    let taskId = runToTask.get(runId)
+    if (!taskId) {
+      const row = db
+        .select()
+        .from(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (db as any)._.fullSchema.runs,
+        )
+        .all()
+        .find((r: { id: string }) => r.id === runId) as { taskId?: string } | undefined
+      taskId = row?.taskId
+      if (taskId) runToTask.set(runId, taskId)
+    }
+    if (!taskId) return
+    hub.broadcast(taskId, {
+      type: 'event',
+      taskId,
+      runId,
+      seq: stored.seq,
+      at: stored.at,
+      event: stored.event,
+    })
+  })
+
+  app.get('/api/health', async () => ({ ok: true, runners: [...runners.keys()] }))
+
+  registerContextRoutes(app, db)
+  registerTaskRoutes(app, { db, supervisor, runners })
+
+  void app.register(websocket)
+  void app.register(async (scoped) => {
+    scoped.get('/ws', { websocket: true }, (conn) => {
+      const socket = { send: (data: string) => conn.send(data) }
+
+      conn.on('message', (raw: Buffer) => {
+        let msg: WsClientMessage
+        try {
+          msg = WsClientMessage.parse(JSON.parse(raw.toString('utf8')))
+        } catch {
+          socket.send(JSON.stringify({ type: 'error', message: 'Yanlış mesaj formatı' }))
+          return
+        }
+
+        if (msg.type === 'subscribe') {
+          if (!getTask(db, msg.taskId)) {
+            socket.send(JSON.stringify({ type: 'error', message: 'Task tapılmadı' }))
+            return
+          }
+          hub.subscribe(msg.taskId, socket)
+        } else if (msg.type === 'unsubscribe') {
+          hub.unsubscribe(msg.taskId, socket)
+        } else {
+          supervisor.cancel(msg.runId)
+        }
+      })
+
+      conn.on('close', () => hub.removeSocket(socket))
+    })
+  })
+
+  app.addHook('onClose', async () => supervisor.cancelAll())
+
+  return app
+}
+```
+
+**Qeyd:** yuxarıdaki `runToTask` axtarışı Drizzle-ın daxili sxeminə toxunur və
+kövrəkdir. Step 7-də onu təmiz repo funksiyası ilə əvəz edirik.
+
+- [ ] **Step 7: `runToTask` axtarışını təmiz repo funksiyası ilə əvəz et**
+
+`apps/server/src/db/repo.ts` faylına əlavə et:
+
+```ts
+export function getRunTaskId(db: Db, runId: string): string | undefined {
+  return db
+    .select({ taskId: runs.taskId })
+    .from(runs)
+    .where(eq(runs.id, runId))
+    .get()?.taskId
+}
+```
+
+`apps/server/src/app.ts`-də importu genişləndir və hadisə dinləyicisini sadələşdir:
+
+```ts
+import { getRunTaskId, getTask, markOrphanedRunsInterrupted } from './db/repo.js'
+```
+
+```ts
+  const runToTask = new Map<string, string>()
+  supervisor.onEvent((runId, stored) => {
+    let taskId = runToTask.get(runId)
+    if (!taskId) {
+      taskId = getRunTaskId(db, runId)
+      if (taskId) runToTask.set(runId, taskId)
+    }
+    if (!taskId) return
+    hub.broadcast(taskId, {
+      type: 'event',
+      taskId,
+      runId,
+      seq: stored.seq,
+      at: stored.at,
+      event: stored.event,
+    })
+  })
+```
+
+- [ ] **Step 8: Giriş nöqtəsini yaz**
+
+`apps/server/src/main.ts`:
+
+```ts
+import type { Runner } from '@orchestris/shared'
+import { buildApp } from './app.js'
+import { openDb } from './db/client.js'
+import { ClaudeCliRunner } from './runners/claude.js'
+import { CodexCliRunner } from './runners/codex.js'
+
+const PORT = Number(process.env['PORT'] ?? 4319)
+
+const db = openDb()
+const runners = new Map<string, Runner>([
+  ['cli:claude', new ClaudeCliRunner({ permissionMode: 'acceptEdits' })],
+  ['cli:codex', new CodexCliRunner()],
+])
+
+const app = buildApp({ db, runners, logger: true })
+
+// Yalnız 127.0.0.1 — xarici şəbəkəyə açılmır (spesifikasiya tələbi).
+await app.listen({ port: PORT, host: '127.0.0.1' })
+app.log.info(`Orchestris http://127.0.0.1:${PORT}`)
+
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(signal, () => {
+    void app.close().then(() => process.exit(0))
+  })
+}
+```
+
+- [ ] **Step 9: Testi qaçır — keçdiyini təsdiqlə**
+
+Run: `pnpm vitest run apps/server/src/app.test.ts`
+Expected: PASS — 10 test.
+
+Run: `pnpm test`
+Expected: PASS — 10 fayl, 100+ test.
+
+- [ ] **Step 10: WebSocket hub üçün ayrıca test yaz**
+
+`apps/server/src/ws/hub.test.ts`:
+
+```ts
+import { describe, expect, it, vi } from 'vitest'
+import { WsHub } from './hub.js'
+
+const sock = () => ({ send: vi.fn() })
+
+describe('WsHub', () => {
+  it('yalnız abunə socket-lərə yayımlayır', () => {
+    const hub = new WsHub()
+    const a = sock()
+    const b = sock()
+    hub.subscribe('task-1', a)
+    hub.subscribe('task-2', b)
+
+    hub.broadcast('task-1', { type: 'error', message: 'x' })
+    expect(a.send).toHaveBeenCalledTimes(1)
+    expect(b.send).not.toHaveBeenCalled()
+  })
+
+  it('unsubscribe abunəliyi silir', () => {
+    const hub = new WsHub()
+    const a = sock()
+    hub.subscribe('t', a)
+    hub.unsubscribe('t', a)
+    hub.broadcast('t', { type: 'error', message: 'x' })
+    expect(a.send).not.toHaveBeenCalled()
+    expect(hub.subscriberCount('t')).toBe(0)
+  })
+
+  it('removeSocket bütün abunəlikləri təmizləyir', () => {
+    const hub = new WsHub()
+    const a = sock()
+    hub.subscribe('t1', a)
+    hub.subscribe('t2', a)
+    hub.removeSocket(a)
+    expect(hub.subscriberCount('t1')).toBe(0)
+    expect(hub.subscriberCount('t2')).toBe(0)
+  })
+
+  it('bir socket-in send xətası digərlərini bloklamır', () => {
+    const hub = new WsHub()
+    const bad = { send: vi.fn(() => { throw new Error('qırıldı') }) }
+    const good = sock()
+    hub.subscribe('t', bad)
+    hub.subscribe('t', good)
+    expect(() => hub.broadcast('t', { type: 'error', message: 'x' })).not.toThrow()
+    expect(good.send).toHaveBeenCalledTimes(1)
+  })
+
+  it('abunəsi olmayan task üçün yayım heç nə etmir', () => {
+    const hub = new WsHub()
+    expect(() => hub.broadcast('yoxdur', { type: 'error', message: 'x' })).not.toThrow()
+  })
+})
+```
+
+Run: `pnpm vitest run apps/server/src/ws/hub.test.ts`
+Expected: PASS — 5 test.
+
+- [ ] **Step 11: Serveri real işə sal və yoxla**
+
+Terminal 1: `pnpm --filter @orchestris/server dev`
+Expected: `Orchestris http://127.0.0.1:4319`
+
+Terminal 2:
+
+```bash
+curl -s http://127.0.0.1:4319/api/health
+curl -s http://127.0.0.1:4319/api/providers | python -m json.tool
+```
+
+Expected: `health` → `{"ok":true,...}`. `providers` → `cli:claude` üçün
+`installed: true, authenticated: true`; `cli:codex` üçün `authenticated: false`
+və `"Login olunmayıb — terminalda \`codex login\` işlət"`.
+
+- [ ] **Step 12: Commit**
+
+```bash
+git add packages/shared/src/api.ts packages/shared/src/index.ts apps/server/src
+git commit -m "feat(server): REST route-lar, WebSocket hub, app bootstrap
+
+Task icrası fon rejimindədir (202 Accepted), vəziyyət WS ilə izlənilir.
+Server yalnız 127.0.0.1-ə bind olunur. Start-da yetim icralar təmizlənir."
+```
+
+---
+
+**PLANIN QALAN HİSSƏSİ:** Task 16–18 (web UI, codex uğur fixture-i, `CLAUDE.md` + yekun yoxlama) ardıcıl olaraq bu sənədə əlavə olunur.
