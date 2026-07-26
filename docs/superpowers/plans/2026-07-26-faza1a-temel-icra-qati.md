@@ -92,6 +92,37 @@ tsconfig-də olsa, test faylları tip yoxlamasından da çıxır və
 
 ---
 
+# ⚠️ DÜZƏLİŞ 2 — Node-un TypeScript dəstəyi bu layihədə işləmir (2026-07-27)
+
+Task 5-də təyin olunan `dev` skripti
+`node --watch --experimental-strip-types src/main.ts` **işləmir**. Node
+v22.16.0 ilə iki məhdudiyyət real olaraq təsdiqləndi:
+
+1. **`.js` spesifikatoru `.ts` fayla həll olunmur.** Bizim bütün nisbi
+   importlarımız `.js` uzantısı ilədir (`moduleResolution: bundler` + ESM
+   tələbi), amma fayllar `.ts`-dir. Node `resolve:275`-də "modul tapılmadı"
+   verir. Bu, layihədəki **hər** nisbi importa aiddir.
+2. **Konstruktor parametr-xassələri** (`constructor(private readonly x: T) {}`)
+   strip-only rejimdə dəstəklənmir:
+   `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX: TypeScript parameter property is not
+   supported in strip-only mode`.
+
+**Həll:** `tsx` dev runner kimi əlavə edildi.
+
+```
+"dev":   "tsx watch src/main.ts"
+"start": "node dist/main.js"
+```
+
+`tsx` (esbuild əsaslı) həm `.js` → `.ts` həllini, həm parametr-xassələri
+düzgün idarə edir — yoxlanılıb.
+
+**Sonrakı tasklar üçün nəticə:** `node --experimental-strip-types` ilə
+TypeScript faylı işə salmağa cəhd etməyin — nə `dev` skriptində, nə əl ilə
+yoxlamalarda. `npx tsx <fayl>` işlədin.
+
+---
+
 ---
 
 ## Ölçülmüş faktlar — bu plan onlara əsaslanır
