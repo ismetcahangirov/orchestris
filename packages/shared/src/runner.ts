@@ -60,6 +60,14 @@ export interface RunOptions {
   /** Sərt limitlər. Aşıldıqda proses ağacı öldürülür. */
   maxOutputTokens?: number
   maxSeconds?: number
+  /**
+   * YALNIZ `subscriptionBilled: false` olan runner-lərə tətbiq edilir.
+   * Abunəlik icralarında `costUsd` istinad qiymətidir və real pul çıxmır —
+   * orada bu limit gözardı edilir, `maxOutputTokens`/`maxSeconds` isə hər
+   * halda tətbiq olunur. (Ölçülmüş: `claude` CLI-nın ~21.7k token döşəməsi
+   * trivial taskda ~$0.0085 istinad qiyməti verir; bunu real limit saysaq
+   * hər icra kəsilərdi.)
+   */
   maxCostUsd?: number
   signal?: AbortSignal
 }

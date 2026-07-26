@@ -41,6 +41,21 @@ describe('canHandle', () => {
     expect(canHandle(apiCaps, { needsSessions: true })).toBe(false)
     expect(canHandle(cliCaps, { needsSessions: true })).toBe(true)
   })
+
+  it('alət tələbini yoxlayır', () => {
+    // Mövcud testlərdə hər iki caps `toolUse: true` idi, ona görə bu şərt
+    // heç vaxt icra olunmurdu — funksiya `!caps.fileAccess` oxusa da testlər
+    // yaşıl qalardı.
+    const noTools: Capabilities = { ...apiCaps, toolUse: false }
+    expect(canHandle(noTools, { needsToolUse: true })).toBe(false)
+    expect(canHandle(apiCaps, { needsToolUse: true })).toBe(true)
+  })
+
+  it('bir neçə tələbdən biri qarşılanmasa false qaytarır', () => {
+    expect(
+      canHandle(apiCaps, { needsToolUse: true, needsFileAccess: true }),
+    ).toBe(false)
+  })
 })
 
 describe('CAPABILITY_KEYS', () => {
@@ -54,3 +69,18 @@ describe('CAPABILITY_KEYS', () => {
     ])
   })
 })
+
+// Kompilyasiya vaxtı yoxlama: `CAPABILITY_KEYS` `Capabilities` tipinin bütün
+// açarlarını əhatə edir. Runtime testi bunu tuta bilmir — tipə yeni sahə
+// əlavə edib massivi yeniləməsən, runtime testi yaşıl qalar.
+const _capabilityKeysAreExhaustive: Record<
+  keyof Capabilities,
+  (typeof CAPABILITY_KEYS)[number]
+> = {
+  fileAccess: 'fileAccess',
+  toolUse: 'toolUse',
+  sessions: 'sessions',
+  structuredOutput: 'structuredOutput',
+  subscriptionBilled: 'subscriptionBilled',
+}
+void _capabilityKeysAreExhaustive
