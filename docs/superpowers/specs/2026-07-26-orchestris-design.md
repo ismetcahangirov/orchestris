@@ -379,10 +379,37 @@ interface MemoryProvider {
 
 claude-mem Apache-2.0, 88.6k ulduz, aktiv dəstəklənir (son commit 2026-07-23). Bütün data lokal `~/.claude-mem/`-də (SQLite FTS5 + Chroma). Telemetriya yığmır. Amma:
 
+### Xərc — dəqiq mənzərə
+
+| Nə | Qiymət | Bizim qərar |
+|---|---|---|
+| claude-mem proqramı | **Pulsuz** (Apache-2.0) | İstifadə olunur |
+| CMEM Cloud (`cmem.ai`) | $20/ay individual, $333/seat/ay team | **İstifadə olunmur.** Bulud sinxronu söndürülü. |
+| Sıxma token xərci | Default: Haiku + `subscription` auth → istifadəçinin Claude kvotasından | **Dəyişdirilir** (aşağı bax) |
+
+**Default konfiqurasiya:**
+```
+CLAUDE_MEM_MODEL              = claude-haiku-4-5-20251001
+CLAUDE_MEM_PROVIDER           = claude
+CLAUDE_MEM_CLAUDE_AUTH_METHOD = subscription
+```
+
+Bu, əlavə pul tələb etmir (mövcud abunəlikdən gedir), amma **Claude kvotasını yeyir** — halbuki o kvota real işçi taskları üçün lazımdır.
+
+**Bizim qərar — yaddaş sıxılması Claude kvotasına toxunmasın:**
+```
+CLAUDE_MEM_PROVIDER = openrouter
+model               = xiaomi/mimo-v2-flash:free      ← $0
+```
+Alternativ: `CLAUDE_MEM_PROVIDER = gemini` + `gemini-flash-latest` (çox ucuz, ayrı açar lazımdır).
+
+Seçim `/settings` səhifəsində istifadəçiyə açıqdır. Hansı variant seçilsə, xərc `savings_ledger.memory_cost_usd` sətrində ayrıca görünür — gizlədilmir.
+
+### Digər risklər
+
 | Risk | Qoruma |
 |---|---|
-| Sıxma üçün Claude Agent SDK işlədir → **istifadəçinin öz tokenini xərcləyir** | Sıxma modeli **ucuz modelə** bağlanır. Bu xərc `savings_ledger`-də ayrıca sətir kimi görünür — gizlədilmir. |
-| Bulud sinxronu (`cmem.ai`) | **Söndürülü** vəziyyətdə saxlanılır. Settings-də açıq keçid var. |
+| Layihənin arxasında kripto token var (README-də `Official BASE CA: 0x76b1...`) | Lisenziya Apache-2.0 olaraq qalır və kod keyfiyyətinə təsir etmir, amma idarəçilik motivasiyası barədə siqnaldır. Adapter arxasında olduğu üçün çıxarmaq bir ayar dəyişikliyidir. |
 | Claude Code OAuth token-lərini keystore-dan oxuyur | Sənədləşdirilir, istifadəçi məlumatlandırılır. Adapter arxasında olduğu üçün istənilən vaxt `NullProvider`-ə keçmək mümkündür. |
 | Keçmiş command-injection zəifliyi (#354, düzəldilib) | Minimum versiya tələb olunur; `detect()` versiyanı yoxlayır. |
 | 287 açıq issue — sürətlə dəyişən layihə | **Adapter arxasında.** Sınsa bir fayl dəyişir, sistem işləməyə davam edir. |
