@@ -1,19 +1,25 @@
 import { describe, expect, it } from 'vitest'
+import type { RunEvent } from '@orchestris/shared'
 import { openDb } from './client.js'
 import {
   appendEvent,
+  appendVerification,
   applyUsageToRun,
   createContext,
   createRun,
   createTask,
   finishRun,
+  getCacheEntry,
   getContext,
   getRunTaskId,
   getTask,
   listContexts,
   listEvents,
   listRunsForTask,
+  listVerifications,
   markOrphanedRunsInterrupted,
+  putCacheEntry,
+  recordCacheHit,
   setTaskStatus,
 } from './repo.js'
 
@@ -277,5 +283,125 @@ describe('foreign key CASCADE', () => {
     expect(() =>
       createRun(db(), { taskId: 'yoxdur', runnerId: 'fake', modelId: 'm' }),
     ).toThrow()
+  })
+})
+
+describe('cache_entries', () => {
+  it('mövcud olmayan açar üçün undefined qaytarır', () => {
+    expect(getCacheEntry(db(), 'yoxdur')).toBeUndefined()
+  })
+
+  it('yazır və eyni hadisə massivini geri oxuyur', () => {
+    const d = db()
+    const events: RunEvent[] = [
+      { t: 'text', delta: 'SALAM' },
+      { t: 'done', stopReason: 'end_turn' },
+    ]
+    putCacheEntry(d, { hash: 'h1', modelId: 'm', runnerId: 'r', events })
+    const got = getCacheEntry(d, 'h1')
+    expect(got?.events).toEqual(events)
+    expect(got?.hits).toBe(0)
+  })
+
+  it('eyni açarı təkrar yazmaq üzərinə yazır, dublikat yaratmır', () => {
+    const d = db()
+    putCacheEntry(d, { hash: 'h1', modelId: 'm', runnerId: 'r', events: [] })
+    putCacheEntry(d, {
+      hash: 'h1',
+      modelId: 'm',
+      runnerId: 'r',
+      events: [{ t: 'text', delta: 'yeni' }],
+    })
+    expect(getCacheEntry(d, 'h1')?.events).toEqual([{ t: 'text', delta: 'yeni' }])
+  })
+
+  it('recordCacheHit sayğacı artırır və vaxtı yazır', () => {
+    const d = db()
+    putCacheEntry(d, { hash: 'h1', modelId: 'm', runnerId: 'r', events: [] })
+    recordCacheHit(d, 'h1')
+    recordCacheHit(d, 'h1')
+    const got = getCacheEntry(d, 'h1')
+    expect(got?.hits).toBe(2)
+    expect(got?.lastHitAt).toBeGreaterThan(0)
+  })
+})
+
+describe('verification_runs', () => {
+  it('yoxlama nəticəsini yazır və oxuyur', () => {
+    const { d, run } = seed()
+    appendVerification(d, run.id, {
+      command: 'pnpm typecheck',
+      exitCode: 0,
+      passed: true,
+      outputExcerpt: '',
+      durationMs: 1200,
+    })
+    const list = listVerifications(d, run.id)
+    expect(list).toHaveLength(1)
+    expect(list[0]?.command).toBe('pnpm typecheck')
+    expect(list[0]?.passed).toBe(true)
+  })
+
+  it('uğursuz yoxlamanın çıxışını saxlayır', () => {
+    const { d, run } = seed()
+    appendVerification(d, run.id, {
+      command: 'pnpm test',
+      exitCode: 1,
+      passed: false,
+      outputExcerpt: 'FAIL src/a.test.ts',
+      durationMs: 900,
+    })
+    expect(listVerifications(d, run.id)[0]?.outputExcerpt).toContain('FAIL')
+  })
+
+  it('çox uzun çıxışı kəsir', () => {
+    const { d, run } = seed()
+    appendVerification(d, run.id, {
+      command: 'x',
+      exitCode: 1,
+      passed: false,
+      outputExcerpt: 'y'.repeat(10_000),
+      durationMs: 1,
+    })
+    expect(listVerifications(d, run.id)[0]?.outputExcerpt.length).toBe(4000)
+  })
+
+  it('yoxlamalar sıra ilə qaytarılır', () => {
+    const { d, run } = seed()
+    for (const c of ['a', 'b', 'c']) {
+      appendVerification(d, run.id, {
+        command: c,
+        exitCode: 0,
+        passed: true,
+        outputExcerpt: '',
+        durationMs: 1,
+      })
+    }
+    expect(listVerifications(d, run.id).map((v) => v.command)).toEqual(['a', 'b', 'c'])
+  })
+})
+
+describe('runs.attempt / cachedHit', () => {
+  it('default-lar: attempt 1, cachedHit false', () => {
+    const { run } = seed()
+    expect(run.attempt).toBe(1)
+    expect(run.cachedHit).toBe(false)
+  })
+
+  it('attempt, ladderRung və cachedHit açıq verilə bilir', () => {
+    const d = db()
+    const ctx = createContext(d, { name: 'C' })
+    const task = createTask(d, { contextId: ctx.id, prompt: 'p' })
+    const run = createRun(d, {
+      taskId: task.id,
+      runnerId: 'fake',
+      modelId: 'm',
+      attempt: 3,
+      ladderRung: 2,
+      cachedHit: true,
+    })
+    expect(run.attempt).toBe(3)
+    expect(run.ladderRung).toBe(2)
+    expect(run.cachedHit).toBe(true)
   })
 })
