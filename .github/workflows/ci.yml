@@ -13,7 +13,11 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # windows-latest qəsdəndir: `resolve-exe.ts`/`spawn.ts`-in shim həlli və
+    # `taskkill /T /F` məntiqi platformaya xasdır (CLAUDE.md qayda 6), testlər
+    # bunu yoxlayır. `claude`/`codex` CI-da quraşdırılmayacaq, ona görə yalnız
+    # FakeRunner yolları örtülür.
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
