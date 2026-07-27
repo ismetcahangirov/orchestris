@@ -21,6 +21,8 @@ export interface ExecuteInput {
   resumeSessionId?: string
   subscriptionBilled?: boolean
   ladderRung?: number
+  /** Yoxlama dövrəsində neçənci cəhd. Default 1. */
+  attempt?: number
   limits?: BudgetLimits
 }
 
@@ -83,6 +85,7 @@ export class RunSupervisor {
       modelId: input.model,
       subscriptionBilled,
       ...(input.ladderRung !== undefined ? { ladderRung: input.ladderRung } : {}),
+      ...(input.attempt !== undefined ? { attempt: input.attempt } : {}),
     })
     setTaskStatus(this.db, input.taskId, 'running')
 

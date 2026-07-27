@@ -39,6 +39,16 @@ export interface StoredEventRow {
   event: RunEvent
 }
 
+export interface VerificationRow {
+  id: number
+  command: string
+  exitCode: number | null
+  passed: boolean
+  outputExcerpt: string
+  durationMs: number
+  at: number
+}
+
 export interface RunRow {
   id: string
   runnerId: string
@@ -57,6 +67,10 @@ export interface RunRow {
   startedAt: number
   endedAt: number | null
   events: StoredEventRow[]
+  ladderRung: number
+  attempt: number
+  cachedHit: boolean
+  verifications: VerificationRow[]
 }
 
 export interface TaskDetail {

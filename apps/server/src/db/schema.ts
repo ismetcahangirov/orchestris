@@ -47,6 +47,12 @@ export const runs = sqliteTable(
     runnerId: text('runner_id').notNull(),
     modelId: text('model_id').notNull(),
     ladderRung: integer('ladder_rung').notNull().default(7),
+    /**
+     * Yoxlama dövrəsində neçənci cəhddir. 1-dən başlayır. Eyni task üçün
+     * bir neçə run olur: hər uğursuz yoxlamadan sonra yenisi yaradılır.
+     * `escalatedFromRunId` bundan FƏRQLİDİR — o, pillələr arası keçid üçündür.
+     */
+    attempt: integer('attempt').notNull().default(1),
     status: text('status').notNull().default('running'),
     tokensIn: integer('tokens_in').notNull().default(0),
     tokensOut: integer('tokens_out').notNull().default(0),
@@ -86,6 +92,46 @@ export const runEvents = sqliteTable(
   (t) => [uniqueIndex('run_events_seq_idx').on(t.runId, t.seq)],
 )
 
+/**
+ * Pillə 0 — hazır nəticə keşi.
+ *
+ * `hash` açarı `cache-key.ts`-də hesablanır və iş qovluğunun git vəziyyətini
+ * də əhatə edir: eyni prompt fərqli kod üzərində fərqli cavab tələb edir.
+ */
+export const cacheEntries = sqliteTable(
+  'cache_entries',
+  {
+    hash: text('hash').primaryKey(),
+    modelId: text('model_id').notNull(),
+    runnerId: text('runner_id').notNull(),
+    /** Saxlanılan `RunEvent[]` — JSON massiv. */
+    eventsJson: text('events_json').notNull(),
+    hits: integer('hits').notNull().default(0),
+    createdAt: integer('created_at').notNull(),
+    lastHitAt: integer('last_hit_at'),
+  },
+  (t) => [index('cache_model_idx').on(t.modelId)],
+)
+
+/** Pillə 2 — hər determinist yoxlama əmrinin nəticəsi. */
+export const verificationRuns = sqliteTable(
+  'verification_runs',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    runId: text('run_id')
+      .notNull()
+      .references(() => runs.id, { onDelete: 'cascade' }),
+    command: text('command').notNull(),
+    exitCode: integer('exit_code'),
+    passed: integer('passed', { mode: 'boolean' }).notNull(),
+    /** Çıxışın ilk hissəsi — modelə geri ötürülən budur. */
+    outputExcerpt: text('output_excerpt').notNull(),
+    durationMs: integer('duration_ms').notNull(),
+    at: integer('at').notNull(),
+  },
+  (t) => [index('verification_run_idx').on(t.runId)],
+)
+
 export const contextsRelations = relations(contexts, ({ many }) => ({
   tasks: many(tasks),
 }))
@@ -96,4 +142,5 @@ export const tasksRelations = relations(tasks, ({ one, many }) => ({
 export const runsRelations = relations(runs, ({ one, many }) => ({
   task: one(tasks, { fields: [runs.taskId], references: [tasks.id] }),
   events: many(runEvents),
+  verifications: many(verificationRuns),
 }))
