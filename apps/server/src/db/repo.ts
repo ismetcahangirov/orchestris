@@ -112,6 +112,10 @@ export function getRunTaskId(db: Db, runId: string): string | undefined {
   return db.select({ taskId: runs.taskId }).from(runs).where(eq(runs.id, runId)).get()?.taskId
 }
 
+export function getRun(db: Db, runId: string): Run | undefined {
+  return db.select().from(runs).where(eq(runs.id, runId)).get()
+}
+
 /**
  * `usage` hadisəsini run sətrinə yazır.
  *

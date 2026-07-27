@@ -6,6 +6,7 @@ import {
   createRun,
   finishRun,
   getCacheEntry,
+  getRun,
   listEvents,
   putCacheEntry,
   recordCacheHit,
@@ -77,6 +78,19 @@ export class Ladder {
 
   async run(input: LadderInput): Promise<LadderResult> {
     const cwd = input.context.cwd ?? undefined
+
+    // `RunSupervisor.execute` hər çağırışda TAM YENİ BudgetGuard yaradır (öz
+    // limitlərinə görə). Yoxlama dövrəsi eyni task üçün onu bir neçə dəfə
+    // çağırır — limiti cəhdlər arasında ÖZ DAXİLİMİZDƏ izləməsək, hər cəhd
+    // orijinal limiti təzədən alar və MAX_ATTEMPTS dəfə xərclənə bilər.
+    // `RunSupervisor`-a toxunmuruq (plan: "RunSupervisor dəyişmir"); bunun
+    // əvəzinə Ladder xərclənəni özü izləyir və qalanını növbəti cəhdə ötürür.
+    // Bunlar `run()`-a LOKALDIR — sinif sahəsi DEYİL, çünki `Ladder` eyni anda
+    // paralel tasklar arasında paylaşılır.
+    const ladderStartedAt = Date.now()
+    let spentOutputTokens = 0
+    let spentCostUsd = 0
+
     const cacheKey = computeCacheKey({
       prompt: input.task.prompt,
       modelId: input.model,
@@ -98,6 +112,10 @@ export class Ladder {
 
     let prompt = input.task.prompt
     let attempts = 0
+    // İlk cəhd DƏYİŞMƏMİŞ `input.limits`-lə gedir — hələ heç nə xərclənməyib.
+    // Yoxlama sınıb yenidən cəhd edilməli olanda bu, aşağıda azaldılmış
+    // büdcə ilə əvəz olunur.
+    let currentLimits = input.limits
 
     while (attempts < MAX_ATTEMPTS) {
       attempts += 1
@@ -110,7 +128,7 @@ export class Ladder {
         attempt: attempts,
         ladderRung: rung,
         ...(cwd !== undefined ? { cwd } : {}),
-        ...(input.limits !== undefined ? { limits: input.limits } : {}),
+        ...(currentLimits !== undefined ? { limits: currentLimits } : {}),
       })
 
       const base: LadderResult = {
@@ -128,6 +146,18 @@ export class Ladder {
       // yalnız təkrarlana bilən xəta siniflərində mənalıdır — `auth` və
       // `budget_exceeded` halında yenidən cəhd etmək pul yandırmaqdır.
       if (exec.status !== 'succeeded') return base
+
+      // Bu cəhdin nə xərclədiyini toplayırıq ki, yenidən cəhd lazım olsa
+      // növbəti `execute()` çağırışına TAM deyil, QALAN büdcə ötürülsün.
+      const finishedRun = getRun(this.db, exec.runId)
+      if (finishedRun !== undefined) {
+        spentOutputTokens += finishedRun.tokensOut
+        // `costUsd` NULL-dursa xərc BİLİNMİR (bax CLAUDE.md qayda #4) — belə
+        // cəhd cari məbləğə `0` qatır, çünki bilinməyəni bundan yaxşı təxmin
+        // edə bilmərik. `BudgetGuard.check` da eyni səbəbdən `costUsd`
+        // `undefined` olanda xərc yoxlamasını tamamilə keçir.
+        if (finishedRun.costUsd !== null) spentCostUsd += finishedRun.costUsd
+      }
 
       if (!hasVerification) {
         this.storeInCache(input, cacheKey, exec.runId)
@@ -163,6 +193,45 @@ export class Ladder {
       // eyni prinsip: `billed` sahəsi kimi, status da real vəziyyəti əks
       // etdirməlidir).
       setTaskStatus(this.db, input.task.id, 'running')
+
+      // ── Növbəti cəhd üçün QALAN büdcəni hesabla ─────────────────────
+      // `input.limits` heç vaxt təyin olunmayıbsa heç bir məhdudiyyət
+      // gətirmirik — limitsiz tasklar üçün davranış tamamilə dəyişməz qalır.
+      if (input.limits !== undefined) {
+        const remainingMaxOutputTokens =
+          input.limits.maxOutputTokens !== undefined
+            ? Math.max(0, input.limits.maxOutputTokens - spentOutputTokens)
+            : undefined
+        const remainingMaxCostUsd =
+          input.limits.maxCostUsd !== undefined
+            ? Math.max(0, input.limits.maxCostUsd - spentCostUsd)
+            : undefined
+        const remainingMaxSeconds =
+          input.limits.maxSeconds !== undefined
+            ? Math.max(0, input.limits.maxSeconds - (Date.now() - ladderStartedAt) / 1000)
+            : undefined
+
+        if (
+          remainingMaxOutputTokens === 0 ||
+          remainingMaxCostUsd === 0 ||
+          remainingMaxSeconds === 0
+        ) {
+          // Qalan büdcə sıfırdır — növbəti cəhdi başlatmaq özü pul yandırmaq
+          // olardı. Dövrəni burada dayandırırıq, `execute()`-i BİR DƏFƏ də
+          // çağırmadan.
+          setTaskStatus(this.db, input.task.id, 'failed')
+          return { ...base, status: 'budget_exceeded', verificationPassed: false }
+        }
+
+        currentLimits = {
+          ...input.limits,
+          ...(remainingMaxOutputTokens !== undefined
+            ? { maxOutputTokens: remainingMaxOutputTokens }
+            : {}),
+          ...(remainingMaxCostUsd !== undefined ? { maxCostUsd: remainingMaxCostUsd } : {}),
+          ...(remainingMaxSeconds !== undefined ? { maxSeconds: remainingMaxSeconds } : {}),
+        }
+      }
 
       // Xəta mətnini modelə geri ötürüb yenidən cəhd et. Yoxlama SIFIR token
       // xərcləyir; yalnız yeni icra xərcləyir.

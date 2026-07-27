@@ -246,6 +246,31 @@ describe('Ladder — Pillə 2 alət yoxlaması', () => {
     expect(r.status).toBe('budget_exceeded')
     expect(r.attempts).toBe(1)
   })
+
+  it('cəhd öz limitini keçmir amma büdcəni tükədir — növbəti cəhdə keçmir', async () => {
+    // `maxOutputTokens: 100`, hər cəhd DƏQİQ 100 output token bildirir.
+    // RunSupervisor-un öz cəhd-daxili BudgetGuard-ı bunu buraxır (100 > 100
+    // yalandır), amma cəhddən sonra qalan büdcə 0-dır — Ladder növbəti cəhdi
+    // başlatmamalıdır, halbuki yoxlama hələ də sınır (heç vaxt keçmir).
+    const { ctx, ladder, newTask } = setup([failCmd])
+    const spy = runner([
+      { t: 'usage', inputTokens: 0, outputTokens: 100, billed: 'real' },
+      { t: 'done', stopReason: 'end_turn' },
+    ])
+    const runSpy = vi.spyOn(spy, 'run')
+
+    const r = await ladder.run({
+      task: newTask(),
+      context: ctx,
+      runner: spy,
+      model: 'm',
+      limits: { maxOutputTokens: 100 },
+    })
+
+    expect(runSpy).toHaveBeenCalledTimes(1)
+    expect(r.status).toBe('budget_exceeded')
+    expect(r.attempts).toBe(1)
+  })
 })
 
 describe('Ladder — dayandırma', () => {
