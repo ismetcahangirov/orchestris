@@ -14,7 +14,12 @@ export default tseslint.config(
     languageOptions: {
       parserOptions: {
         projectService: {
-          allowDefaultProject: ['eslint.config.js', 'vitest.config.ts', 'apps/web/vitest.config.ts'],
+          allowDefaultProject: [
+            'eslint.config.js',
+            'vitest.config.ts',
+            'apps/web/vitest.config.ts',
+            'scripts/fetch-models-snapshot.mjs',
+          ],
         },
         tsconfigRootDir: import.meta.dirname,
       },
@@ -58,6 +63,14 @@ export default tseslint.config(
     files: ['**/*.test.ts', '**/*.test.tsx'],
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
+    },
+  },
+  {
+    // `scripts/` altındakı köməkçi skriptlər tsconfig-ə daxil deyil (repo
+    // koduna girmirlər), ona görə Node qlobalları əl ilə elan olunur.
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: { fetch: 'readonly', console: 'readonly', process: 'readonly' },
     },
   },
 )

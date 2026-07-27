@@ -147,9 +147,44 @@ artıq `tsx watch` istifadə edir.
 ### 13. API açarları OS keychain-də saxlanılır
 
 `~/.orchestris/` içinə və ya `.env`-ə **heç vaxt** yazılmır. DB-də yalnız
-`credential_ref`. (Bu, sonrakı fazada tətbiq olunur; qayda indidən qüvvədədir.)
+`credential_ref` — OS anbarındakı qeydin adı (`provider:anthropic`).
 
-### 14. Server yalnız 127.0.0.1-ə bind olunur
+Tətbiq: `secrets/keychain.ts` (`KeyringStore` / test üçün `MemoryStore`).
+Windows-da real Credential Manager ilə yoxlanılıb.
+
+Keychain əlçatan deyilsə açar **qəbul edilmir** (HTTP 503) — səssizcə fayla
+yazmaq qadağandır. Testlər `MemoryStore` ötürməlidir: default `KeyringStore`
+istifadəçinin real anbarına yazar və başsız CI runner-ində sınar.
+
+### 14. API açarı heç vaxt URL-ə qoyulmur
+
+Google Generative Language API açarı həm `?key=` sorğu parametri, həm də
+`x-goog-api-key` başlığı ilə qəbul edir. **Başlıq işlədilir.**
+
+URL-lər başlıqlardan fərqli olaraq hər yerə düşür: server log-ları, proxy
+jurnalları, `fetch failed` xəta mətnləri, brauzer tarixçəsi. Açarı ora
+qoymaq onu geri götürülməz şəkildə yayır.
+
+Eyni səbəbdən `discovery.ts` provayder cavablarını `redactAll`-dan keçirir:
+`Incorrect API key provided: sk-proj-…` mətni DB-yə
+(`providers.last_discovery_error`) və oradan UI-a gedir.
+
+### 15. Qiymət komponenti bilinmirsə xərc yalnız O KOMPONENT İŞLƏDİLİBSƏ bilinmir
+
+`computeCostUsd` hər token növünü ayrıca yoxlayır. Ölçülmüş (models.dev,
+2026-07-28, bundle edilmiş 103 model):
+
+| Hal | Model sayı |
+|---|---|
+| Qiymət ümumiyyətlə yoxdur | 9 |
+| `cache_read` qiyməti yoxdur | 30 |
+
+`cache_read` qiyməti bilinməyən modeli birbaşa "qiyməti bilinmir" saysaydıq,
+keşdən heç nə oxumayan icralarda da büdcə mühafizəsi kor qalardı. Ona görə:
+komponentin token sayı `0`-dırsa, qiymətinin bilinməməsi əhəmiyyətsizdir.
+Token sayı `0`-dan böyükdürsə və qiymət yoxdursa — yekun `undefined`.
+
+### 16. Server yalnız 127.0.0.1-ə bind olunur
 
 Xarici şəbəkəyə açılmır. Yoxlanılıb: `netstat` `127.0.0.1:4319 LISTENING`
 göstərir, `0.0.0.0` yox.
@@ -192,5 +227,8 @@ həqiqət mənbəyi yoxdur.
   Ona görə codex parser-inin **uğur yolu** real fixture ilə yoxlanılmayıb —
   yalnız xəta yolu. `codex login` edildikdən sonra
   `fixtures/cli/codex-success.jsonl` tutulmalı və parser təsdiqlənməlidir.
-- `apps/web` üçün test yoxdur (bu fazada nəzərdə tutulmayıb).
-- `pnpm lint` işləmir — eslint quraşdırılmayıb.
+- `drizzle-kit` migrasiyaları yoxdur — `db/client.ts` xam DDL + idempotent
+  `ALTER` işlədir. Sxem böyüdükcə bu davam edə bilməz (issue #13).
+- API provayderlərinin **uğur yolu** real açarla yoxlanılmayıb: model kəşfi
+  saxta `fetch` ilə test olunur. Real açar əlavə edildikdə
+  `/api/providers/:id/discover` bir dəfə əl ilə təsdiqlənməlidir.

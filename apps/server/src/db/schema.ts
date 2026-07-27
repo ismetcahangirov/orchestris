@@ -132,8 +132,82 @@ export const verificationRuns = sqliteTable(
   (t) => [index('verification_run_idx').on(t.runId)],
 )
 
+/**
+ * API provayderləri (anthropic, openai, google). CLI runner-lər burada YOX —
+ * onlar PATH-dan dinamik aşkarlanır və açar tələb etmir.
+ *
+ * `credentialRef` OS açar anbarındakı qeydin ADIDIR. Açarın ÖZÜ nə bu
+ * cədvələ, nə də hər hansı fayla yazılır (CLAUDE.md qayda 13).
+ */
+export const providers = sqliteTable('providers', {
+  id: text('id').primaryKey(),
+  /** models.dev-dən gələn insan üçün ad. */
+  displayName: text('display_name').notNull(),
+  /** OS keychain qeydinin adı. NULL = açar təyin olunmayıb. */
+  credentialRef: text('credential_ref'),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  /** Son uğurlu model kəşfi (unix ms). NULL = heç vaxt kəşf edilməyib. */
+  lastDiscoveryAt: integer('last_discovery_at'),
+  /** Son kəşf cəhdinin xəta mətni — açar KƏSİLMİŞ halda saxlanılır. */
+  lastDiscoveryError: text('last_discovery_error'),
+  createdAt: integer('created_at').notNull(),
+})
+
+/**
+ * Kəşf edilmiş modellər — qiymətləri, limitləri və rolları ilə.
+ *
+ * Qiymət sütunları NULL ola bilər və bu "BİLİNMİR" deməkdir, `0` deyil.
+ * Ölçülmüş: models.dev-dəki 103 modeldən 9-unun qiyməti ümumiyyətlə yoxdur.
+ * `0` yazsaydıq büdcə mühafizəsi o modellərdə heç vaxt işə düşməzdi
+ * (CLAUDE.md qayda 4).
+ */
+export const models = sqliteTable(
+  'models',
+  {
+    /** `${providerId}:${modelId}` — provayderlər arası ad toqquşmasının qarşısını alır. */
+    id: text('id').primaryKey(),
+    providerId: text('provider_id')
+      .notNull()
+      .references(() => providers.id, { onDelete: 'cascade' }),
+    modelId: text('model_id').notNull(),
+    displayName: text('display_name').notNull(),
+    contextLimit: integer('context_limit'),
+    outputLimit: integer('output_limit'),
+    /** USD / 1M token. NULL = bilinmir. */
+    priceIn: real('price_in'),
+    priceOut: real('price_out'),
+    priceCacheRead: real('price_cache_read'),
+    priceCacheWrite: real('price_cache_write'),
+    toolCall: integer('tool_call', { mode: 'boolean' }).notNull().default(false),
+    structuredOutput: integer('structured_output', { mode: 'boolean' })
+      .notNull()
+      .default(false),
+    reasoning: integer('reasoning', { mode: 'boolean' }).notNull().default(false),
+    /**
+     * `api` — provayderin öz endpoint-i bildirdi, models.dev-də yoxdur (qiymət NULL).
+     * `models.dev` — hər iki mənbə uyğun gəldi.
+     * `manual` — istifadəçi əl ilə əlavə etdi.
+     */
+    source: text('source').notNull().default('models.dev'),
+    enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+    roleBoss: integer('role_boss', { mode: 'boolean' }).notNull().default(false),
+    roleWorker: integer('role_worker', { mode: 'boolean' }).notNull().default(false),
+    roleClassifier: integer('role_classifier', { mode: 'boolean' })
+      .notNull()
+      .default(false),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [index('models_provider_idx').on(t.providerId)],
+)
+
 export const contextsRelations = relations(contexts, ({ many }) => ({
   tasks: many(tasks),
+}))
+export const providersRelations = relations(providers, ({ many }) => ({
+  models: many(models),
+}))
+export const modelsRelations = relations(models, ({ one }) => ({
+  provider: one(providers, { fields: [models.providerId], references: [providers.id] }),
 }))
 export const tasksRelations = relations(tasks, ({ one, many }) => ({
   context: one(contexts, { fields: [tasks.contextId], references: [contexts.id] }),

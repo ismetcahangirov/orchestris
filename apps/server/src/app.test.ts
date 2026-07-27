@@ -3,13 +3,16 @@ import type { Runner } from '@orchestris/shared'
 import { buildApp } from './app.js'
 import { openDb } from './db/client.js'
 import { FakeRunner } from './runners/fake.js'
+import { MemoryStore } from './secrets/keychain.js'
 
 function makeApp() {
   const db = openDb(':memory:')
   const runners = new Map<string, Runner>([
     ['fake', new FakeRunner({ fixture: 'claude-safe-mode.jsonl', flavor: 'claude' })],
   ])
-  return buildApp({ db, runners })
+  // `MemoryStore` MƏCBURİDİR: default `KeyringStore` istifadəçinin real OS
+  // anbarına yazardı və başsız CI runner-ində sınardı.
+  return buildApp({ db, runners, credentials: new MemoryStore() })
 }
 
 async function newContext(app: ReturnType<typeof makeApp>, name = 'C', cwd?: string) {
@@ -259,17 +262,41 @@ describe('GET /api/tasks/:id — yoxlama nəticələri', () => {
 })
 
 describe('GET /api/providers', () => {
-  it('runner aşkarlama nəticələrini qaytarır', async () => {
+  it('CLI runner aşkarlama nəticələrini qaytarır', async () => {
     const res = await makeApp().inject({ method: 'GET', url: '/api/providers' })
     expect(res.statusCode).toBe(200)
     const body = res.json()
-    expect(body).toHaveLength(1)
-    expect(body[0]).toMatchObject({
+    expect(body.cli).toHaveLength(1)
+    expect(body.cli[0]).toMatchObject({
       id: 'fake',
       kind: 'fake',
       installed: true,
       authenticated: true,
     })
-    expect(body[0].capabilities).toBeTruthy()
+    expect(body.cli[0].capabilities).toBeTruthy()
+  })
+
+  it('API provayderlərini kataloqdan doldurur və açar vəziyyətini göstərir', async () => {
+    const body = (
+      await makeApp().inject({ method: 'GET', url: '/api/providers' })
+    ).json()
+
+    expect(body.api.map((p: { id: string }) => p.id).sort()).toEqual([
+      'anthropic',
+      'google',
+      'openai',
+    ])
+    expect(body.api[0]).toMatchObject({ hasCredential: false, modelCount: 0 })
+    expect(body.keychain.ok).toBe(true)
+    expect(body.catalog.source).toBeTruthy()
+  })
+
+  it('cavabda açar daşıya biləcək JSON sahəsi YOXDUR', async () => {
+    const res = await makeApp().inject({ method: 'GET', url: '/api/providers' })
+
+    // JSON AÇARLARI yoxlanılır (dırnaq + iki nöqtə), sadəcə alt-sətir yox:
+    // `envVars` içindəki `GOOGLE_GENERATIVE_AI_API_KEY` env dəyişəninin
+    // ADIDIR — sirr deyil və cavabda olması normaldır.
+    expect(res.body).not.toMatch(/"(apiKey|api_key|credentialRef|secret|password)"\s*:/i)
   })
 })

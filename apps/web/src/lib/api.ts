@@ -23,7 +23,8 @@ export interface ContextRow {
   createdAt: number
 }
 
-export interface ProviderRow {
+/** PATH-dan aşkarlanan lokal CLI — açar tələb etmir, abunəlikdən işləyir. */
+export interface CliProviderRow {
   id: string
   kind: string
   installed: boolean
@@ -31,6 +32,58 @@ export interface ProviderRow {
   version?: string
   execPath?: string
   detail: string
+}
+
+/**
+ * API provayderi. DİQQƏT: burada açarın ÖZÜ yoxdur və olmamalıdır — yalnız
+ * `hasCredential` (CLAUDE.md qayda 13).
+ */
+export interface ApiProviderRow {
+  id: string
+  displayName: string
+  hasCredential: boolean
+  enabled: boolean
+  modelCount: number
+  lastDiscoveryAt: number | null
+  lastDiscoveryError: string | null
+  envVars: string[]
+  doc?: string
+}
+
+export interface ProvidersResponse {
+  cli: CliProviderRow[]
+  api: ApiProviderRow[]
+  keychain: { ok: boolean; detail: string }
+  catalog: { source: 'bundled' | 'cache'; fetchedAt?: number; providerCount: number }
+}
+
+export interface ModelRow {
+  id: string
+  providerId: string
+  modelId: string
+  displayName: string
+  contextLimit: number | null
+  outputLimit: number | null
+  /** null = qiymət BİLİNMİR (0 deyil). USD / 1M token. */
+  priceIn: number | null
+  priceOut: number | null
+  priceCacheRead: number | null
+  priceCacheWrite: number | null
+  toolCall: boolean
+  structuredOutput: boolean
+  reasoning: boolean
+  source: string
+  enabled: boolean
+  roleBoss: boolean
+  roleWorker: boolean
+  roleClassifier: boolean
+  priceKnown: boolean
+}
+
+export interface DiscoveryResult {
+  ok: boolean
+  modelCount?: number
+  error?: string
 }
 
 export interface StoredEventRow {
@@ -83,7 +136,47 @@ export const api = {
   listContexts: () => request<ContextRow[]>('/api/contexts'),
   createContext: (body: CreateContextBody) =>
     request<ContextRow>('/api/contexts', { method: 'POST', body: JSON.stringify(body) }),
-  listProviders: () => request<ProviderRow[]>('/api/providers'),
+  listProviders: () => request<ProvidersResponse>('/api/providers'),
+
+  listModels: (providerId?: string) =>
+    request<ModelRow[]>(
+      providerId === undefined ? '/api/models' : `/api/models?provider=${providerId}`,
+    ),
+
+  /**
+   * Açar YALNIZ bu istiqamətdə hərəkət edir. Cavabda açar qaytarılmır və
+   * heç bir yerdə keşlənmir — çağıran onu göndərdikdən sonra unutmalıdır.
+   */
+  setCredential: (providerId: string, apiKey: string) =>
+    request<DiscoveryResult>(`/api/providers/${providerId}/credential`, {
+      method: 'POST',
+      body: JSON.stringify({ apiKey }),
+    }),
+
+  deleteCredential: (providerId: string) =>
+    request<{ ok: boolean }>(`/api/providers/${providerId}/credential`, {
+      method: 'DELETE',
+    }),
+
+  discoverModels: (providerId: string) =>
+    request<DiscoveryResult>(`/api/providers/${providerId}/discover`, { method: 'POST' }),
+
+  setModelRole: (id: string, role: 'boss' | 'worker' | 'classifier', value: boolean) =>
+    request<ModelRow>('/api/models/role', {
+      method: 'POST',
+      body: JSON.stringify({ id, role, value }),
+    }),
+
+  setModelEnabled: (id: string, enabled: boolean) =>
+    request<ModelRow>('/api/models/enabled', {
+      method: 'POST',
+      body: JSON.stringify({ id, enabled }),
+    }),
+
+  refreshCatalog: () =>
+    request<{ ok: boolean; providerCount: number }>('/api/registry/refresh', {
+      method: 'POST',
+    }),
   createTask: (body: CreateTaskBody) =>
     request<{ taskId: string }>('/api/tasks', { method: 'POST', body: JSON.stringify(body) }),
   getTask: (id: string) => request<TaskDetail>(`/api/tasks/${id}`),

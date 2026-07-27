@@ -109,15 +109,4 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
 
     return { cancelled }
   })
-
-  app.get('/api/providers', async () =>
-    Promise.all(
-      [...runners.entries()].map(async ([id, runner]) => ({
-        id,
-        kind: runner.kind,
-        capabilities: runner.capabilities,
-        ...(await runner.detect()),
-      })),
-    ),
-  )
 }

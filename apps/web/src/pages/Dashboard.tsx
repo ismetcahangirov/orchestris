@@ -29,7 +29,9 @@ export default function Dashboard(): React.JSX.Element {
     onSuccess: (r) => navigate(`/tasks/${r.taskId}`),
   })
 
-  const selected = providers?.find((p) => p.id === runner)
+  // `runner` CLI runner id-sidir (`cli:claude`, `fake`) — API provayderləri
+  // ayrı siyahıdadır və task göndərişində hələ iştirak etmir (Faza 1B-B).
+  const selected = providers?.cli.find((p) => p.id === runner)
   const blocked = selected !== undefined && !selected.authenticated
 
   return (

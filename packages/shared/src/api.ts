@@ -20,6 +20,36 @@ export const CreateTaskBody = z.object({
 })
 export type CreateTaskBody = z.infer<typeof CreateTaskBody>
 
+/**
+ * API açarının qəbulu.
+ *
+ * Açar YALNIZ bu istiqamətdə hərəkət edir: brauzer → server → OS keychain.
+ * Heç bir cavab sxemində açar sahəsi YOXDUR və olmamalıdır (CLAUDE.md qayda 13).
+ *
+ * Minimum 8 simvol: `redactSecret` bundan qısa sətirləri maskalamır (qısa
+ * sətir mətnin hər yerinə uyğun gəlib xəta mesajlarını oxunmaz edərdi), ona
+ * görə daha qısa "açar" qəbul etsək onu log-dan kəsə bilməzdik.
+ */
+export const SetCredentialBody = z.object({
+  apiKey: z.string().min(8).max(500),
+})
+export type SetCredentialBody = z.infer<typeof SetCredentialBody>
+
+export const MODEL_ROLES = ['boss', 'worker', 'classifier'] as const
+
+export const SetModelRoleBody = z.object({
+  id: z.string().min(1),
+  role: z.enum(MODEL_ROLES),
+  value: z.boolean(),
+})
+export type SetModelRoleBody = z.infer<typeof SetModelRoleBody>
+
+export const SetModelEnabledBody = z.object({
+  id: z.string().min(1),
+  enabled: z.boolean(),
+})
+export type SetModelEnabledBody = z.infer<typeof SetModelEnabledBody>
+
 /** Klientdən serverə gedən WebSocket mesajları */
 export const WsClientMessage = z.discriminatedUnion('type', [
   z.object({ type: z.literal('subscribe'), taskId: z.string() }),
