@@ -18,7 +18,7 @@ export default function TaskView(): React.JSX.Element {
     enabled: id !== undefined,
     // Fon icrası bitənə qədər qısa interval; sonra dayanır.
     refetchInterval: (q) =>
-      q.state.data?.runs.every((r) => TERMINAL.has(r.status)) === true ? false : 1500,
+      q.state.data !== undefined && TERMINAL.has(q.state.data.task.status) ? false : 1500,
   })
 
   if (error !== null) return <p className="text-bad">{String(error)}</p>
