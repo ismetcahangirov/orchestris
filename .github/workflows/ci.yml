@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Kritik: bu iş axını heç vaxt real CLI (`claude`/`codex`) çağırmamalıdır.
+# `ORCHESTRIS_E2E` bayrağı burada TƏYİN OLUNMUR — testlər yalnız FakeRunner
+# və fixture-lərlə işləyir, sıfır token xərclənir (bax CLAUDE.md qayda 11).
+env:
+  CI: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm lint
+
+      - run: pnpm typecheck
+
+      - run: pnpm test
+
+      - run: pnpm --filter @orchestris/web build
