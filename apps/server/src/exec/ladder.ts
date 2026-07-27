@@ -18,6 +18,10 @@ import { buildFeedbackPrompt, runVerifications } from './verify.js'
 
 /** Yoxlama dövrəsinin maksimum cəhd sayı. */
 const MAX_ATTEMPTS = 3
+/** Pillə 2 — alət yoxlamasından keçən icra. */
+const RUNG_TOOL_VERIFIED = 2
+/** Yoxlama əmri yoxdursa — birbaşa güclü model. */
+const RUNG_FULL_MODEL = 7
 
 export type LadderStatus =
   | 'succeeded'
@@ -90,11 +94,10 @@ export class Ladder {
     // ── Pillə 2 — zəif model + alət yoxlaması ──────────────────────────
     const verifyCommands = this.parseVerifyCommands(input.context.verifyCommandsJson)
     const hasVerification = verifyCommands.length > 0
-    const rung = hasVerification ? 2 : 7
+    const rung = hasVerification ? RUNG_TOOL_VERIFIED : RUNG_FULL_MODEL
 
     let prompt = input.task.prompt
     let attempts = 0
-    let last: LadderResult | null = null
 
     while (attempts < MAX_ATTEMPTS) {
       attempts += 1
@@ -120,7 +123,6 @@ export class Ladder {
         ...(exec.errorClass !== undefined ? { errorClass: exec.errorClass } : {}),
         ...(exec.errorMessage !== undefined ? { errorMessage: exec.errorMessage } : {}),
       }
-      last = base
 
       // İcranın özü uğursuz olubsa yoxlamağa nə isə yoxdur. Təkrar cəhd
       // yalnız təkrarlana bilən xəta siniflərində mənalıdır — `auth` və
@@ -148,15 +150,30 @@ export class Ladder {
         return { ...base, verificationPassed: true }
       }
 
-      // Sınıb — xəta mətnini modelə geri ötürüb yenidən cəhd et.
-      // Yoxlama SIFIR token xərcləyir; yalnız yeni icra xərcləyir.
+      // Sınıb. Son cəhddirsə burada dayanırıq — task həqiqətən bitib.
+      if (attempts === MAX_ATTEMPTS) {
+        setTaskStatus(this.db, input.task.id, 'failed')
+        return { ...base, status: 'verification_failed', verificationPassed: false }
+      }
+
+      // Hələ cəhd qalıb — icra özü uğurlu olsa da task HƏLƏ BİTMƏYİB. Supervisor
+      // exec.status === 'succeeded' görüb task-ı `succeeded` işarələyib, amma
+      // yoxlama sınıb və yenidən cəhd ediləcək — statusu geri `running`-ə
+      // qaytarırıq ki UI "bitdi" yalanı danışmasın (bax CLAUDE.md qayda #5,
+      // eyni prinsip: `billed` sahəsi kimi, status da real vəziyyəti əks
+      // etdirməlidir).
+      setTaskStatus(this.db, input.task.id, 'running')
+
+      // Xəta mətnini modelə geri ötürüb yenidən cəhd et. Yoxlama SIFIR token
+      // xərcləyir; yalnız yeni icra xərcləyir.
       prompt = `${input.task.prompt}\n\n${buildFeedbackPrompt(verification.results)}`
-      last = { ...base, status: 'verification_failed', verificationPassed: false }
     }
 
-    const final = last as LadderResult
-    setTaskStatus(this.db, input.task.id, 'failed')
-    return final
+    // Bura yalnız MAX_ATTEMPTS < 1 olsa çatıla bilər — bu proqramçı xətasıdır,
+    // konfiqurasiya xətası deyil. Hər cəhd öz daxilində return edir, ona görə
+    // `attempts === MAX_ATTEMPTS` budağı MAX_ATTEMPTS >= 1 olduqca həmişə
+    // işə düşür və bura çatılmır.
+    throw new Error('Ladder: MAX_ATTEMPTS ən azı 1 olmalıdır')
   }
 
   private parseVerifyCommands(json: string): string[] {

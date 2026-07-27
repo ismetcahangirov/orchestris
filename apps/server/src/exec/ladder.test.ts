@@ -5,6 +5,7 @@ import {
   createContext,
   createTask,
   getCacheEntry,
+  getTask,
   listEvents,
   listRunsForTask,
   listVerifications,
@@ -207,6 +208,28 @@ describe('Ladder — Pillə 2 alət yoxlaması', () => {
     expect(r.attempts).toBe(1) // auth xətasında təkrar cəhd mənasızdır
     expect(listVerifications(db, r.runId)).toHaveLength(0)
   })
+
+  it('yoxlama sınadıqda cəhdlər arasında task statusu running qalır (succeeded YOX)', async () => {
+    const { db, ctx, sup, ladder, newTask } = setup([failCmd])
+    const t = newTask()
+    const original = sup.execute.bind(sup)
+    const statusesBeforeRetry: (string | undefined)[] = []
+
+    vi.spyOn(sup, 'execute').mockImplementation(async (execInput) => {
+      // Supervisor exec-i özü uğurlu bitəndə task-ı `succeeded` yazır.
+      // 2-ci və 3-cü cəhd başlamazdan ƏVVƏL (yəni əvvəlki cəhdin yoxlaması
+      // sınıb Ladder geri `running`-ə qaytardıqdan sonra) statusu oxuyuruq —
+      // `succeeded` görsək, Ladder UI-a yalan danışır (CLAUDE.md qayda #5).
+      if ((execInput.attempt ?? 1) > 1) {
+        statusesBeforeRetry.push(getTask(db, execInput.taskId)?.status)
+      }
+      return original(execInput)
+    })
+
+    await ladder.run({ task: t, context: ctx, runner: runner(), model: 'm' })
+
+    expect(statusesBeforeRetry).toEqual(['running', 'running'])
+  }, 30_000)
 
   it('büdcə pozuntusunda təkrar cəhd etmir', async () => {
     const { ctx, ladder, newTask } = setup([failCmd])
