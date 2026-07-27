@@ -6,7 +6,7 @@ import { cacheEntries, contexts, runEvents, runs, tasks, verificationRuns } from
 
 type Context = typeof contexts.$inferSelect
 type Task = typeof tasks.$inferSelect
-type Run = typeof runs.$inferSelect
+export type Run = typeof runs.$inferSelect
 
 const TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'interrupted', 'budget_exceeded'])
 
@@ -110,6 +110,10 @@ export function listRunsForTask(db: Db, taskId: string): Run[] {
 
 export function getRunTaskId(db: Db, runId: string): string | undefined {
   return db.select({ taskId: runs.taskId }).from(runs).where(eq(runs.id, runId)).get()?.taskId
+}
+
+export function getRun(db: Db, runId: string): Run | undefined {
+  return db.select().from(runs).where(eq(runs.id, runId)).get()
 }
 
 /**

@@ -5,6 +5,7 @@ import {
   createContext,
   createTask,
   getCacheEntry,
+  getTask,
   listEvents,
   listRunsForTask,
   listVerifications,
@@ -16,6 +17,9 @@ import { Ladder } from './ladder.js'
 const NODE = process.execPath
 const okCmd = `"${NODE}" -e "process.exit(0)"`
 const failCmd = `"${NODE}" -e "console.error('TS2345 xeta');process.exit(1)"`
+// Uğurla bitir, amma bir az vaxt aparır — yoxlama davam edərkən task.status-u
+// müşahidə etmək üçün istifadə olunur (Bug 2 testi).
+const slowOkCmd = `"${NODE}" -e "setTimeout(() => process.exit(0), 150)"`
 
 const DONE: RunEvent[] = [
   { t: 'text', delta: 'cavab' },
@@ -222,6 +226,50 @@ describe('Ladder — Pillə 2 alət yoxlaması', () => {
     })
     expect(r.status).toBe('budget_exceeded')
     expect(r.attempts).toBe(1)
+  })
+
+  it('büdcə cəhdlər arasında daşınır — tükənəndə YENİDƏN cəhd etmir (Bug 1)', async () => {
+    // 1-ci cəhd tam olaraq 100 output token bildirir — özü limiti aşmır
+    // (100 > 100 yalandır), ona görə `RunSupervisor`-un ÖZ `BudgetGuard`-ı
+    // bunu kəsmir və icra uğurla bitir. Amma bu, bütün 100 tokenlik
+    // limitini artıq xərcləyib — qalan büdcə 0-dır. Yoxlama (failCmd) sınır,
+    // Ladder növbəti cəhdə keçmək istəyər — YALNIZ bizim yeni pre-attempt
+    // qısaqapanma məntiqimiz (RunSupervisor-un öz guard-ı DEYİL, çünki o heç
+    // çağırılmır) 2-ci cəhdi tamamilə əngəlləməlidir.
+    const { ctx, ladder, newTask } = setup([failCmd])
+    const spy = runner([
+      { t: 'usage', inputTokens: 0, outputTokens: 100, billed: 'real' },
+      { t: 'done', stopReason: 'end_turn' },
+    ])
+    const runSpy = vi.spyOn(spy, 'run')
+
+    const r = await ladder.run({
+      task: newTask(),
+      context: ctx,
+      runner: spy,
+      model: 'm',
+      limits: { maxOutputTokens: 100 },
+    })
+
+    expect(r.status).toBe('budget_exceeded')
+    expect(r.attempts).toBe(1)
+    expect(runSpy).toHaveBeenCalledTimes(1) // 2-ci cəhd HEÇ başlamadı
+  })
+
+  it('task.status yoxlama davam edərkən "running" qalır, keçəndə "succeeded" olur (Bug 2)', async () => {
+    const { db, ctx, ladder, newTask } = setup([slowOkCmd])
+    const t = newTask()
+
+    const p = ladder.run({ task: t, context: ctx, runner: runner(), model: 'm' })
+    // Model cavabı demək olar ki, dərhal bitir (delayMs yoxdur); bu an
+    // artıq slowOkCmd-nin ~150ms-lik yoxlama pəncərəsinin ortasındayıq.
+    await new Promise((r) => setTimeout(r, 20))
+    expect(getTask(db, t.id)?.status).toBe('running')
+
+    const r = await p
+    expect(r.status).toBe('succeeded')
+    expect(r.verificationPassed).toBe(true)
+    expect(getTask(db, t.id)?.status).toBe('succeeded')
   })
 })
 

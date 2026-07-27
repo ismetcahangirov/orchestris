@@ -16,9 +16,13 @@ export default function TaskView(): React.JSX.Element {
     queryKey: ['task', id],
     queryFn: () => api.getTask(id as string),
     enabled: id !== undefined,
-    // Fon icrası bitənə qədər qısa interval; sonra dayanır.
+    // Fon icrası bitənə qədər qısa interval; sonra dayanır. Run-ların yox,
+    // TASK-ın statusuna baxırıq — Ladder yoxlama dövründə tasks.status-u
+    // dəqiq 'running' saxlayır (bax ladder.ts), ona görə bu artıq etibarlıdır
+    // və ara run-un keçici 'succeeded' vəziyyətinə görə pollinq vaxtından
+    // əvvəl dayanmır.
     refetchInterval: (q) =>
-      q.state.data?.runs.every((r) => TERMINAL.has(r.status)) === true ? false : 1500,
+      q.state.data !== undefined && TERMINAL.has(q.state.data.task.status) ? false : 1500,
   })
 
   if (error !== null) return <p className="text-bad">{String(error)}</p>
