@@ -7,18 +7,21 @@ import {
   getTask,
   listEvents,
   listRunsForTask,
+  listVerifications,
 } from '../db/repo.js'
 import type { BudgetLimits } from '../exec/budget.js'
+import type { Ladder } from '../exec/ladder.js'
 import type { RunSupervisor } from '../exec/supervisor.js'
 
 export interface TaskRouteDeps {
   db: Db
   supervisor: RunSupervisor
+  ladder: Ladder
   runners: ReadonlyMap<string, Runner>
 }
 
 export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): void {
-  const { db, supervisor, runners } = deps
+  const { db, supervisor, ladder, runners } = deps
 
   app.post('/api/tasks', async (req, reply) => {
     const parsed = CreateTaskBody.safeParse(req.body)
@@ -62,17 +65,20 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
 
     // İcra fon rejimində gedir — HTTP cavabı onu gözləmir. Vəziyyət WebSocket
     // və `GET /api/tasks/:id` vasitəsilə izlənilir.
-    void supervisor
-      .execute({
-        taskId: task.id,
+    void ladder
+      .run({
+        task: { id: task.id, prompt: body.prompt },
+        context: {
+          id: ctx.id,
+          cwd: ctx.cwd,
+          verifyCommandsJson: ctx.verifyCommandsJson,
+        },
         runner,
         model: body.model,
-        prompt: body.prompt,
-        ...(ctx.cwd !== null ? { cwd: ctx.cwd } : {}),
         limits,
       })
       .catch((err: unknown) => {
-        app.log.error({ err }, 'supervisor.execute tutulmamış xəta')
+        app.log.error({ err }, 'ladder.run tutulmamış xəta')
       })
 
     return reply.code(202).send({ taskId: task.id })
@@ -87,6 +93,7 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
       runs: listRunsForTask(db, task.id).map((r) => ({
         ...r,
         events: listEvents(db, r.id),
+        verifications: listVerifications(db, r.id),
       })),
     }
   })

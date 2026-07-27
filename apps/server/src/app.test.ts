@@ -12,8 +12,12 @@ function makeApp() {
   return buildApp({ db, runners })
 }
 
-async function newContext(app: ReturnType<typeof makeApp>, name = 'C') {
-  const res = await app.inject({ method: 'POST', url: '/api/contexts', payload: { name } })
+async function newContext(app: ReturnType<typeof makeApp>, name = 'C', cwd?: string) {
+  const res = await app.inject({
+    method: 'POST',
+    url: '/api/contexts',
+    payload: { name, ...(cwd !== undefined ? { cwd } : {}) },
+  })
   return res.json() as { id: string }
 }
 
@@ -188,6 +192,69 @@ describe('POST /api/tasks/:id/cancel', () => {
       url: `/api/tasks/${created.taskId}/cancel`,
     })
     expect(res.json().cancelled).toEqual([])
+  })
+})
+
+describe('Pillə 0 — cache uçdan-uca', () => {
+  it('eyni prompt ikinci dəfə keşdən gəlir', async () => {
+    const app = makeApp()
+    // FakeRunner-in default capabilities.fileAccess === true, ona görə keş
+    // açarı repo barmaq izi tələb edir — kontekstə real git qovluğu lazımdır
+    // (bax ladder.test.ts: "fayl girişi tələb edən task git olmayan qovluqda
+    // keşlənmir").
+    const ctx = await newContext(app, 'C', process.cwd())
+
+    const post = async () =>
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/api/tasks',
+          payload: { contextId: ctx.id, prompt: 'eyni sual', runner: 'fake', model: 'm' },
+        })
+      ).json() as { taskId: string }
+
+    const waitDone = async (taskId: string) => {
+      await vi.waitFor(
+        async () => {
+          const r = await app.inject({ method: 'GET', url: `/api/tasks/${taskId}` })
+          expect(r.json().runs[0]?.status).toBe('succeeded')
+        },
+        { timeout: 5000, interval: 25 },
+      )
+      return (await app.inject({ method: 'GET', url: `/api/tasks/${taskId}` })).json()
+    }
+
+    const first = await waitDone((await post()).taskId)
+    expect(first.runs[0].cachedHit).toBe(false)
+
+    const second = await waitDone((await post()).taskId)
+    expect(second.runs[0].cachedHit).toBe(true)
+    expect(second.runs[0].ladderRung).toBe(0)
+  })
+})
+
+describe('GET /api/tasks/:id — yoxlama nəticələri', () => {
+  it('run cavabında verifications massivi var', async () => {
+    const app = makeApp()
+    const ctx = await newContext(app)
+    const created = (
+      await app.inject({
+        method: 'POST',
+        url: '/api/tasks',
+        payload: { contextId: ctx.id, prompt: 'p', runner: 'fake', model: 'm' },
+      })
+    ).json()
+    await vi.waitFor(
+      async () => {
+        const r = await app.inject({ method: 'GET', url: `/api/tasks/${created.taskId}` })
+        expect(r.json().runs[0]?.status).toBe('succeeded')
+      },
+      { timeout: 5000, interval: 25 },
+    )
+    const body = (
+      await app.inject({ method: 'GET', url: `/api/tasks/${created.taskId}` })
+    ).json()
+    expect(Array.isArray(body.runs[0].verifications)).toBe(true)
   })
 })
 
