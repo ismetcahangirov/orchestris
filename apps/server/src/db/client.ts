@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS runs (
   runner_id TEXT NOT NULL,
   model_id TEXT NOT NULL,
   ladder_rung INTEGER NOT NULL DEFAULT 7,
+  attempt INTEGER NOT NULL DEFAULT 1,
   status TEXT NOT NULL DEFAULT 'running',
   tokens_in INTEGER NOT NULL DEFAULT 0,
   tokens_out INTEGER NOT NULL DEFAULT 0,
@@ -68,6 +69,27 @@ CREATE TABLE IF NOT EXISTS run_events (
   at INTEGER NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS run_events_seq_idx ON run_events(run_id, seq);
+CREATE TABLE IF NOT EXISTS cache_entries (
+  hash TEXT PRIMARY KEY,
+  model_id TEXT NOT NULL,
+  runner_id TEXT NOT NULL,
+  events_json TEXT NOT NULL,
+  hits INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  last_hit_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS cache_model_idx ON cache_entries(model_id);
+CREATE TABLE IF NOT EXISTS verification_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  command TEXT NOT NULL,
+  exit_code INTEGER,
+  passed INTEGER NOT NULL,
+  output_excerpt TEXT NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS verification_run_idx ON verification_runs(run_id);
 `
 
 export function openDb(file = dbPath()): Db {
@@ -77,5 +99,12 @@ export function openDb(file = dbPath()): Db {
   sqlite.pragma('journal_mode = WAL')
   sqlite.pragma('foreign_keys = ON')
   sqlite.exec(DDL)
+  // `CREATE TABLE IF NOT EXISTS` mövcud cədvələ yeni SÜTUN əlavə etmir.
+  // Faza 1A-dan qalan bazalar üçün `attempt` sütununu idempotent əlavə edirik.
+  // (drizzle-kit migrasiyaları sonrakı fazada; indi bu kifayətdir.)
+  const cols = sqlite.prepare(`PRAGMA table_info(runs)`).all() as { name: string }[]
+  if (!cols.some((c) => c.name === 'attempt')) {
+    sqlite.exec(`ALTER TABLE runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1`)
+  }
   return drizzle(sqlite, { schema })
 }

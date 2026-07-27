@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { and, asc, eq, gt, inArray, sql } from 'drizzle-orm'
 import type { ErrorClass, RunEvent } from '@orchestris/shared'
 import type { Db } from './client.js'
-import { contexts, runEvents, runs, tasks } from './schema.js'
+import { cacheEntries, contexts, runEvents, runs, tasks, verificationRuns } from './schema.js'
 
 type Context = typeof contexts.$inferSelect
 type Task = typeof tasks.$inferSelect
@@ -80,6 +80,8 @@ export function createRun(
     runnerId: string
     modelId: string
     ladderRung?: number
+    attempt?: number
+    cachedHit?: boolean
     subscriptionBilled?: boolean
     worktreePath?: string
   },
@@ -92,6 +94,8 @@ export function createRun(
       runnerId: input.runnerId,
       modelId: input.modelId,
       ladderRung: input.ladderRung ?? 7,
+      attempt: input.attempt ?? 1,
+      cachedHit: input.cachedHit ?? false,
       subscriptionBilled: input.subscriptionBilled ?? false,
       worktreePath: input.worktreePath ?? null,
       startedAt: now(),
@@ -217,4 +221,104 @@ export function markOrphanedRunsInterrupted(db: Db): number {
     .where(inArray(runs.status, ['running', 'pending']))
     .run()
   return orphans.length
+}
+
+type CacheEntry = typeof cacheEntries.$inferSelect
+type VerificationRun = typeof verificationRuns.$inferSelect
+
+/** Yoxlama çıxışının maksimum saxlanılan uzunluğu. Modelə geri ötürülür. */
+const VERIFY_EXCERPT_LIMIT = 4000
+
+export interface CachedResult {
+  hash: string
+  modelId: string
+  runnerId: string
+  events: RunEvent[]
+  hits: number
+  lastHitAt: number | null
+}
+
+export function getCacheEntry(db: Db, hash: string): CachedResult | undefined {
+  const row: CacheEntry | undefined = db
+    .select()
+    .from(cacheEntries)
+    .where(eq(cacheEntries.hash, hash))
+    .get()
+  if (row === undefined) return undefined
+  return {
+    hash: row.hash,
+    modelId: row.modelId,
+    runnerId: row.runnerId,
+    events: JSON.parse(row.eventsJson) as RunEvent[],
+    hits: row.hits,
+    lastHitAt: row.lastHitAt,
+  }
+}
+
+export function putCacheEntry(
+  db: Db,
+  input: {
+    hash: string
+    modelId: string
+    runnerId: string
+    events: readonly RunEvent[]
+  },
+): void {
+  db.insert(cacheEntries)
+    .values({
+      hash: input.hash,
+      modelId: input.modelId,
+      runnerId: input.runnerId,
+      eventsJson: JSON.stringify(input.events),
+      createdAt: now(),
+    })
+    .onConflictDoUpdate({
+      target: cacheEntries.hash,
+      set: {
+        eventsJson: JSON.stringify(input.events),
+        modelId: input.modelId,
+        runnerId: input.runnerId,
+      },
+    })
+    .run()
+}
+
+export function recordCacheHit(db: Db, hash: string): void {
+  db.update(cacheEntries)
+    .set({ hits: sql`${cacheEntries.hits} + 1`, lastHitAt: now() })
+    .where(eq(cacheEntries.hash, hash))
+    .run()
+}
+
+export function appendVerification(
+  db: Db,
+  runId: string,
+  input: {
+    command: string
+    exitCode: number | null
+    passed: boolean
+    outputExcerpt: string
+    durationMs: number
+  },
+): void {
+  db.insert(verificationRuns)
+    .values({
+      runId,
+      command: input.command,
+      exitCode: input.exitCode,
+      passed: input.passed,
+      outputExcerpt: input.outputExcerpt.slice(0, VERIFY_EXCERPT_LIMIT),
+      durationMs: input.durationMs,
+      at: now(),
+    })
+    .run()
+}
+
+export function listVerifications(db: Db, runId: string): VerificationRun[] {
+  return db
+    .select()
+    .from(verificationRuns)
+    .where(eq(verificationRuns.runId, runId))
+    .orderBy(asc(verificationRuns.id))
+    .all()
 }
