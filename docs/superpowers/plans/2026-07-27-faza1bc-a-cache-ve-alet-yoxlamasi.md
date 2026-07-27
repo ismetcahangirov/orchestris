@@ -1815,7 +1815,7 @@ npx tsc --noEmit && echo "BASLANGIC TEMIZDIR"
 - [ ] **Step 2: Serveri işə sal və kontekst yarat**
 
 ```bash
-cd /c/Users/cahan/projects/orchestris
+cd <repo kökü>
 pnpm --filter @orchestris/server dev &
 sleep 6
 curl -s -X POST http://127.0.0.1:4319/api/contexts \

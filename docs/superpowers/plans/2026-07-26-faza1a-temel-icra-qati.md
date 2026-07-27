@@ -5909,7 +5909,7 @@ python fixtures/sanitize.py /tmp/codex-raw.jsonl fixtures/cli/codex-success.json
 - [ ] **Step 3: Sızma yoxlaması**
 
 ```bash
-grep -riE 'cahan|alievsteams|Users' fixtures/cli/codex-success.jsonl && echo "SIZMA VAR" || echo "OK"
+grep -riE '<istifadəçi-adın>|<email-in>|Users' fixtures/cli/codex-success.jsonl && echo "SIZMA VAR" || echo "OK"
 ```
 
 Expected: `OK`. Sızma varsa `fixtures/sanitize.py`-də `REDACT_FIELDS`-ə yeni
