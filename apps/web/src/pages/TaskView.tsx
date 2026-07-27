@@ -1,19 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
 import { useParams } from 'react-router-dom'
 import EventTimeline from '../components/EventTimeline.js'
+import RunHeader from '../components/RunHeader.js'
 import UsageBadge from '../components/UsageBadge.js'
 import { api, type StoredEventRow } from '../lib/api.js'
 import { useRunStream } from '../lib/useRunStream.js'
 
 const TERMINAL = new Set(['succeeded', 'failed', 'interrupted', 'budget_exceeded'])
-
-const STATUS_TONE: Record<string, string> = {
-  succeeded: 'bg-good/15 text-good',
-  running: 'bg-accent/15 text-accent',
-  interrupted: 'bg-warn/15 text-warn',
-  budget_exceeded: 'bg-warn/15 text-warn',
-  failed: 'bg-bad/15 text-bad',
-}
 
 export default function TaskView(): React.JSX.Element {
   const { id } = useParams<{ id: string }>()
@@ -70,23 +63,30 @@ export default function TaskView(): React.JSX.Element {
               key={run.id}
               className="rounded-lg border border-white/10 bg-surface-2 p-4"
             >
-              <header className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <div className="text-sm">
-                  <span className="font-mono font-medium">{run.runnerId}</span>
-                  <span className="text-ink-dim"> · {run.modelId}</span>
-                </div>
-                <span
-                  className={`rounded px-2 py-0.5 text-xs ${
-                    STATUS_TONE[run.status] ?? 'bg-white/10 text-ink-dim'
-                  }`}
-                >
-                  {run.status}
-                </span>
-              </header>
+              <RunHeader run={run} />
 
               <div className="mb-3">
                 <UsageBadge run={run} />
               </div>
+
+              {run.verifications.length > 0 && (
+                <ul className="mb-3 space-y-1">
+                  {run.verifications.map((v) => (
+                    <li key={v.id} className="font-mono text-xs">
+                      <span className={v.passed ? 'text-good' : 'text-bad'}>
+                        {v.passed ? '✓' : '✗'}
+                      </span>{' '}
+                      <span className="text-ink-dim">{v.command}</span>{' '}
+                      <span className="text-ink-dim">({v.durationMs}ms)</span>
+                      {!v.passed && v.outputExcerpt !== '' && (
+                        <pre className="mt-1 max-h-40 overflow-auto rounded bg-bad/10 p-2 text-bad">
+                          {v.outputExcerpt}
+                        </pre>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
 
               {run.errorMessage !== null && (
                 <p className="mb-3 rounded bg-bad/10 p-2 font-mono text-xs break-all text-bad">
