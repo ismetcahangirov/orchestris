@@ -16,6 +16,19 @@ export interface RunVerificationsOptions {
   signal?: AbortSignal
 }
 
+export interface RunVerificationsResult {
+  passed: boolean
+  results: VerificationResult[]
+  /**
+   * `true` olduqda `passed` YALNIZ faktiki qaçırılan əmrləri əks etdirir —
+   * siyahının hamısı deyil. Çağıran tərəf `passed`-a etibar etməzdən əvvəl
+   * bunu yoxlamalıdır: siqnal ləğv olunubsa "heç nə qaçmadı" ilə "hamısı
+   * keçdi" fərqli şeylərdir, boş massivdə `every()` isə hər ikisini eyni
+   * (`true`) göstərər.
+   */
+  aborted: boolean
+}
+
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000
 /** Modelə geri ötürülən çıxışın hər əmr üçün limiti. */
 const FEEDBACK_OUTPUT_LIMIT = 2000
@@ -38,11 +51,15 @@ const FEEDBACK_OUTPUT_LIMIT = 2000
 export async function runVerifications(
   commands: readonly string[],
   opts: RunVerificationsOptions,
-): Promise<{ passed: boolean; results: VerificationResult[] }> {
+): Promise<RunVerificationsResult> {
   const results: VerificationResult[] = []
+  let aborted = false
 
   for (const command of commands) {
-    if (opts.signal?.aborted === true) break
+    if (opts.signal?.aborted === true) {
+      aborted = true
+      break
+    }
 
     const startedAt = Date.now()
     const proc = spawnLines({
@@ -52,11 +69,21 @@ export async function runVerifications(
       cwd: opts.cwd,
     })
 
+    // Timeout və abort hər ikisi `proc.kill()` çağırır, amma modelə fərqli
+    // izahat lazımdır — biri "əmr çox uzun çəkdi", digəri "istifadəçi ləğv
+    // etdi". Hansı SƏBƏB əvvəl atəş edirsə o qalib gəlir; əməli olaraq bir-
+    // birini istisna edirlər, çünki kill() ikinci çağırışı no-op edir.
+    let killReason: 'timeout' | 'abort' | null = null
+
     const timeout = setTimeout(() => {
+      killReason ??= 'timeout'
       void proc.kill()
     }, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS)
 
-    const onAbort = (): void => void proc.kill()
+    const onAbort = (): void => {
+      killReason ??= 'abort'
+      void proc.kill()
+    }
     opts.signal?.addEventListener('abort', onAbort, { once: true })
 
     const stdout: string[] = []
@@ -69,9 +96,14 @@ export async function runVerifications(
 
     const exitCode = await proc.exitCode
     const killed = proc.killed
-    const output = killed
-      ? `Əmr vaxt limitinə görə dayandırıldı (timeout).\n${stdout.join('\n')}\n${proc.stderrText()}`
-      : `${stdout.join('\n')}\n${proc.stderrText()}`.trim()
+    const killMessage =
+      killReason === 'abort'
+        ? 'Əmr ləğv edildiyi üçün dayandırıldı.'
+        : 'Əmr vaxt limitinə görə dayandırıldı (timeout).'
+    const output = (killed
+      ? `${killMessage}\n${stdout.join('\n')}\n${proc.stderrText()}`
+      : `${stdout.join('\n')}\n${proc.stderrText()}`
+    ).trim()
 
     results.push({
       command,
@@ -81,11 +113,14 @@ export async function runVerifications(
       durationMs: Date.now() - startedAt,
     })
 
+    if (killReason === 'abort') aborted = true
+
     // Tez dayanma: sınmış yoxlamadan sonra qalanları qaçırmaq mənasızdır.
-    if (!results[results.length - 1]?.passed) break
+    const last = results[results.length - 1]
+    if (last !== undefined && !last.passed) break
   }
 
-  return { passed: results.every((r) => r.passed), results }
+  return { passed: results.every((r) => r.passed), results, aborted }
 }
 
 /**

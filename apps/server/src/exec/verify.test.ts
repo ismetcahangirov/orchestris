@@ -16,6 +16,7 @@ describe('runVerifications', () => {
     const r = await runVerifications([], { cwd: tmp() })
     expect(r.passed).toBe(true)
     expect(r.results).toEqual([])
+    expect(r.aborted).toBe(false)
   })
 
   it('uğurlu əmri passed:true kimi yazır', async () => {
@@ -54,6 +55,9 @@ describe('runVerifications', () => {
     const r = await runVerifications([slowCmd], { cwd: tmp(), timeoutMs: 500 })
     expect(r.passed).toBe(false)
     expect(r.results[0]?.output).toMatch(/timeout|vaxt/i)
+    // Timeout ləğv (abort) DEYİL — səbəb səhv yazılmamalıdır.
+    expect(r.results[0]?.output).not.toMatch(/ləğv/i)
+    expect(r.aborted).toBe(false)
   }, 15_000)
 
   it('mövcud olmayan əmr üçün uğursuz qaytarır, çökmür', async () => {
@@ -66,6 +70,27 @@ describe('runVerifications', () => {
     ac.abort()
     const r = await runVerifications([okCmd], { cwd: tmp(), signal: ac.signal })
     expect(r.results).toHaveLength(0)
+    // Heç nə qaçmadı — bu "hamısı keçdi" demək deyil, çağıran `aborted`-u
+    // yoxlamalıdır ki, boş massivdəki vacuous `passed:true`-a aldanmasın.
+    expect(r.aborted).toBe(true)
+  })
+
+  it('bir əmr artıq keçdikdən sonra siqnal ləğv edilsə qalanı işə salmır', async () => {
+    const ac = new AbortController()
+    // okCmd dərhal bitir; slowCmd başlayandan qısa müddət sonra ləğv edirik
+    // ki, "bir əmr keçib, sonra ikinci əmr icra ZAMANI ləğv olunub" halını
+    // yoxlayaq (fərqli path: mid-loop abort, siqnal əvvəldən aktiv deyil).
+    setTimeout(() => ac.abort(), 200)
+    const r = await runVerifications([okCmd, slowCmd, okCmd], {
+      cwd: tmp(),
+      signal: ac.signal,
+    })
+    expect(r.results).toHaveLength(2)
+    expect(r.results[0]?.passed).toBe(true)
+    expect(r.results[1]?.passed).toBe(false)
+    expect(r.results[1]?.output).toMatch(/ləğv/i)
+    expect(r.aborted).toBe(true)
+    expect(r.passed).toBe(false)
   })
 })
 
