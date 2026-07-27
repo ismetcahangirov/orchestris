@@ -1,0 +1,11 @@
+{
+  // Yalnız BUILD üçün: test faylları `dist`-ə emit olunmasın.
+  //
+  // Bunu əsas `tsconfig.json`-a qoymaq olmaz — o həm də `typecheck` üçün
+  // istifadə olunur, və `exclude` orada test fayllarını tip yoxlamasından da
+  // çıxarardı. Onda `runner.test.ts`-dəki kompilyasiya-vaxtı yoxlaması ölü
+  // qalar: `Capabilities`-ə yeni sahə əlavə edib `CAPABILITY_KEYS`-i
+  // yeniləməsən, heç nə sınmaz.
+  "extends": "./tsconfig.json",
+  "exclude": ["**/*.test.ts"]
+}
