@@ -3,6 +3,7 @@ import websocket from '@fastify/websocket'
 import Fastify, { type FastifyInstance } from 'fastify'
 import type { Db } from './db/client.js'
 import { getRunTaskId, getTask, markOrphanedRunsInterrupted } from './db/repo.js'
+import { Ladder } from './exec/ladder.js'
 import { RunSupervisor } from './exec/supervisor.js'
 import { registerContextRoutes } from './routes/contexts.js'
 import { registerTaskRoutes } from './routes/tasks.js'
@@ -24,6 +25,7 @@ export function buildApp(input: BuildAppInput): FastifyInstance {
 
   const hub = new WsHub()
   const supervisor = new RunSupervisor(db)
+  const ladder = new Ladder(db, supervisor)
 
   // runId → taskId çevirməsi keşlənir: hər hadisə üçün DB sorğusu artıqdır.
   const runToTask = new Map<string, string>()
@@ -47,7 +49,7 @@ export function buildApp(input: BuildAppInput): FastifyInstance {
   app.get('/api/health', async () => ({ ok: true, runners: [...runners.keys()] }))
 
   registerContextRoutes(app, db)
-  registerTaskRoutes(app, { db, supervisor, runners })
+  registerTaskRoutes(app, { db, supervisor, ladder, runners })
 
   void app.register(websocket)
   void app.register(async (scoped) => {
