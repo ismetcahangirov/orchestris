@@ -90,6 +90,44 @@ CREATE TABLE IF NOT EXISTS verification_runs (
   at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS verification_run_idx ON verification_runs(run_id);
+CREATE TABLE IF NOT EXISTS providers (
+  id TEXT PRIMARY KEY,
+  display_name TEXT NOT NULL,
+  credential_ref TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  last_discovery_at INTEGER,
+  last_discovery_error TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS models (
+  id TEXT PRIMARY KEY,
+  provider_id TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+  model_id TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  context_limit INTEGER,
+  output_limit INTEGER,
+  price_in REAL,
+  price_out REAL,
+  price_cache_read REAL,
+  price_cache_write REAL,
+  tool_call INTEGER NOT NULL DEFAULT 0,
+  structured_output INTEGER NOT NULL DEFAULT 0,
+  reasoning INTEGER NOT NULL DEFAULT 0,
+  source TEXT NOT NULL DEFAULT 'models.dev',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  role_boss INTEGER NOT NULL DEFAULT 0,
+  role_worker INTEGER NOT NULL DEFAULT 0,
+  role_classifier INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS models_provider_idx ON models(provider_id);
+-- Başçı və klassifikator YALNIZ BİR model ola bilər. Qismən (partial) unikal
+-- indeks: yalnız 1 olan sətirlərə tətbiq olunur, 0-lar sərbəst təkrarlanır.
+-- Bu, "iki başçı" vəziyyətini tətbiq qatında yox, BAZADA qeyri-mümkün edir.
+CREATE UNIQUE INDEX IF NOT EXISTS models_single_boss_idx
+  ON models(role_boss) WHERE role_boss = 1;
+CREATE UNIQUE INDEX IF NOT EXISTS models_single_classifier_idx
+  ON models(role_classifier) WHERE role_classifier = 1;
 `
 
 export function openDb(file = dbPath()): Db {

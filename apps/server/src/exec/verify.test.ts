@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs'
+import { existsSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -77,14 +77,33 @@ describe('runVerifications', () => {
 
   it('bir əmr artıq keçdikdən sonra siqnal ləğv edilsə qalanı işə salmır', async () => {
     const ac = new AbortController()
-    // okCmd dərhal bitir; slowCmd başlayandan qısa müddət sonra ləğv edirik
-    // ki, "bir əmr keçib, sonra ikinci əmr icra ZAMANI ləğv olunub" halını
-    // yoxlayaq (fərqli path: mid-loop abort, siqnal əvvəldən aktiv deyil).
-    setTimeout(() => ac.abort(), 200)
-    const r = await runVerifications([okCmd, slowCmd, okCmd], {
-      cwd: tmp(),
+    const dir = tmp()
+
+    // "Bir əmr keçib, sonra ikinci əmr icra ZAMANI ləğv olunub" halı
+    // (mid-loop abort — siqnal əvvəldən aktiv deyil).
+    //
+    // Ləğv VAXTA görə deyil, FAKTA görə tetiklenir: ikinci əmr başladığını
+    // fayl yaradaraq bildirir, test onu gözləyir və yalnız sonra ləğv edir.
+    // Əvvəlki `setTimeout(..., 200)` variantı `okCmd`-in 200 ms-dən tez
+    // bitəcəyini fərz edirdi — tam test dəsti paralel qaçanda Node-un start
+    // vaxtı bunu aşır və ləğv BİRİNCİ əmrin ortasında atəş açırdı (nəticə:
+    // 1 sətir, 2 yerinə). Fayl marker-i yükdən asılı deyil.
+    const markerCmd = `"${NODE}" -e "require('fs').writeFileSync('basladi.txt','x');setTimeout(()=>{},60000)"`
+    const marker = join(dir, 'basladi.txt')
+
+    const pending = runVerifications([okCmd, markerCmd, okCmd], {
+      cwd: dir,
       signal: ac.signal,
     })
+
+    const deadline = Date.now() + 20_000
+    while (!existsSync(marker)) {
+      if (Date.now() > deadline) throw new Error('ikinci əmr başlamadı')
+      await new Promise((r) => setTimeout(r, 10))
+    }
+    ac.abort()
+
+    const r = await pending
     expect(r.results).toHaveLength(2)
     expect(r.results[0]?.passed).toBe(true)
     expect(r.results[1]?.passed).toBe(false)
