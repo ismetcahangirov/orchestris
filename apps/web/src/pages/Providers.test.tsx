@@ -25,6 +25,8 @@ const PROVIDERS: ProvidersResponse = {
       lastDiscoveryAt: null,
       lastDiscoveryError: null,
       envVars: ['ANTHROPIC_API_KEY'],
+      runnerId: 'api:anthropic',
+      authenticated: false,
     },
   ],
   keychain: { ok: true, detail: 'OS açar anbarı işləyir' },

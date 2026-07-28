@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import { buildApp } from '../app.js'
 import { openDb } from '../db/client.js'
 import type { Catalog } from '../registry/models-dev.js'
+import { createApiRunners } from '../runners/api-factory.js'
 import { FakeRunner } from '../runners/fake.js'
 import { MemoryStore } from '../secrets/keychain.js'
 
@@ -57,13 +58,25 @@ const TWO_MODELS = {
   data: [{ id: 'claude-tanınan', display_name: 'Claude Tanınan' }, { id: 'claude-yeni' }],
 }
 
-function makeApp(opts: { fetchImpl?: typeof fetch; credentials?: MemoryStore } = {}) {
+function makeApp(
+  opts: {
+    fetchImpl?: typeof fetch
+    credentials?: MemoryStore
+    /** `createApiRunners` ilə API runner-lərini də qeydiyyatdan keçir. */
+    withApiRunners?: boolean
+  } = {},
+) {
   const credentials = opts.credentials ?? new MemoryStore()
+  const db = openDb(':memory:')
+  const runners = new Map<string, Runner>([
+    ['fake', new FakeRunner({ fixture: 'claude-safe-mode.jsonl', flavor: 'claude' })],
+  ])
+  if (opts.withApiRunners === true) {
+    for (const [id, r] of createApiRunners({ db, credentials }).runners) runners.set(id, r)
+  }
   const app = buildApp({
-    db: openDb(':memory:'),
-    runners: new Map<string, Runner>([
-      ['fake', new FakeRunner({ fixture: 'claude-safe-mode.jsonl', flavor: 'claude' })],
-    ]),
+    db,
+    runners,
     credentials,
     catalog: CATALOG,
     fetchImpl: opts.fetchImpl ?? fetchReturning(TWO_MODELS),
@@ -333,5 +346,40 @@ describe('keychain əlçatan olmadıqda', () => {
     expect(res.json().error).toContain('əlçatan deyil')
     // Açar HEÇ YERƏ yazılmadı.
     expect(await broken.get('provider:anthropic')).toBeNull()
+  })
+})
+
+describe('GET /api/providers — CLI və API runner-lərinin ayrılması', () => {
+  it('cli siyahısına API runner-lərini QARIŞDIRMIR', async () => {
+    // Eyni siyahıya qatsaq, `/providers` səhifəsi `api:anthropic`-i quraşdırılmış
+    // CLI kimi göstərərdi və istifadəçi onu `npm i -g` ilə "düzəltməyə" çalışardı.
+    const { app } = makeApp({ withApiRunners: true })
+    const body = (await app.inject({ method: 'GET', url: '/api/providers' })).json()
+    expect(body.cli.map((p: { id: string }) => p.id)).toEqual(['fake'])
+  })
+
+  it('API provayder sətri öz runner id-sini göstərir', async () => {
+    const { app } = makeApp({ withApiRunners: true })
+    const body = (await app.inject({ method: 'GET', url: '/api/providers' })).json()
+    expect(body.api[0]).toMatchObject({ id: 'anthropic', runnerId: 'api:anthropic' })
+  })
+
+  it('runner qeydiyyatdan keçməyibsə runnerId null olur', async () => {
+    const { app } = makeApp()
+    const body = (await app.inject({ method: 'GET', url: '/api/providers' })).json()
+    expect(body.api[0].runnerId).toBeNull()
+  })
+
+  it('açar yoxdursa API runner authenticated deyil', async () => {
+    const { app } = makeApp({ withApiRunners: true })
+    const body = (await app.inject({ method: 'GET', url: '/api/providers' })).json()
+    expect(body.api[0]).toMatchObject({ hasCredential: false, authenticated: false })
+  })
+
+  it('açar əlavə ediləndən sonra API runner authenticated olur', async () => {
+    const { app } = makeApp({ withApiRunners: true })
+    await setKey(app)
+    const body = (await app.inject({ method: 'GET', url: '/api/providers' })).json()
+    expect(body.api[0]).toMatchObject({ hasCredential: true, authenticated: true })
   })
 })

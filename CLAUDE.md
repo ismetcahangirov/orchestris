@@ -189,6 +189,32 @@ Token sayı `0`-dan böyükdürsə və qiymət yoxdursa — yekun `undefined`.
 Xarici şəbəkəyə açılmır. Yoxlanılıb: `netstat` `127.0.0.1:4319 LISTENING`
 göstərir, `0.0.0.0` yox.
 
+### 17. AI SDK-nın `inputTokens`-i keş tokenlərini DƏ sayır
+
+`ai@7` `LanguageModelUsage` bizim `usage` hadisəmizlə eyni adlarla, amma
+**fərqli mənayla** gəlir. Ölçülmüş (`@ai-sdk/anthropic@4.0.21` dist kodu):
+
+```
+inputTokens          = noCache + cacheRead + cacheWrite   ← TOPLAM
+inputTokenDetails.noCacheTokens                            ← keşsiz hissə
+```
+
+Bizim sxemdə (və `claude` CLI parser-ində) `inputTokens` **keşsiz** hissədir,
+`cacheReadTokens`/`cacheWriteTokens` ayrıca gedir. SDK-nın `inputTokens`-ini
+birbaşa götürsək, keş tokenləri həm orada, həm də ayrıca sahədə sayılar —
+`computeCostUsd` onları iki dəfə qiymətləndirər, ledger isə qənaəti az
+göstərər. Ona görə `parse-api.ts` `noCacheTokens` işlədir.
+
+Eyni səbəbdən `usage` YALNIZ `finish` hissəsindən emit olunur — `finish-step`
+addım-addımdır (qayda 3).
+
+### 18. API xəta mətnləri `redactAll`-dan keçir
+
+`ApiRunner.run` tutduğu hər xətanı hadisəyə çevirməzdən ƏVVƏL kəsir.
+Provayder cavabları göndərilən açarı əks etdirə bilir; o mətn `run_events`
+cədvəlinə yazılır və WebSocket ilə brauzerə gedir. Jurnal a düşən açar orada
+qalır — kəsmə mənbədə edilməlidir (qayda 13, 14 ilə eyni prinsip).
+
 ## Amplification Ladder (Faza 2+)
 
 Pillələr ucuzdan bahaya:
@@ -214,8 +240,9 @@ həqiqət mənbəyi yoxdur.
 ## Fazalar
 
 - **1A** (bitdi) — təməl: Runner interfeysi, CLI parser-lər, SQLite, REST/WS, UI
-- **1B** — ApiRunner (AI SDK), API açarları + keychain, models.dev model kəşfi,
-  `--include-partial-messages` hərf-hərf axını (öz fixture-i ilə)
+- **1B** — API açarları + keychain (bitdi), models.dev model kəşfi (bitdi),
+  ApiRunner — AI SDK 7 (bitdi), `--include-partial-messages` hərf-hərf axını
+  (öz fixture-i ilə) — qalır
 - **1C** — Pillə 0–2 amplifikasiya
 - **2** — tam Ladder, paralellik, git worktree izolyasiyası
 - **3** — memory (claude-mem adapter arxasında)
@@ -232,3 +259,9 @@ həqiqət mənbəyi yoxdur.
 - API provayderlərinin **uğur yolu** real açarla yoxlanılmayıb: model kəşfi
   saxta `fetch` ilə test olunur. Real açar əlavə edildikdə
   `/api/providers/:id/discover` bir dəfə əl ilə təsdiqlənməlidir.
+- `ApiRunner` real API axını ilə yoxlanılmayıb — bu maşında API açarı yoxdur.
+  Saxta axın `ai@7.0.37`-nin ÖZ `dist/index.d.ts` tipindən və
+  `@ai-sdk/anthropic`-in usage çevirmə kodundan qurulub, uydurulmayıb. Açar
+  əlavə ediləndən sonra bir dəfə:
+  `ORCHESTRIS_E2E=1 ANTHROPIC_API_KEY=… pnpm test` — bu, default olaraq
+  atlanan `runners/api.e2e.test.ts` blokunu işə salır (yeganə real çağırış).

@@ -47,6 +47,14 @@ export interface ApiProviderRow {
   lastDiscoveryAt: number | null
   lastDiscoveryError: string | null
   envVars: string[]
+  /**
+   * Task göndərişində işlədiləcək runner id-si (`api:anthropic`). `null` =
+   * server bu provayder üçün runner qeydiyyatdan keçirməyib — UI onu seçilə
+   * bilən göstərməməlidir.
+   */
+  runnerId: string | null
+  /** Açar OS anbarındadırmı. Açarın ÖZÜ heç vaxt bura gəlmir (qayda 13). */
+  authenticated: boolean
   doc?: string
 }
 
