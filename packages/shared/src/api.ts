@@ -11,8 +11,17 @@ export type CreateContextBody = z.infer<typeof CreateContextBody>
 export const CreateTaskBody = z.object({
   contextId: z.string().min(1),
   prompt: z.string().min(1),
-  /** Boş buraxılsa server mövcud runner-lərdən birincisini seçir. */
-  runner: z.enum(['cli:claude', 'cli:codex', 'fake']).optional(),
+  /**
+   * Runner id-si (`cli:claude`, `api:anthropic`, `fake`). Boş buraxılsa server
+   * mövcud runner-lərdən birincisini seçir.
+   *
+   * Sabit enum DEYİL: hansı API provayderlərinin runner-i olduğu DİNAMİKDİR
+   * (istifadəçinin açar verdiyi provayderlərdən asılıdır). Enum saxlasaydıq,
+   * hər yeni provayder üçün paylaşılan paket dəyişməli olardı. Mövcudluq
+   * yoxlaması `POST /api/tasks`-dadır — tanınmayan id üçün mövcudların
+   * siyahısı ilə 400 qaytarılır.
+   */
+  runner: z.string().min(1).optional(),
   model: z.string().min(1),
   maxOutputTokens: z.number().int().positive().optional(),
   maxSeconds: z.number().int().positive().optional(),

@@ -88,31 +88,45 @@ export function registerProviderRoutes(app: FastifyInstance, deps: ProviderRoute
   }
 
   app.get('/api/providers', async () => {
+    // API runner-ləri BURAYA qarışmır: `cli` siyahısı "quraşdırılmış icra
+    // faylı" mənasını daşıyır və UI onun üçün `npm i -g` məsləhəti göstərir.
+    // `api:anthropic` üçün quraşdırılacaq heç nə yoxdur — onun vəziyyəti
+    // aşağıdakı `api` sətrində, açarın yanında göstərilir.
     const cli = await Promise.all(
-      [...runners.entries()].map(async ([id, runner]) => ({
-        id,
-        kind: runner.kind,
-        capabilities: runner.capabilities,
-        ...(await runner.detect()),
-      })),
+      [...runners.entries()]
+        .filter(([, runner]) => runner.kind !== 'api')
+        .map(async ([id, runner]) => ({
+          id,
+          kind: runner.kind,
+          capabilities: runner.capabilities,
+          ...(await runner.detect()),
+        })),
     )
 
     const models = listModels(db)
-    const api = listProviders(db).map((p) => {
-      const meta = catalogProvider(p.id)
-      return {
-        id: p.id,
-        displayName: p.displayName,
-        // Açar ÖZÜ deyil, yalnız mövcudluğu bildirilir.
-        hasCredential: p.credentialRef !== null,
-        enabled: p.enabled,
-        modelCount: models.filter((m) => m.providerId === p.id).length,
-        lastDiscoveryAt: p.lastDiscoveryAt,
-        lastDiscoveryError: p.lastDiscoveryError,
-        envVars: meta?.envVars ?? [],
-        ...(meta?.doc !== undefined ? { doc: meta.doc } : {}),
-      }
-    })
+    const api = await Promise.all(
+      listProviders(db).map(async (p) => {
+        const meta = catalogProvider(p.id)
+        const runnerId = `api:${p.id}`
+        const runner = runners.get(runnerId)
+        return {
+          id: p.id,
+          displayName: p.displayName,
+          // Açar ÖZÜ deyil, yalnız mövcudluğu bildirilir.
+          hasCredential: p.credentialRef !== null,
+          enabled: p.enabled,
+          modelCount: models.filter((m) => m.providerId === p.id).length,
+          lastDiscoveryAt: p.lastDiscoveryAt,
+          lastDiscoveryError: p.lastDiscoveryError,
+          envVars: meta?.envVars ?? [],
+          // Task göndərişində işlədiləcək runner id-si. Runner qeydiyyatdan
+          // keçməyibsə `null` — UI provayderi seçilə bilən kimi göstərməməlidir.
+          runnerId: runner !== undefined ? runnerId : null,
+          authenticated: runner !== undefined ? (await runner.detect()).authenticated : false,
+          ...(meta?.doc !== undefined ? { doc: meta.doc } : {}),
+        }
+      }),
+    )
 
     return {
       cli,

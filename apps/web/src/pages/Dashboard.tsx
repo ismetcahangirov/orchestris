@@ -3,12 +3,18 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../lib/api.js'
 
-type RunnerId = 'cli:claude' | 'cli:codex'
+interface RunnerOption {
+  id: string
+  label: string
+  ready: boolean
+  /** Hazır deyilsə səbəb — istifadəçi nə edəcəyini bilməlidir. */
+  detail: string
+}
 
 export default function Dashboard(): React.JSX.Element {
   const navigate = useNavigate()
   const [contextId, setContextId] = useState('')
-  const [runner, setRunner] = useState<RunnerId>('cli:claude')
+  const [runner, setRunner] = useState('cli:claude')
   const [model, setModel] = useState('claude-haiku-4-5-20251001')
   const [prompt, setPrompt] = useState('')
 
@@ -29,10 +35,32 @@ export default function Dashboard(): React.JSX.Element {
     onSuccess: (r) => navigate(`/tasks/${r.taskId}`),
   })
 
-  // `runner` CLI runner id-sidir (`cli:claude`, `fake`) — API provayderləri
-  // ayrı siyahıdadır və task göndərişində hələ iştirak etmir (Faza 1B-B).
-  const selected = providers?.cli.find((p) => p.id === runner)
-  const blocked = selected !== undefined && !selected.authenticated
+  // İşçi siyahısı serverdən gəlir — sabit kodlanmış deyil. CLI runner-ləri
+  // PATH-dan aşkarlanır, API runner-ləri isə açarı olan provayderlərdən.
+  // ÖLÇÜLMÜŞ FƏRQ (Faza 1A): `claude` CLI hər çağırışda ~21.7k token döşəməsi
+  // daşıyır, API-nın döşəməsi ~0-dır — amma API-də real pul çıxır. Seçim
+  // istifadəçinindir; avtomatik yönləndirmə ayrı issue-dadır (#7).
+  const options: RunnerOption[] = [
+    ...(providers?.cli ?? []).map((p) => ({
+      id: p.id,
+      label: `${p.id} (abunəlik)`,
+      ready: p.authenticated,
+      detail: p.detail,
+    })),
+    ...(providers?.api ?? [])
+      .filter((p) => p.runnerId !== null)
+      .map((p) => ({
+        id: p.runnerId as string,
+        label: `${p.runnerId} (real pul)`,
+        ready: p.authenticated,
+        detail: p.hasCredential
+          ? 'Açar var, amma anbardan oxunmadı — /providers səhifəsindən yenidən əlavə et'
+          : 'API açarı təyin olunmayıb — /providers səhifəsindən əlavə et',
+      })),
+  ]
+
+  const selected = options.find((o) => o.id === runner)
+  const blocked = selected !== undefined && !selected.ready
 
   return (
     <div className="max-w-3xl">
@@ -67,11 +95,14 @@ export default function Dashboard(): React.JSX.Element {
             İşçi
             <select
               value={runner}
-              onChange={(e) => setRunner(e.target.value as RunnerId)}
-              className="w-44 rounded border border-white/15 bg-surface px-3 py-2 font-mono text-sm text-ink"
+              onChange={(e) => setRunner(e.target.value)}
+              className="w-56 rounded border border-white/15 bg-surface px-3 py-2 font-mono text-sm text-ink"
             >
-              <option value="cli:claude">cli:claude</option>
-              <option value="cli:codex">cli:codex</option>
+              {options.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.label}
+                </option>
+              ))}
             </select>
           </label>
 
@@ -97,9 +128,7 @@ export default function Dashboard(): React.JSX.Element {
         </label>
 
         {blocked && (
-          <p className="text-sm text-warn">
-            {runner} hazır deyil: {selected?.detail}
-          </p>
+          <p className="text-sm text-warn">{`${runner} hazır deyil: ${selected?.detail ?? ''}`}</p>
         )}
 
         {contexts?.length === 0 && (
