@@ -243,6 +243,48 @@ export const models = sqliteTable(
   (t) => [index('models_provider_idx').on(t.providerId)],
 )
 
+/**
+ * Qənaətin ölçülməsi — task başına BİR sətir.
+ *
+ * Sütunların ayrılığı qəsdəndir və hər biri bir yalanın qarşısını alır:
+ *  - `actual_cost_usd` yalnız REAL puldur; abunəlik `actual_subscription_usd`-dədir
+ *    (CLAUDE.md qayda 5)
+ *  - naməlum xərc NULL-dur, `0` deyil (qayda 4)
+ *  - `orchestration_cost_usd` net qənaətdən çıxılır — orkestratorun öz xərci
+ *    sayılmasa rəqəm uydurma olar
+ *  - `baseline_subscription` abunəlik baseline-ının real pul qənaəti kimi
+ *    göstərilməsinin qarşısını alır
+ */
+export const savingsLedger = sqliteTable(
+  'savings_ledger',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    /** Task başına bir sətir — unikal. Təkrar yazılış sətri əvəz edir. */
+    taskId: text('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    taskType: text('task_type').notNull().default('unknown'),
+    /** REAL pul. NULL = bilinmir. */
+    actualCostUsd: real('actual_cost_usd'),
+    /** Abunəlik istinad xərci — kartdan çıxmayan pul. */
+    actualSubscriptionUsd: real('actual_subscription_usd'),
+    /** Əks-fakt: eyni tokenlər başçının qiymətləri ilə. */
+    baselineCostUsd: real('baseline_cost_usd'),
+    baselineModelId: text('baseline_model_id'),
+    baselineSubscription: integer('baseline_subscription', { mode: 'boolean' })
+      .notNull()
+      .default(false),
+    orchestrationCostUsd: real('orchestration_cost_usd'),
+    memoryCostUsd: real('memory_cost_usd').notNull().default(0),
+    netSavingUsd: real('net_saving_usd'),
+    cachedHit: integer('cached_hit', { mode: 'boolean' }).notNull().default(false),
+    tokensIn: integer('tokens_in').notNull().default(0),
+    tokensOut: integer('tokens_out').notNull().default(0),
+    at: integer('at').notNull(),
+  },
+  (t) => [uniqueIndex('savings_task_idx').on(t.taskId), index('savings_at_idx').on(t.at)],
+)
+
 export const contextsRelations = relations(contexts, ({ many }) => ({
   tasks: many(tasks),
 }))

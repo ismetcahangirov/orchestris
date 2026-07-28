@@ -12,6 +12,7 @@ import {
   registerProviderRoutes,
   seedProviders,
 } from './routes/providers.js'
+import { registerStatsRoutes } from './routes/stats.js'
 import { registerTaskRoutes } from './routes/tasks.js'
 import { seedCliProviders } from './routing/candidates.js'
 import { WorkerRouter } from './routing/decide.js'
@@ -85,6 +86,7 @@ export function buildApp(input: BuildAppInput): FastifyInstance {
   seedCliProviders(db, runners, catalog)
 
   registerContextRoutes(app, db)
+  registerStatsRoutes(app, db)
   registerTaskRoutes(app, { db, supervisor, ladder, runners, readiness })
   registerProviderRoutes(app, {
     db,

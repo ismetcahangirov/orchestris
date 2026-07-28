@@ -105,6 +105,25 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
   at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS routing_task_idx ON routing_decisions(task_id, at);
+CREATE TABLE IF NOT EXISTS savings_ledger (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  task_type TEXT NOT NULL DEFAULT 'unknown',
+  actual_cost_usd REAL,
+  actual_subscription_usd REAL,
+  baseline_cost_usd REAL,
+  baseline_model_id TEXT,
+  baseline_subscription INTEGER NOT NULL DEFAULT 0,
+  orchestration_cost_usd REAL,
+  memory_cost_usd REAL NOT NULL DEFAULT 0,
+  net_saving_usd REAL,
+  cached_hit INTEGER NOT NULL DEFAULT 0,
+  tokens_in INTEGER NOT NULL DEFAULT 0,
+  tokens_out INTEGER NOT NULL DEFAULT 0,
+  at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS savings_task_idx ON savings_ledger(task_id);
+CREATE INDEX IF NOT EXISTS savings_at_idx ON savings_ledger(at);
 CREATE TABLE IF NOT EXISTS providers (
   id TEXT PRIMARY KEY,
   kind TEXT NOT NULL DEFAULT 'api',

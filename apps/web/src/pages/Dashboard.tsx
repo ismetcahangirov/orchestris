@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
+import SavingsPanel from '../components/SavingsPanel.js'
 import { api } from '../lib/api.js'
 
 /** İşçi seçicisində "router özü seçsin" variantının dəyəri. */
@@ -24,6 +25,10 @@ export default function Dashboard(): React.JSX.Element {
 
   const { data: contexts } = useQuery({ queryKey: ['contexts'], queryFn: api.listContexts })
   const { data: providers } = useQuery({ queryKey: ['providers'], queryFn: api.listProviders })
+  const { data: savings } = useQuery({
+    queryKey: ['savings', 'month'],
+    queryFn: () => api.getSavings('month'),
+  })
 
   const auto = runner === AUTO
 
@@ -164,6 +169,16 @@ export default function Dashboard(): React.JSX.Element {
 
         {submit.error !== null && <p className="text-sm text-bad">{String(submit.error)}</p>}
       </form>
+
+      <div className="mt-8">
+        <div className="mb-2 flex items-baseline justify-between">
+          <h2 className="text-sm font-medium text-ink-dim">Son ayın qənaəti</h2>
+          <Link to="/history" className="text-xs text-ink-dim hover:text-ink">
+            Tarixçə →
+          </Link>
+        </div>
+        {savings !== undefined && <SavingsPanel summary={savings.summary} />}
+      </div>
     </div>
   )
 }
