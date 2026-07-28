@@ -1,4 +1,9 @@
-import type { CreateContextBody, CreateTaskBody, RunEvent } from '@orchestris/shared'
+import type {
+  CreateContextBody,
+  CreateTaskBody,
+  RunEvent,
+  UpdateContextBody,
+} from '@orchestris/shared'
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -134,8 +139,35 @@ export interface RunRow {
   verifications: VerificationRow[]
 }
 
+/**
+ * Pillə 1-in qərarı. `decisionCostUsd: null` = qərarın xərci BİLİNMİR;
+ * `0` = həqiqətən pulsuz (qayda routing).
+ */
+export interface RoutingDecisionRow {
+  id: number
+  taskId: string
+  strategy: string
+  chosenModelId: string | null
+  runnerId: string
+  modelId: string
+  confidence: number
+  decisionTokens: number
+  decisionCostUsd: number | null
+  ruleId: string | null
+  reason: string
+  at: number
+}
+
+export interface RoutingRuleRow {
+  id: string
+  description: string
+  prefer: string
+}
+
 export interface TaskDetail {
   task: { id: string; prompt: string; status: string; createdAt: number }
+  routing: RoutingDecisionRow | null
+  routingHistory: RoutingDecisionRow[]
   runs: RunRow[]
 }
 
@@ -185,6 +217,15 @@ export const api = {
     request<{ ok: boolean; providerCount: number }>('/api/registry/refresh', {
       method: 'POST',
     }),
+  getRoutingRules: () =>
+    request<{ rules: RoutingRuleRow[]; profiles: string[] }>('/api/routing/rules'),
+
+  updateContext: (id: string, body: UpdateContextBody) =>
+    request<ContextRow>(`/api/contexts/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+
   createTask: (body: CreateTaskBody) =>
     request<{ taskId: string }>('/api/tasks', { method: 'POST', body: JSON.stringify(body) }),
   getTask: (id: string) => request<TaskDetail>(`/api/tasks/${id}`),

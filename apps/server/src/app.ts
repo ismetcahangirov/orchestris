@@ -13,6 +13,9 @@ import {
   seedProviders,
 } from './routes/providers.js'
 import { registerTaskRoutes } from './routes/tasks.js'
+import { seedCliProviders } from './routing/candidates.js'
+import { WorkerRouter } from './routing/decide.js'
+import { RunnerReadiness } from './routing/readiness.js'
 import { KeyringStore, type CredentialStore } from './secrets/keychain.js'
 import { WsHub } from './ws/hub.js'
 
@@ -44,7 +47,14 @@ export function buildApp(input: BuildAppInput): FastifyInstance {
 
   const hub = new WsHub()
   const supervisor = new RunSupervisor(db)
-  const ladder = new Ladder(db, supervisor)
+
+  // Pillə 1 — Auto rejimi. Hazırlıq keşi `detect()`-i dəqiqədə bir dəfədən
+  // çox çağırmır: CLI runner-lərində o, proses spawn edir.
+  const readiness = new RunnerReadiness(runners)
+  const router = new WorkerRouter(db, runners, {
+    isRunnerReady: (id) => readiness.isReady(id),
+  })
+  const ladder = new Ladder(db, supervisor, router)
 
   // runId → taskId çevirməsi keşlənir: hər hadisə üçün DB sorğusu artıqdır.
   const runToTask = new Map<string, string>()
@@ -70,9 +80,12 @@ export function buildApp(input: BuildAppInput): FastifyInstance {
   // Provayder cədvəli kataloqdan doldurulur — istifadəçi açar əlavə etməzdən
   // əvvəl də `/providers` səhifəsində hansı provayderlərin dəstəkləndiyini görür.
   seedProviders(db, catalog)
+  // CLI runner-ləri də cədvələ düşür ki, Auto rejimi onların modellərini
+  // namizəd kimi görsün — "fayl işi → CLI" qaydası bundan asılıdır.
+  seedCliProviders(db, runners, catalog)
 
   registerContextRoutes(app, db)
-  registerTaskRoutes(app, { db, supervisor, ladder, runners })
+  registerTaskRoutes(app, { db, supervisor, ladder, runners, readiness })
   registerProviderRoutes(app, {
     db,
     runners,

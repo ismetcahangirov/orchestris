@@ -42,6 +42,51 @@ export function getContext(db: Db, id: string): Context | undefined {
   return db.select().from(contexts).where(eq(contexts.id, id)).get()
 }
 
+/**
+ * Sahələr açıq şəkildə `| undefined` daşıyır: `exactOptionalPropertyTypes`
+ * altında "sahə yoxdur" ilə "sahə undefined-dır" fərqli tiplərdir və zod-un
+ * `.optional()` nəticəsi ikincisidir.
+ */
+export interface ContextUpdate {
+  amplificationProfile?: string | undefined
+  workerMode?: string | undefined
+  defaultWorkerModelId?: string | null | undefined
+  verifyCommands?: readonly string[] | undefined
+  budgetTokens?: number | null | undefined
+  budgetUsd?: number | null | undefined
+  budgetSeconds?: number | null | undefined
+}
+
+/**
+ * Yalnız VERİLƏN sahələri yeniləyir.
+ *
+ * `undefined` ilə `null` fərqi burada vacibdir: `undefined` "toxunma",
+ * `null` isə "təyinatı sil" deməkdir. Hamısını bir yerdə yazsaydıq,
+ * profil dəyişikliyi büdcəni səssizcə silərdi.
+ */
+export function updateContext(db: Db, id: string, input: ContextUpdate): Context {
+  const values = {
+    ...(input.amplificationProfile !== undefined
+      ? { amplificationProfile: input.amplificationProfile }
+      : {}),
+    ...(input.workerMode !== undefined ? { workerMode: input.workerMode } : {}),
+    ...(input.defaultWorkerModelId !== undefined
+      ? { defaultWorkerModelId: input.defaultWorkerModelId }
+      : {}),
+    ...(input.verifyCommands !== undefined
+      ? { verifyCommandsJson: JSON.stringify(input.verifyCommands) }
+      : {}),
+    ...(input.budgetTokens !== undefined ? { budgetTokens: input.budgetTokens } : {}),
+    ...(input.budgetUsd !== undefined ? { budgetUsd: input.budgetUsd } : {}),
+    ...(input.budgetSeconds !== undefined ? { budgetSeconds: input.budgetSeconds } : {}),
+  }
+
+  if (Object.keys(values).length > 0) {
+    db.update(contexts).set(values).where(eq(contexts.id, id)).run()
+  }
+  return required(getContext(db, id), 'contexts')
+}
+
 export function createTask(
   db: Db,
   input: { contextId: string; prompt: string; taskType?: string },

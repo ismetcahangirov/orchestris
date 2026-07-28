@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useParams } from 'react-router-dom'
 import EventTimeline from '../components/EventTimeline.js'
+import RoutingBadge from '../components/RoutingBadge.js'
 import RunHeader from '../components/RunHeader.js'
 import UsageBadge from '../components/UsageBadge.js'
 import { api, type StoredEventRow } from '../lib/api.js'
@@ -46,6 +47,10 @@ export default function TaskView(): React.JSX.Element {
             </button>
           )}
         </div>
+      </div>
+
+      <div className="mb-4">
+        <RoutingBadge decision={data.routing} />
       </div>
 
       <div className="space-y-5">

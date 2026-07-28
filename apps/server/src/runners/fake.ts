@@ -23,6 +23,23 @@ export interface FakeRunnerConfig {
   /** `fixtures/cli/` içindəki fayl adı */
   fixture?: string
   flavor?: 'claude' | 'codex'
+  /**
+   * Runner növü. Default `'fake'`.
+   *
+   * Routing qaydaları məhz bu sahəyə baxır ("fayl işi → `cli`", "qısa mətn →
+   * `api`"), çünki fərq ölçülmüş prompt döşəməsindədir (~21.7k vs ~0), nə
+   * qabiliyyətdə, nə də qiymətdə. Router testlərinin real CLI/API runner-i
+   * işə salmadan bu yolları yoxlaya bilməsi üçün konfiqurasiya edilir.
+   */
+  kind?: 'cli' | 'api' | 'fake'
+  /**
+   * Runner id-si. Default `'fake'`.
+   *
+   * Produksiyada runner id-si onun `runners` xəritəsindəki açarı ilə eynidir
+   * (`cli:claude`) və routing qərarları məhz o id üzərində qurulur. Testlərin
+   * bu invariantı təkrarlaya bilməsi üçün konfiqurasiya edilir.
+   */
+  id?: string
   /** Fixture yerinə birbaşa hadisə siyahısı */
   events?: readonly RunEvent[]
   detect?: DetectResult
@@ -39,11 +56,13 @@ export interface FakeRunnerConfig {
  * SIFIR token xərcləyərək test olunur.
  */
 export class FakeRunner implements Runner {
-  readonly id = 'fake'
-  readonly kind = 'fake' as const
+  readonly id: string
+  readonly kind: 'cli' | 'api' | 'fake'
   readonly capabilities: Capabilities
 
   constructor(private readonly config: FakeRunnerConfig) {
+    this.id = config.id ?? 'fake'
+    this.kind = config.kind ?? 'fake'
     this.capabilities = { ...DEFAULT_CAPS, ...config.capabilities }
   }
 

@@ -105,7 +105,13 @@ export function registerProviderRoutes(app: FastifyInstance, deps: ProviderRoute
 
     const models = listModels(db)
     const api = await Promise.all(
-      listProviders(db).map(async (p) => {
+      // CLI provayderləri (`kind: 'cli'`) də cədvəldədir — Auto rejimi onların
+      // modellərini namizəd kimi görməlidir. Amma onlar bura DÜŞMÜR: bu
+      // siyahının hər sətri "API açarı əlavə et" formu göstərir, CLI-ın isə
+      // açarı yoxdur (abunəlikdən işləyir). Onların vəziyyəti `cli` siyahısındadır.
+      listProviders(db)
+        .filter((p) => p.kind !== 'cli')
+        .map(async (p) => {
         const meta = catalogProvider(p.id)
         const runnerId = `api:${p.id}`
         const runner = runners.get(runnerId)

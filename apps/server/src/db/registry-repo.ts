@@ -16,16 +16,17 @@ export function modelRowId(providerId: string, modelId: string): string {
 
 export function upsertProvider(
   db: Db,
-  input: { id: string; displayName: string },
+  input: { id: string; displayName: string; kind?: 'api' | 'cli' },
 ): ProviderRecord {
+  const kind = input.kind ?? 'api'
   db.insert(providers)
-    .values({ id: input.id, displayName: input.displayName, createdAt: now() })
+    .values({ id: input.id, kind, displayName: input.displayName, createdAt: now() })
     .onConflictDoUpdate({
       target: providers.id,
       // `createdAt` və `credentialRef` QƏSDƏN yenilənmir: provayder metadatası
       // hər server startında yenidən yazılır, amma istifadəçinin açarı və
       // provayderin nə vaxt əlavə olunduğu itməməlidir.
-      set: { displayName: input.displayName },
+      set: { displayName: input.displayName, kind },
     })
     .run()
   return getProvider(db, input.id) as ProviderRecord

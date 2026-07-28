@@ -12,6 +12,9 @@ import {
   recordCacheHit,
   setTaskStatus,
 } from '../db/repo.js'
+import { recordRoutingDecision } from '../db/routing-repo.js'
+import type { WorkerRouter } from '../routing/decide.js'
+import type { RoutingDecision } from '../routing/router.js'
 import type { BudgetLimits } from './budget.js'
 import { computeCacheKey } from './cache-key.js'
 import type { RunSupervisor } from './supervisor.js'
@@ -19,10 +22,27 @@ import { buildFeedbackPrompt, runVerifications } from './verify.js'
 
 /** Yoxlama dövrəsinin maksimum cəhd sayı. */
 const MAX_ATTEMPTS = 3
+/** Pillə 0 — hazır nəticə keşi. */
+const RUNG_CACHE = 0
 /** Pillə 2 — alət yoxlamasından keçən icra. */
 const RUNG_TOOL_VERIFIED = 2
 /** Yoxlama əmri yoxdursa — birbaşa güclü model. */
 const RUNG_FULL_MODEL = 7
+
+/**
+ * Amplifikasiya profilləri — kontekst səviyyəsində seçilir.
+ *
+ * Pillə 3–7 hələ tətbiq olunmayıb (Faza 2), ona görə `cheap`, `balanced` və
+ * `quality` hazırda eyni pillələri işlədir. `boss-only` isə FƏRQLİDİR və
+ * indidən lazımdır: qənaəti sübut etmək üçün baseline ölçməsi ondan asılıdır.
+ */
+export const AMPLIFICATION_PROFILES = ['cheap', 'balanced', 'quality', 'boss-only'] as const
+
+export function activeRungs(profile: string): ReadonlySet<number> {
+  // Baseline: nə keş, nə yoxlama dövrəsi — yalnız güclü modelin tək icrası.
+  if (profile === 'boss-only') return new Set([RUNG_FULL_MODEL])
+  return new Set([RUNG_CACHE, RUNG_TOOL_VERIFIED])
+}
 
 export type LadderStatus =
   | 'succeeded'
@@ -35,13 +55,21 @@ export interface LadderContext {
   id: string
   cwd: string | null
   verifyCommandsJson: string
+  /** `cheap` | `balanced` | `quality` | `boss-only`. Default `balanced`. */
+  amplificationProfile?: string
+  /** Qayda tutmadıqda seçilən işçi (`models.id`). */
+  defaultWorkerModelId?: string | null
 }
 
 export interface LadderInput {
   task: { id: string; prompt: string }
   context: LadderContext
-  runner: Runner
-  model: string
+  /**
+   * İstifadəçinin ƏL İLƏ seçimi. Verilməsə Pillə 1 (Auto) işə düşür —
+   * bunun üçün `Ladder` konstruktoruna router ötürülməlidir.
+   */
+  runner?: Runner
+  model?: string
   limits?: BudgetLimits
 }
 
@@ -56,6 +84,8 @@ export interface LadderResult {
   attempts: number
   /** Yoxlama əmrləri varsa nəticəsi; yoxdursa `null`. */
   verificationPassed: boolean | null
+  /** Pillə 1-in qərarı — UI-da "niyə bu model?" sualına cavab verir. */
+  decision?: RoutingDecision
   errorClass?: string
   errorMessage?: string
 }
@@ -70,14 +100,39 @@ export interface LadderResult {
 export class Ladder {
   private readonly db: Db
   private readonly supervisor: RunSupervisor
+  private readonly router: WorkerRouter | undefined
 
-  constructor(db: Db, supervisor: RunSupervisor) {
+  constructor(db: Db, supervisor: RunSupervisor, router?: WorkerRouter) {
     this.db = db
     this.supervisor = supervisor
+    this.router = router
   }
 
   async run(input: LadderInput): Promise<LadderResult> {
     const cwd = input.context.cwd ?? undefined
+    const profile = input.context.amplificationProfile ?? 'balanced'
+
+    // ── Pillə 1 — işçi seçimi ──────────────────────────────────────────
+    // Pillə 0-dan ƏVVƏL gəlir, çünki keş açarı model və runner id-sini
+    // ehtiva edir (`cache-key.ts`) — hansı modelin işlədiləcəyini bilmədən
+    // keşə baxmaq mümkün deyil. Qayda routing-i 0 token xərcləyir, ona görə
+    // bu sıra adi halda heç nəyə başa gəlmir; yalnız klassifikator işə
+    // düşəndə (qeyri-müəyyən task) keş yoxlanışından əvvəl ~50 token gedir.
+    const selected = await this.selectWorker(input, profile)
+    if ('error' in selected) {
+      setTaskStatus(this.db, input.task.id, 'failed')
+      return {
+        runId: '',
+        status: 'failed',
+        cached: false,
+        cacheKey: null,
+        attempts: 0,
+        verificationPassed: null,
+        errorClass: 'crashed',
+        errorMessage: selected.error,
+      }
+    }
+    const { runner, model, decision } = selected
 
     // `RunSupervisor.execute` hər çağırışda TAM YENİ BudgetGuard yaradır (öz
     // limitlərinə görə). Yoxlama dövrəsi eyni task üçün onu bir neçə dəfə
@@ -91,22 +146,31 @@ export class Ladder {
     let spentOutputTokens = 0
     let spentCostUsd = 0
 
-    const cacheKey = computeCacheKey({
-      prompt: input.task.prompt,
-      modelId: input.model,
-      runnerId: input.runner.id,
-      needsFileAccess: input.runner.capabilities.fileAccess,
-      ...(cwd !== undefined ? { cwd } : {}),
-    })
+    // `boss-only` baseline profilidir: "hər şey başçı ilə görülsəydi nə
+    // olardı?" sualına cavab verir. Keş və yoxlama dövrəsi amplifikasiyadır —
+    // onları baseline-a qatsaq müqayisə mənasız olar, ona görə söndürülür.
+    const rungs = activeRungs(profile)
+
+    const cacheKey = rungs.has(RUNG_CACHE)
+      ? computeCacheKey({
+          prompt: input.task.prompt,
+          modelId: model,
+          runnerId: runner.id,
+          needsFileAccess: runner.capabilities.fileAccess,
+          ...(cwd !== undefined ? { cwd } : {}),
+        })
+      : null
 
     // ── Pillə 0 — cache ────────────────────────────────────────────────
     if (cacheKey !== null) {
-      const hit = this.replayFromCache(input, cacheKey)
-      if (hit !== null) return hit
+      const hit = this.replayFromCache(input, runner, model, cacheKey)
+      if (hit !== null) return { ...hit, decision }
     }
 
     // ── Pillə 2 — zəif model + alət yoxlaması ──────────────────────────
-    const verifyCommands = this.parseVerifyCommands(input.context.verifyCommandsJson)
+    const verifyCommands = rungs.has(RUNG_TOOL_VERIFIED)
+      ? this.parseVerifyCommands(input.context.verifyCommandsJson)
+      : []
     const hasVerification = verifyCommands.length > 0
     const rung = hasVerification ? RUNG_TOOL_VERIFIED : RUNG_FULL_MODEL
 
@@ -122,8 +186,8 @@ export class Ladder {
 
       const exec = await this.supervisor.execute({
         taskId: input.task.id,
-        runner: input.runner,
-        model: input.model,
+        runner,
+        model,
         prompt,
         attempt: attempts,
         ladderRung: rung,
@@ -138,6 +202,7 @@ export class Ladder {
         cacheKey,
         attempts,
         verificationPassed: null,
+        decision,
         ...(exec.errorClass !== undefined ? { errorClass: exec.errorClass } : {}),
         ...(exec.errorMessage !== undefined ? { errorMessage: exec.errorMessage } : {}),
       }
@@ -160,7 +225,7 @@ export class Ladder {
       }
 
       if (!hasVerification) {
-        this.storeInCache(input, cacheKey, exec.runId)
+        this.storeInCache(runner, model, cacheKey, exec.runId)
         return base
       }
 
@@ -176,7 +241,7 @@ export class Ladder {
       }
 
       if (verification.passed) {
-        this.storeInCache(input, cacheKey, exec.runId)
+        this.storeInCache(runner, model, cacheKey, exec.runId)
         return { ...base, verificationPassed: true }
       }
 
@@ -260,17 +325,22 @@ export class Ladder {
    * jurnala yazır. Belə olsa UI heç bir xüsusi hal bilmədən eyni şeyi göstərir,
    * amma sətir `cachedHit: true` və `ladderRung: 0` ilə işarələnir.
    */
-  private replayFromCache(input: LadderInput, cacheKey: string): LadderResult | null {
+  private replayFromCache(
+    input: LadderInput,
+    runner: Runner,
+    model: string,
+    cacheKey: string,
+  ): LadderResult | null {
     const entry = getCacheEntry(this.db, cacheKey)
     if (entry === undefined) return null
 
     const run = createRun(this.db, {
       taskId: input.task.id,
-      runnerId: input.runner.id,
-      modelId: input.model,
+      runnerId: runner.id,
+      modelId: model,
       ladderRung: 0,
       cachedHit: true,
-      subscriptionBilled: input.runner.capabilities.subscriptionBilled,
+      subscriptionBilled: runner.capabilities.subscriptionBilled,
     })
     for (const event of entry.events) appendEvent(this.db, run.id, event)
     recordCacheHit(this.db, cacheKey)
@@ -288,14 +358,64 @@ export class Ladder {
   }
 
   /** Yalnız uğurlu VƏ yoxlamadan keçmiş nəticə keşlənir. */
-  private storeInCache(input: LadderInput, cacheKey: string | null, runId: string): void {
+  private storeInCache(
+    runner: Runner,
+    model: string,
+    cacheKey: string | null,
+    runId: string,
+  ): void {
     if (cacheKey === null) return
     const events: RunEvent[] = listEvents(this.db, runId).map((s) => s.event)
-    putCacheEntry(this.db, {
-      hash: cacheKey,
-      modelId: input.model,
-      runnerId: input.runner.id,
-      events,
+    putCacheEntry(this.db, { hash: cacheKey, modelId: model, runnerId: runner.id, events })
+  }
+
+  /**
+   * Pillə 1 — kim icra edəcək?
+   *
+   * Əl ilə seçim varsa router-ə TOXUNULMUR. Hər iki halda qərar
+   * `routing_decisions`-a yazılır: istifadəçi `/tasks/:id` səhifəsində
+   * "niyə bu model?" sualının cavabını görməlidir.
+   */
+  private async selectWorker(
+    input: LadderInput,
+    profile: string,
+  ): Promise<
+    { runner: Runner; model: string; decision: RoutingDecision } | { error: string }
+  > {
+    if (input.runner !== undefined && input.model !== undefined) {
+      const decision: RoutingDecision = {
+        strategy: 'manual',
+        runnerId: input.runner.id,
+        modelId: input.model,
+        chosenRowId: null,
+        confidence: 1,
+        reason: 'istifadəçi əl ilə seçdi',
+        decisionTokens: 0,
+        decisionCostUsd: 0,
+      }
+      recordRoutingDecision(this.db, input.task.id, decision)
+      return { runner: input.runner, model: input.model, decision }
+    }
+
+    if (this.router === undefined) {
+      return { error: 'Auto rejimi üçün router qurulmayıb — runner və model açıq verilməlidir' }
+    }
+
+    const outcome = await this.router.decide({
+      task: input.task,
+      context: {
+        cwd: input.context.cwd,
+        amplificationProfile: profile,
+        defaultWorkerModelId: input.context.defaultWorkerModelId ?? null,
+      },
     })
+    if (!outcome.ok) return { error: outcome.error }
+
+    recordRoutingDecision(this.db, input.task.id, outcome.decision)
+    return {
+      runner: outcome.runner,
+      model: outcome.decision.modelId,
+      decision: outcome.decision,
+    }
   }
 }

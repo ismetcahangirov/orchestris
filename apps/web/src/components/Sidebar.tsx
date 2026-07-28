@@ -4,6 +4,7 @@ const LINKS = [
   { to: '/', label: 'İdarə paneli' },
   { to: '/contexts', label: 'Kontekstlər' },
   { to: '/providers', label: 'Provayderlər' },
+  { to: '/ladder', label: 'Nərdivan' },
 ] as const
 
 export default function Sidebar(): React.JSX.Element {
