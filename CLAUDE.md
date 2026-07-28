@@ -215,20 +215,73 @@ Provayder cavabları göndərilən açarı əks etdirə bilir; o mətn `run_even
 cədvəlinə yazılır və WebSocket ilə brauzerə gedir. Jurnal a düşən açar orada
 qalır — kəsmə mənbədə edilməlidir (qayda 13, 14 ilə eyni prinsip).
 
+### 19. Routing qaydaları `kind` üzərində qurulur, qabiliyyət üzərində yox
+
+"Fayl işi → CLI, qısa mətn → API" qaydasının səbəbi qabiliyyət fərqi deyil
+(onu `canHandle` onsuz da tutur), **ölçülmüş prompt döşəməsidir**: CLI ~21.7k
+token, API ~0. Bu, `runner.kind`-dən başqa heç bir sahədə əks olunmur.
+
+Ona görə `FakeRunner` `id` və `kind` qəbul edir — router testləri real CLI/API
+runner-i işə salmadan hər iki yolu yoxlaya bilsin.
+
+### 20. Unicode söz sərhədi: `\b` Azərbaycan dilində işləmir
+
+`\b` ASCII `\w` üzərində qurulub. `xülasə` sözünün sonundakı `ə` ASCII söz
+simvolu deyil, ona görə `/\bxülasə\b/` **"xülasə et" mətninə uyğun gəlmir**.
+Eyni səbəbdən `/\btest\b/` "tests"/"testləri" tutmur.
+
+`routing/classify.ts` `\p{L}` əsaslı lookaround-lar işlədir:
+`(?<![\p{L}\p{N}_])` … `\p{L}*` … `(?![\p{L}\p{N}_])`. Bu, həm şəkilçini, həm
+də "latest"də təsadüfi "test" halını düzgün həll edir.
+
+### 21. CLI runner-ləri də `providers` cədvəlindədir (`kind: 'cli'`)
+
+Auto rejimi yalnız `models` cədvəlindəki modellər arasından seçir. CLI
+modelləri orada olmasaydı, routing-in ƏSAS qaydası ("fayl işi → CLI") heç vaxt
+işə düşə bilməzdi.
+
+`cli:claude` → Anthropic kataloqu, `cli:codex` → OpenAI kataloqu. Bu, təxmin
+deyil: `claude --help` model adı kimi tam adı (`claude-fable-5`) qəbul edir və
+models.dev id-ləri məhz o formadadır. Qiymətlər models.dev-dən gəlir və CLI
+icrasında **istinad** qiyməti kimi qalır (`billed: 'subscription'`).
+
+`GET /api/providers` `api` siyahısı `kind !== 'cli'` filtri ilə qurulur — əks
+halda UI CLI-a "API açarı əlavə et" formu göstərərdi.
+
+### 22. Klassifikatorun xərci qərar verməsə də sayılır
+
+`runClassifier` `decision: null` qaytaranda belə `tokens`/`costUsd` qaytarır və
+`routing_decisions`-a yazılır. Çağırış onsuz da pul yandırıb; onu gizlətmək
+"orkestrasiya xərci"ni olduğundan az göstərər və qənaət rəqəmini şişirdərdi
+(issue #8).
+
 ## Amplification Ladder (Faza 2+)
 
 Pillələr ucuzdan bahaya:
 
 ```
-0. Cache                      hash → hazır nəticə            0 token
-1. Qayda routing              regex/heuristika               0 token
-2. Zəif model + ALƏT yoxlaması tsc/eslint/test dövrəsi        0 token  ⭐
-3. Best-of-N + razılaşma      N adaptiv (1→3→5)
-4. İpucu (Shepherding)        başçıdan 10-30% prefiks
-5. Plan güclü / icra zəif     boss plan yazır, işçi tikir
-6. Self-escalation            işçi "əmin deyiləm" deyir
-7. Tam güclü model            son çarə, hədəf: <20%
+0. Cache                      hash → hazır nəticə            0 token   ✅
+1. Qayda routing              regex/heuristika               0 token   ✅
+2. Zəif model + ALƏT yoxlaması tsc/eslint/test dövrəsi        0 token  ⭐ ✅
+3. Best-of-N + razılaşma      N adaptiv (1→3→5)                        Faza 2
+4. İpucu (Shepherding)        başçıdan 10-30% prefiks                  Faza 2
+5. Plan güclü / icra zəif     boss plan yazır, işçi tikir              Faza 2
+6. Self-escalation            işçi "əmin deyiləm" deyir                Faza 2
+7. Tam güclü model            son çarə, hədəf: <20%                    ✅
 ```
+
+Pillə 1 axını (`routing/decide.ts`):
+
+```
+əl ilə seçim       → dərhal            0 token
+boss-only profili  → başçı             0 token   (baseline ölçməsi)
+qayda uyğun gəlir  → dərhal            0 token   ⭐ hədəf hal
+klassifikator əmin → seç              ~50 token (opsional, rol təyin olunubsa)
+qeyri-müəyyən      → default işçi      0 token
+```
+
+Başçının qərar verməsi (spesifikasiyadakı 3-cü addım) Faza 2-dədir — Faza 1
+qeyri-müəyyənlikdə kontekstin `default_worker_model_id`-sinə düşür.
 
 Ən vacib pillə **2**-dir. Araşdırma göstərir ki, kiçik modellər öz-özünü
 yoxlamaqda pisdir (yoxlama yaddaş-tələbkardır), ona görə yoxlama determinist
@@ -243,7 +296,7 @@ həqiqət mənbəyi yoxdur.
 - **1B** — API açarları + keychain (bitdi), models.dev model kəşfi (bitdi),
   ApiRunner — AI SDK 7 (bitdi), `--include-partial-messages` hərf-hərf axını
   (öz fixture-i ilə) — qalır
-- **1C** — Pillə 0–2 amplifikasiya
+- **1C** — Pillə 0–2 amplifikasiya (bitdi: keş, qayda routing + Auto, alət yoxlaması)
 - **2** — tam Ladder, paralellik, git worktree izolyasiyası
 - **3** — memory (claude-mem adapter arxasında)
 - **4** — task dekompozisiyası, workflow zəncirləri

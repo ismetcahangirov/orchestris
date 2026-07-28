@@ -22,12 +22,38 @@ export const CreateTaskBody = z.object({
    * siyahısı ilə 400 qaytarılır.
    */
   runner: z.string().min(1).optional(),
-  model: z.string().min(1),
+  /**
+   * Model BURAXILA BİLƏR — bu, "Auto" deməkdir: Pillə 1 (qayda routing) işçini
+   * özü seçir. Model verilibsə seçim ƏL İLƏdir və router işə düşmür.
+   */
+  model: z.string().min(1).optional(),
   maxOutputTokens: z.number().int().positive().optional(),
   maxSeconds: z.number().int().positive().optional(),
   maxCostUsd: z.number().positive().optional(),
 })
 export type CreateTaskBody = z.infer<typeof CreateTaskBody>
+
+/** Amplifikasiya profilləri — `docs/.../design.md` §7. */
+export const AMPLIFICATION_PROFILES = ['cheap', 'balanced', 'quality', 'boss-only'] as const
+export const WORKER_MODES = ['auto', 'manual'] as const
+
+/**
+ * Kontekst ayarlarının qismən yenilənməsi.
+ *
+ * Hər sahə opsionaldır və VERİLMƏYƏN sahə dəyişmir: istifadəçi profil
+ * dəyişəndə büdcəsini itirməməlidir.
+ */
+export const UpdateContextBody = z.object({
+  amplificationProfile: z.enum(AMPLIFICATION_PROFILES).optional(),
+  workerMode: z.enum(WORKER_MODES).optional(),
+  /** `models.id` (`anthropic:claude-haiku-4-5`). `null` = təyinatı sil. */
+  defaultWorkerModelId: z.string().min(1).nullable().optional(),
+  verifyCommands: z.array(z.string()).optional(),
+  budgetTokens: z.number().int().positive().nullable().optional(),
+  budgetUsd: z.number().positive().nullable().optional(),
+  budgetSeconds: z.number().int().positive().nullable().optional(),
+})
+export type UpdateContextBody = z.infer<typeof UpdateContextBody>
 
 /**
  * API açarının qəbulu.

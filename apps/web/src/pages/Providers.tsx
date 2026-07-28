@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import ModelList from '../components/ModelList.js'
-import { api, type ApiProviderRow } from '../lib/api.js'
+import { api, type ApiProviderRow, type CliProviderRow } from '../lib/api.js'
 
 function CredentialForm({
   provider,
@@ -53,6 +53,53 @@ function CredentialForm({
         </span>
       )}
     </form>
+  )
+}
+
+/**
+ * Lokal CLI runner-i.
+ *
+ * Model siyahısı burada da göstərilir: Auto rejimi YALNIZ "işçi" işarəli
+ * modellər arasından seçir, ona görə CLI modellərinə rol verə bilmək
+ * routing-in əsas qaydasının ("fayl işi → CLI") ön şərtidir. CLI modelləri
+ * models.dev kataloqundan seed olunur — açar tələb olunmur.
+ */
+function CliProviderCard({ provider }: { provider: CliProviderRow }): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <div className="rounded-lg border border-white/10 bg-surface-2 p-4">
+      <div className="flex items-center justify-between gap-4">
+        <div className="font-mono text-sm font-medium">{provider.id}</div>
+        <span
+          className={`rounded px-2 py-0.5 text-xs ${
+            provider.authenticated
+              ? 'bg-good/15 text-good'
+              : provider.installed
+                ? 'bg-warn/15 text-warn'
+                : 'bg-bad/15 text-bad'
+          }`}
+        >
+          {provider.authenticated
+            ? 'hazır'
+            : provider.installed
+              ? 'login lazımdır'
+              : 'quraşdırılmayıb'}
+        </span>
+      </div>
+      <p className="mt-2 text-sm text-ink-dim">{provider.detail}</p>
+      {provider.version !== undefined && (
+        <p className="mt-1 font-mono text-xs text-ink-dim">{provider.version}</p>
+      )}
+
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="mt-3 rounded bg-white/5 px-3 py-1 text-sm text-ink-dim hover:text-ink"
+      >
+        Modellər {open ? '▲' : '▼'}
+      </button>
+      {open && <ModelList providerId={provider.id} />}
+    </div>
   )
 }
 
@@ -159,28 +206,7 @@ export default function Providers(): React.JSX.Element {
 
       <h2 className="mb-2 text-sm font-medium text-ink-dim">Lokal CLI</h2>
       <div className="mb-6 space-y-3">
-        {data?.cli.map((p) => (
-          <div key={p.id} className="rounded-lg border border-white/10 bg-surface-2 p-4">
-            <div className="flex items-center justify-between gap-4">
-              <div className="font-mono text-sm font-medium">{p.id}</div>
-              <span
-                className={`rounded px-2 py-0.5 text-xs ${
-                  p.authenticated
-                    ? 'bg-good/15 text-good'
-                    : p.installed
-                      ? 'bg-warn/15 text-warn'
-                      : 'bg-bad/15 text-bad'
-                }`}
-              >
-                {p.authenticated ? 'hazır' : p.installed ? 'login lazımdır' : 'quraşdırılmayıb'}
-              </span>
-            </div>
-            <p className="mt-2 text-sm text-ink-dim">{p.detail}</p>
-            {p.version !== undefined && (
-              <p className="mt-1 font-mono text-xs text-ink-dim">{p.version}</p>
-            )}
-          </div>
-        ))}
+        {data?.cli.map((p) => <CliProviderCard key={p.id} provider={p} />)}
       </div>
 
       <div className="mb-2 flex items-center justify-between">

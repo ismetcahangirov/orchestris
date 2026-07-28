@@ -3,6 +3,9 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../lib/api.js'
 
+/** İşçi seçicisində "router özü seçsin" variantının dəyəri. */
+const AUTO = 'auto'
+
 interface RunnerOption {
   id: string
   label: string
@@ -14,20 +17,24 @@ interface RunnerOption {
 export default function Dashboard(): React.JSX.Element {
   const navigate = useNavigate()
   const [contextId, setContextId] = useState('')
-  const [runner, setRunner] = useState('cli:claude')
+  // `auto` = Pillə 1 (qayda routing) işçini özü seçir.
+  const [runner, setRunner] = useState('auto')
   const [model, setModel] = useState('claude-haiku-4-5-20251001')
   const [prompt, setPrompt] = useState('')
 
   const { data: contexts } = useQuery({ queryKey: ['contexts'], queryFn: api.listContexts })
   const { data: providers } = useQuery({ queryKey: ['providers'], queryFn: api.listProviders })
 
+  const auto = runner === AUTO
+
   const submit = useMutation({
     mutationFn: () =>
       api.createTask({
         contextId,
         prompt,
-        runner,
-        model,
+        // Auto rejimində runner və model GÖNDƏRİLMİR — onları router seçir.
+        // Boş sətir göndərsək server onu "əl ilə seçim" kimi oxuyardı.
+        ...(auto ? {} : { runner, model }),
         // Sərt limit: ilk versiyada hər task ən çox 30k output token və 10 dəqiqə.
         maxOutputTokens: 30_000,
         maxSeconds: 600,
@@ -38,9 +45,17 @@ export default function Dashboard(): React.JSX.Element {
   // İşçi siyahısı serverdən gəlir — sabit kodlanmış deyil. CLI runner-ləri
   // PATH-dan aşkarlanır, API runner-ləri isə açarı olan provayderlərdən.
   // ÖLÇÜLMÜŞ FƏRQ (Faza 1A): `claude` CLI hər çağırışda ~21.7k token döşəməsi
-  // daşıyır, API-nın döşəməsi ~0-dır — amma API-də real pul çıxır. Seçim
-  // istifadəçinindir; avtomatik yönləndirmə ayrı issue-dadır (#7).
+  // daşıyır, API-nın döşəməsi ~0-dır — amma API-də real pul çıxır. Auto məhz
+  // bu fərqə görə seçim edir (Pillə 1 qaydaları).
   const options: RunnerOption[] = [
+    {
+      id: AUTO,
+      label: 'Auto (router seçir)',
+      // Auto-nun hazırlığı serverdə yoxlanılır: uyğun işçi yoxdursa task
+      // səbəbi ilə uğursuz olur və səbəb `/tasks/:id` səhifəsində görünür.
+      ready: true,
+      detail: '',
+    },
     ...(providers?.cli ?? []).map((p) => ({
       id: p.id,
       label: `${p.id} (abunəlik)`,
@@ -106,14 +121,16 @@ export default function Dashboard(): React.JSX.Element {
             </select>
           </label>
 
-          <label className="flex flex-col gap-1 text-xs text-ink-dim">
-            Model
-            <input
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              className="w-72 rounded border border-white/15 bg-surface px-3 py-2 font-mono text-sm text-ink"
-            />
-          </label>
+          {!auto && (
+            <label className="flex flex-col gap-1 text-xs text-ink-dim">
+              Model
+              <input
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                className="w-72 rounded border border-white/15 bg-surface px-3 py-2 font-mono text-sm text-ink"
+              />
+            </label>
+          )}
         </div>
 
         <label className="flex flex-col gap-1 text-xs text-ink-dim">

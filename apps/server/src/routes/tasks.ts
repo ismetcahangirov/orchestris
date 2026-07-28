@@ -1,4 +1,4 @@
-import { CreateTaskBody, type Runner } from '@orchestris/shared'
+import { AMPLIFICATION_PROFILES, CreateTaskBody, type Runner } from '@orchestris/shared'
 import type { FastifyInstance } from 'fastify'
 import type { Db } from '../db/client.js'
 import {
@@ -9,19 +9,36 @@ import {
   listRunsForTask,
   listVerifications,
 } from '../db/repo.js'
+import { latestRoutingDecision, listRoutingDecisions } from '../db/routing-repo.js'
 import type { BudgetLimits } from '../exec/budget.js'
 import type { Ladder } from '../exec/ladder.js'
 import type { RunSupervisor } from '../exec/supervisor.js'
+import type { RunnerReadiness } from '../routing/readiness.js'
+import { BUILTIN_RULES } from '../routing/rules.js'
 
 export interface TaskRouteDeps {
   db: Db
   supervisor: RunSupervisor
   ladder: Ladder
   runners: ReadonlyMap<string, Runner>
+  /** Auto rejimindən əvvəl runner-lərin auth vəziyyətini təzələyir. */
+  readiness?: RunnerReadiness
 }
 
 export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): void {
   const { db, supervisor, ladder, runners } = deps
+
+  app.get('/api/routing/rules', async () => ({
+    // Qaydalar hazırda QURAŞDIRILMIŞDIR (kodda) — istifadəçi onları redaktə
+    // edə bilmir. Amma görə bilməlidir: "niyə bu model seçildi?" sualının
+    // cavabı buradadır.
+    rules: BUILTIN_RULES.map((r) => ({
+      id: r.id,
+      description: r.description,
+      prefer: r.prefer,
+    })),
+    profiles: AMPLIFICATION_PROFILES,
+  }))
 
   app.post('/api/tasks', async (req, reply) => {
     const parsed = CreateTaskBody.safeParse(req.body)
@@ -33,13 +50,28 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
       return reply.code(404).send({ error: 'Kontekst tapılmadı' })
     }
 
-    const runnerId = body.runner ?? [...runners.keys()][0]
-    const runner = runnerId !== undefined ? runners.get(runnerId) : undefined
-    if (runner === undefined) {
+    // `model` verilibsə seçim ƏL İLƏdir; verilməyibsə Auto (Pillə 1) işə düşür.
+    // Runner tək başına verilə bilər — o zaman model də tələb olunur, yoxsa
+    // "hansı model?" sualına cavab yoxdur.
+    const manualModel = body.model
+    let runner: Runner | undefined
+    if (manualModel !== undefined) {
+      const runnerId = body.runner ?? [...runners.keys()][0]
+      runner = runnerId !== undefined ? runners.get(runnerId) : undefined
+      if (runner === undefined) {
+        return reply.code(400).send({
+          error: `Runner mövcud deyil: ${runnerId ?? '(yoxdur)'}`,
+          available: [...runners.keys()],
+        })
+      }
+    } else if (body.runner !== undefined) {
       return reply.code(400).send({
-        error: `Runner mövcud deyil: ${runnerId ?? '(yoxdur)'}`,
-        available: [...runners.keys()],
+        error: 'runner verilibsə model də verilməlidir (Auto üçün hər ikisini buraxın)',
       })
+    } else {
+      // Auto: qərar verməzdən əvvəl runner-lərin auth vəziyyətini təzələyirik.
+      // TTL keşi sayəsində bu, dəqiqədə bir dəfədən çox proses spawn etmir.
+      await deps.readiness?.refresh()
     }
 
     const task = createTask(db, { contextId: body.contextId, prompt: body.prompt })
@@ -72,9 +104,14 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
           id: ctx.id,
           cwd: ctx.cwd,
           verifyCommandsJson: ctx.verifyCommandsJson,
+          amplificationProfile: ctx.amplificationProfile,
+          defaultWorkerModelId: ctx.defaultWorkerModelId,
         },
-        runner,
-        model: body.model,
+        // Hər ikisi birlikdə verilir və ya heç biri — Ladder bunu "əl ilə
+        // seçim" və ya "Auto" kimi oxuyur.
+        ...(runner !== undefined && manualModel !== undefined
+          ? { runner, model: manualModel }
+          : {}),
         limits,
       })
       .catch((err: unknown) => {
@@ -90,6 +127,10 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
 
     return {
       task,
+      // Pillə 1-in qərarı: "niyə bu model?" sualının cavabı. Qeyri-müəyyən
+      // tasklarda bir neçə qərar ola bilər (klassifikator + fallback).
+      routing: latestRoutingDecision(db, task.id) ?? null,
+      routingHistory: listRoutingDecisions(db, task.id),
       runs: listRunsForTask(db, task.id).map((r) => ({
         ...r,
         events: listEvents(db, r.id),

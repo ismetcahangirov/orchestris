@@ -90,8 +90,24 @@ CREATE TABLE IF NOT EXISTS verification_runs (
   at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS verification_run_idx ON verification_runs(run_id);
+CREATE TABLE IF NOT EXISTS routing_decisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  strategy TEXT NOT NULL,
+  chosen_model_id TEXT,
+  runner_id TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  decision_tokens INTEGER NOT NULL DEFAULT 0,
+  decision_cost_usd REAL,
+  rule_id TEXT,
+  reason TEXT NOT NULL,
+  at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS routing_task_idx ON routing_decisions(task_id, at);
 CREATE TABLE IF NOT EXISTS providers (
   id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL DEFAULT 'api',
   display_name TEXT NOT NULL,
   credential_ref TEXT,
   enabled INTEGER NOT NULL DEFAULT 1,
@@ -140,9 +156,15 @@ export function openDb(file = dbPath()): Db {
   // `CREATE TABLE IF NOT EXISTS` mövcud cədvələ yeni SÜTUN əlavə etmir.
   // Faza 1A-dan qalan bazalar üçün `attempt` sütununu idempotent əlavə edirik.
   // (drizzle-kit migrasiyaları sonrakı fazada; indi bu kifayətdir.)
-  const cols = sqlite.prepare(`PRAGMA table_info(runs)`).all() as { name: string }[]
-  if (!cols.some((c) => c.name === 'attempt')) {
-    sqlite.exec(`ALTER TABLE runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1`)
+  const addColumn = (table: string, column: string, ddl: string): void => {
+    const cols = sqlite.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
+    if (!cols.some((c) => c.name === column)) {
+      sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`)
+    }
   }
+  addColumn('runs', 'attempt', 'attempt INTEGER NOT NULL DEFAULT 1')
+  // Faza 1C: CLI runner-ləri də `providers` cədvəlində saxlanılır ki, Auto
+  // rejimi onların modellərini namizəd kimi görsün.
+  addColumn('providers', 'kind', `kind TEXT NOT NULL DEFAULT 'api'`)
   return drizzle(sqlite, { schema })
 }

@@ -164,3 +164,20 @@ describe('Providers səhifəsi', () => {
     expect(await screen.findByText(/repodakı snapshot \(offline\)/)).toBeInTheDocument()
   })
 })
+
+describe('Providers — CLI modellərinə rol vermək', () => {
+  it('CLI kartında model siyahısını açmaq mümkündür', async () => {
+    // Auto rejimi yalnız "işçi" işarəli modellər arasından seçir. CLI
+    // modellərinə rol verə bilməsək, "fayl işi → CLI" qaydası heç vaxt işə
+    // düşməzdi (issue #7).
+    const calls = mockFetch()
+    renderPage()
+
+    const toggle = await screen.findByRole('button', { name: /modellər/i })
+    fireEvent.click(toggle)
+
+    await waitFor(() => {
+      expect(calls.some((c) => c.url === '/api/models?provider=cli:claude')).toBe(true)
+    })
+  })
+})

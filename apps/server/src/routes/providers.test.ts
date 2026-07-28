@@ -64,6 +64,8 @@ function makeApp(
     credentials?: MemoryStore
     /** `createApiRunners` ilə API runner-lərini də qeydiyyatdan keçir. */
     withApiRunners?: boolean
+    /** CLI runner-i qeydiyyatdan keçir — `seedCliProviders` işə düşsün. */
+    withCliRunner?: boolean
   } = {},
 ) {
   const credentials = opts.credentials ?? new MemoryStore()
@@ -71,6 +73,9 @@ function makeApp(
   const runners = new Map<string, Runner>([
     ['fake', new FakeRunner({ fixture: 'claude-safe-mode.jsonl', flavor: 'claude' })],
   ])
+  if (opts.withCliRunner === true) {
+    runners.set('cli:claude', new FakeRunner({ id: 'cli:claude', kind: 'cli', events: [] }))
+  }
   if (opts.withApiRunners === true) {
     for (const [id, r] of createApiRunners({ db, credentials }).runners) runners.set(id, r)
   }
@@ -381,5 +386,19 @@ describe('GET /api/providers — CLI və API runner-lərinin ayrılması', () =>
     await setKey(app)
     const body = (await app.inject({ method: 'GET', url: '/api/providers' })).json()
     expect(body.api[0]).toMatchObject({ hasCredential: true, authenticated: true })
+  })
+})
+
+describe('GET /api/providers — CLI provayderləri API siyahısına düşmür', () => {
+  it('api siyahısında yalnız kind=api provayderləri olur', async () => {
+    // `seedCliProviders` CLI runner-lərini də `providers` cədvəlinə yazır
+    // (Auto rejimi onların modellərini namizəd kimi görməlidir). Amma onlar
+    // API provayderi DEYİL: `/providers` səhifəsi onlara "API açarı əlavə et"
+    // formu göstərməməlidir — CLI-ın açarı yoxdur, abunəlikdən işləyir.
+    const { app } = makeApp({ withCliRunner: true })
+    const body = (await app.inject({ method: 'GET', url: '/api/providers' })).json()
+
+    expect(body.api.map((p: { id: string }) => p.id)).not.toContain('cli:claude')
+    expect(body.cli.map((p: { id: string }) => p.id)).toContain('cli:claude')
   })
 })

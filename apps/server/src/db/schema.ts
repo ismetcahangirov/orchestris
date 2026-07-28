@@ -113,6 +113,39 @@ export const cacheEntries = sqliteTable(
   (t) => [index('cache_model_idx').on(t.modelId)],
 )
 
+/**
+ * Pillə 1 — hər routing qərarı və onun ÖZ XƏRCİ.
+ *
+ * `decision_tokens` / `decision_cost_usd` qəsdən burada saxlanılır: orkestrasiya
+ * qərarının xərci sayılmasa, "qənaət" rəqəmi uydurma olar (issue #8). Qayda
+ * routing-i 0 token xərcləyir və bunu SÜBUT etmək üçün də sütun lazımdır.
+ */
+export const routingDecisions = sqliteTable(
+  'routing_decisions',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    taskId: text('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    /** `manual` | `rule` | `classifier` | `default` | `fallback` */
+    strategy: text('strategy').notNull(),
+    /** `models.id`. NULL = seçilən model cədvəldə qeydiyyatda deyil (əl ilə seçim). */
+    chosenModelId: text('chosen_model_id'),
+    runnerId: text('runner_id').notNull(),
+    /** Runner-ə ötürülən model adı. */
+    modelId: text('model_id').notNull(),
+    confidence: real('confidence').notNull(),
+    decisionTokens: integer('decision_tokens').notNull().default(0),
+    /** NULL = qərarın xərci BİLİNMİR. 0 = həqiqətən pulsuz (qayda routing). */
+    decisionCostUsd: real('decision_cost_usd'),
+    /** Hansı qayda işə düşdü — UI-da göstərilir. */
+    ruleId: text('rule_id'),
+    reason: text('reason').notNull(),
+    at: integer('at').notNull(),
+  },
+  (t) => [index('routing_task_idx').on(t.taskId, t.at)],
+)
+
 /** Pillə 2 — hər determinist yoxlama əmrinin nəticəsi. */
 export const verificationRuns = sqliteTable(
   'verification_runs',
@@ -141,6 +174,16 @@ export const verificationRuns = sqliteTable(
  */
 export const providers = sqliteTable('providers', {
   id: text('id').primaryKey(),
+  /**
+   * `api` — açar tələb edən provayder (`anthropic`, `openai`, `google`).
+   * `cli` — lokal CLI runner (`cli:claude`, `cli:codex`). Onun `id`-si eyni
+   * zamanda runner id-sidir və açarı yoxdur (abunəlikdən işləyir).
+   *
+   * CLI-lar da cədvəldə saxlanılır ki, Auto rejimi onların modellərini
+   * NAMİZƏD kimi görə bilsin: routing-in əsas qaydası ("fayl işi → CLI")
+   * onsuz işləməzdi.
+   */
+  kind: text('kind').notNull().default('api'),
   /** models.dev-dən gələn insan üçün ad. */
   displayName: text('display_name').notNull(),
   /** OS keychain qeydinin adı. NULL = açar təyin olunmayıb. */

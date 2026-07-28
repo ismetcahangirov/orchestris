@@ -187,3 +187,51 @@ describe('Dashboard — task göndərişi', () => {
     })
   })
 })
+
+describe('Dashboard — Auto rejimi', () => {
+  const originalFetch = globalThis.fetch
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    vi.restoreAllMocks()
+  })
+
+  it('işçi siyahısında Auto variantı var', async () => {
+    renderPage()
+    await waitFor(() => {
+      expect([...runnerSelect().options].map((o) => o.value)).toContain('auto')
+    })
+  })
+
+  it('Auto seçiləndə model sahəsi göstərilmir', async () => {
+    // Modeli router seçir — istifadəçidən model istəmək yalan olardı.
+    renderPage()
+    await waitFor(() => expect(runnerSelect()).toBeTruthy())
+    fireEvent.change(runnerSelect(), { target: { value: 'auto' } })
+    expect(screen.queryByLabelText('Model')).toBeNull()
+  })
+
+  it('Auto ilə göndərişdə runner və model GÖNDƏRİLMİR', async () => {
+    const calls = renderPage()
+    await waitFor(() => expect(runnerSelect().options.length).toBeGreaterThan(1))
+
+    fireEvent.change(screen.getByLabelText('Kontekst'), { target: { value: 'ctx1' } })
+    fireEvent.change(runnerSelect(), { target: { value: 'auto' } })
+    fireEvent.change(screen.getByLabelText('Task'), { target: { value: 'salam de' } })
+    fireEvent.click(screen.getByRole('button', { name: 'İşə sal' }))
+
+    await waitFor(() => {
+      const post = calls.find((c) => c.url === '/api/tasks')
+      expect(post).toBeTruthy()
+      const body = JSON.parse(String(post?.init?.body))
+      expect(body.runner).toBeUndefined()
+      expect(body.model).toBeUndefined()
+    })
+  })
+
+  it('Auto seçiləndə hazır olmayan işçi xəbərdarlığı göstərilmir', async () => {
+    renderPage(providers({ api: [apiProvider({ hasCredential: false, authenticated: false })] }))
+    await waitFor(() => expect(runnerSelect()).toBeTruthy())
+    fireEvent.change(runnerSelect(), { target: { value: 'auto' } })
+    expect(screen.queryByText(/hazır deyil/i)).toBeNull()
+  })
+})
