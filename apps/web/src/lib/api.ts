@@ -158,6 +158,49 @@ export interface RoutingDecisionRow {
   at: number
 }
 
+/**
+ * Qənaət yekunu. Sahələrin ayrılığı qəsdəndir: abunəlik real pula
+ * qarışdırılmır, orkestrasiya xərci gizlədilmir, naməlum xərcli tasklar
+ * cəmə girmir və ayrıca sayılır.
+ */
+export interface SavingsSummary {
+  taskCount: number
+  actualCostUsd: number
+  actualSubscriptionUsd: number
+  baselineCostUsd: number
+  orchestrationCostUsd: number
+  memoryCostUsd: number
+  netSavingUsd: number
+  cacheHits: number
+  cacheSavingUsd: number
+  unknownCostTasks: number
+  subscriptionBaselineTasks: number
+  byTaskType: { taskType: string; tasks: number; netSavingUsd: number; actualCostUsd: number }[]
+  tokensIn: number
+  tokensOut: number
+}
+
+export interface SavingsTaskRow {
+  taskId: string
+  taskType: string
+  /** null = xərc BİLİNMİR. */
+  actualCostUsd: number | null
+  actualSubscriptionUsd: number | null
+  baselineCostUsd: number | null
+  baselineModelId: string | null
+  baselineSubscription: boolean
+  orchestrationCostUsd: number | null
+  netSavingUsd: number | null
+  cachedHit: boolean
+  tokensIn: number
+  tokensOut: number
+  at: number
+  prompt: string
+  status: string
+}
+
+export type StatsPeriod = 'day' | 'week' | 'month' | 'all'
+
 export interface RoutingRuleRow {
   id: string
   description: string
@@ -217,6 +260,11 @@ export const api = {
     request<{ ok: boolean; providerCount: number }>('/api/registry/refresh', {
       method: 'POST',
     }),
+  getSavings: (period: StatsPeriod = 'month') =>
+    request<{ period: StatsPeriod; since?: number; summary: SavingsSummary; tasks: SavingsTaskRow[] }>(
+      `/api/stats/savings?period=${period}`,
+    ),
+
   getRoutingRules: () =>
     request<{ rules: RoutingRuleRow[]; profiles: string[] }>('/api/routing/rules'),
 

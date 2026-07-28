@@ -59,7 +59,28 @@ function mockFetch(data: ProvidersResponse): Call[] {
                 createdAt: 0,
               },
             ]
-          : { taskId: 't1' }
+          : url.startsWith('/api/stats/savings')
+            ? {
+                period: 'month',
+                summary: {
+                  taskCount: 3,
+                  actualCostUsd: 0.1,
+                  actualSubscriptionUsd: 0,
+                  baselineCostUsd: 1.5,
+                  orchestrationCostUsd: 0,
+                  memoryCostUsd: 0,
+                  netSavingUsd: 1.4,
+                  cacheHits: 0,
+                  cacheSavingUsd: 0,
+                  unknownCostTasks: 0,
+                  subscriptionBaselineTasks: 0,
+                  byTaskType: [],
+                  tokensIn: 1000,
+                  tokensOut: 100,
+                },
+                tasks: [],
+              }
+            : { taskId: 't1' }
     return { ok: true, status: 200, json: async () => body, text: async () => '' } as Response
   }) as unknown as typeof fetch
   return calls
@@ -233,5 +254,25 @@ describe('Dashboard — Auto rejimi', () => {
     await waitFor(() => expect(runnerSelect()).toBeTruthy())
     fireEvent.change(runnerSelect(), { target: { value: 'auto' } })
     expect(screen.queryByText(/hazır deyil/i)).toBeNull()
+  })
+})
+
+describe('Dashboard — qənaət paneli', () => {
+  const originalFetch = globalThis.fetch
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    vi.restoreAllMocks()
+  })
+
+  it('bu ayın qənaətini göstərir', async () => {
+    renderPage()
+    expect(await screen.findByText(/net qənaət/i)).toBeTruthy()
+  })
+
+  it('qənaəti aylıq dövr üçün soruşur', async () => {
+    const calls = renderPage()
+    await waitFor(() => {
+      expect(calls.some((c) => c.url === '/api/stats/savings?period=month')).toBe(true)
+    })
   })
 })

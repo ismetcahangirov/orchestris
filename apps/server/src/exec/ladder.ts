@@ -5,18 +5,22 @@ import {
   appendVerification,
   createRun,
   finishRun,
+  listRunsForTask,
   getCacheEntry,
   getRun,
   listEvents,
   putCacheEntry,
   recordCacheHit,
   setTaskStatus,
+  setTaskType,
 } from '../db/repo.js'
 import { recordRoutingDecision } from '../db/routing-repo.js'
+import { recordSavings } from '../db/savings-repo.js'
 import type { WorkerRouter } from '../routing/decide.js'
 import type { RoutingDecision } from '../routing/router.js'
 import type { BudgetLimits } from './budget.js'
 import { computeCacheKey } from './cache-key.js'
+import { computeTaskSavings } from './savings.js'
 import type { RunSupervisor } from './supervisor.js'
 import { buildFeedbackPrompt, runVerifications } from './verify.js'
 
@@ -108,7 +112,31 @@ export class Ladder {
     this.router = router
   }
 
+  /**
+   * Taskı başdan-sona aparır və SONDA qənaət ledger-ini yazır.
+   *
+   * Ledger yazılışı `run()`-ın hər `return`-ündən sonra təkrarlanmasın deyə
+   * burada, bir yerdə edilir — unudulan bir yol ölçmədə səssiz boşluq yaradardı.
+   */
   async run(input: LadderInput): Promise<LadderResult> {
+    const result = await this.execute(input)
+    this.recordLedger(input.task.id)
+    return result
+  }
+
+  /**
+   * Ledger sətrini yazır — YALNIZ həqiqətən icra olubsa.
+   *
+   * İcrasız uğursuzluqda (məs. "işçi təyin olunmayıb") ölçüləcək bir şey
+   * yoxdur: pul yanmayıb. Belə taskı ledger-ə yazsaq, "task sayı" şişər və
+   * orta qənaət olduğundan kiçik görünərdi.
+   */
+  private recordLedger(taskId: string): void {
+    if (listRunsForTask(this.db, taskId).length === 0) return
+    recordSavings(this.db, computeTaskSavings(this.db, taskId))
+  }
+
+  private async execute(input: LadderInput): Promise<LadderResult> {
     const cwd = input.context.cwd ?? undefined
     const profile = input.context.amplificationProfile ?? 'balanced'
 
@@ -412,6 +440,7 @@ export class Ladder {
     if (!outcome.ok) return { error: outcome.error }
 
     recordRoutingDecision(this.db, input.task.id, outcome.decision)
+    setTaskType(this.db, input.task.id, outcome.taskType)
     return {
       runner: outcome.runner,
       model: outcome.decision.modelId,

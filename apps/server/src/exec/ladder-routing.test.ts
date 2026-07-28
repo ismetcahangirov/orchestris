@@ -12,6 +12,7 @@ import {
   type ModelUpsert,
 } from '../db/registry-repo.js'
 import { latestRoutingDecision } from '../db/routing-repo.js'
+import { getSavings } from '../db/savings-repo.js'
 import { WorkerRouter } from '../routing/decide.js'
 import { FakeRunner } from '../runners/fake.js'
 import { Ladder } from './ladder.js'
@@ -218,5 +219,59 @@ describe('Ladder — amplifikasiya profilləri', () => {
 
     expect(second.cached).toBe(true)
     expect(spy).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('Ladder — savings_ledger', () => {
+  it('task bitəndə ledger sətri yazılır', async () => {
+    const { db, ladder, ctx, newTask } = setup()
+    const task = newTask('Bu cümləni tərcümə et: salam')
+    await ladder.run({ task, context: ctx })
+
+    expect(getSavings(db, task.id)).toMatchObject({ taskId: task.id })
+  })
+
+  it('routing-in təyin etdiyi task tipi ledger-ə düşür', async () => {
+    // "Mətn tasklarında qənaət kod tasklarından az olacaq" iddiasını yoxlamaq
+    // üçün bölgü lazımdır — tip `unknown` qalsaydı bölgü mənasız olardı.
+    const { db, ladder, ctx, newTask } = setup()
+    const task = newTask('Bu cümləni tərcümə et: salam')
+    await ladder.run({ task, context: ctx })
+
+    expect(getTask(db, task.id)?.taskType).toBe('translate')
+    expect(getSavings(db, task.id)?.taskType).toBe('translate')
+  })
+
+  it('qərarın öz xərci ledger-ə düşür', async () => {
+    const { db, ladder, ctx, newTask } = setup()
+    const task = newTask()
+    await ladder.run({ task, context: ctx })
+
+    // Qayda routing-i 0 token xərcləyir — ledger bunu 0 kimi yazır, NULL yox.
+    expect(getSavings(db, task.id)?.orchestrationCostUsd).toBe(0)
+  })
+
+  it('heç bir icra baş verməyibsə ledger sətri yazılmır', async () => {
+    // "İşçi yoxdur" xətası pul yandırmayıb — ledger-də ölçüləcək bir şey yoxdur.
+    const { db, ladder, ctx, newTask } = setup()
+    setWorkerRole(db, modelRowId('cli:claude', 'haiku'), false)
+    setWorkerRole(db, modelRowId('anthropic', 'haiku'), false)
+
+    const task = newTask()
+    await ladder.run({ task, context: ctx })
+
+    expect(getSavings(db, task.id)).toBeUndefined()
+  })
+
+  it('keş vurmasında da ledger yazılır', async () => {
+    const { db, ladder, ctx, newTask } = setup()
+    const prompt = 'Bu cümləni tərcümə et: salam'
+    await ladder.run({ task: newTask(prompt), context: ctx })
+
+    const second = newTask(prompt)
+    const result = await ladder.run({ task: second, context: ctx })
+
+    expect(result.cached).toBe(true)
+    expect(getSavings(db, second.id)?.cachedHit).toBe(true)
   })
 })

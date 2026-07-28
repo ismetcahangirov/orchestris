@@ -255,6 +255,39 @@ halda UI CLI-a "API açarı əlavə et" formu göstərərdi.
 "orkestrasiya xərci"ni olduğundan az göstərər və qənaət rəqəmini şişirdərdi
 (issue #8).
 
+### 23. Qənaət yekunu SQL `SUM` ilə hesablanmır
+
+`SUM` NULL-ları səssizcə atır. Xərci bilinməyən task cəmə `0` kimi girərdi və
+"bu ay $X qənaət" rəqəmi olduğundan böyük görünərdi.
+
+`summarizeSavings` sətirləri JS-də gəzir: naməlum xərcli tasklar cəmdən
+ÇIXARILIR və `unknownCostTasks` kimi ayrıca sayılır. UI onları göstərir —
+gizlətmək iddianı şişirtmək olardı.
+
+### 24. Uğursuz taskda "qənaət" iddiası yoxdur
+
+`computeTaskSavings` yalnız `succeeded` tasklar üçün baseline hesablayır.
+Uğursuz taskda nəticə alınmayıb — nə ilə müqayisə edəcəyimiz yoxdur. Amma pul
+REAL gedib, ona görə `actualCostUsd` yenə saxlanılır: xərc gizlədilmir,
+sadəcə qənaət kimi göstərilmir.
+
+Eyni səbəbdən icra ümumiyyətlə baş verməyibsə (məs. "işçi təyin olunmayıb")
+ledger sətri YAZILMIR — task sayını şişirdib orta qənaəti kiçildərdi.
+
+### 25. Baseline TƏXMİNDİR — dəqiq ölçmə `boss-only` profilidir
+
+`baseline_cost_usd` əks-faktdır: *eyni tokenlər* başçının qiymətləri ilə.
+Başçı həmin taskı daha az (və ya daha çox) token ilə həll edə bilərdi.
+
+Dəqiq müqayisə üçün `boss-only` amplifikasiya profili var. Ölçülüb (saxta
+runner-lə, eyni prompt, eyni tokenlər):
+
+```
+Balanslı profil:  actual $1   baseline(proqnoz) $15   net $14
+boss-only profil: actual $15  ← REAL baseline
+proqnoz == real ✓
+```
+
 ## Amplification Ladder (Faza 2+)
 
 Pillələr ucuzdan bahaya:
@@ -296,7 +329,8 @@ həqiqət mənbəyi yoxdur.
 - **1B** — API açarları + keychain (bitdi), models.dev model kəşfi (bitdi),
   ApiRunner — AI SDK 7 (bitdi), `--include-partial-messages` hərf-hərf axını
   (öz fixture-i ilə) — qalır
-- **1C** — Pillə 0–2 amplifikasiya (bitdi: keş, qayda routing + Auto, alət yoxlaması)
+- **1C** (bitdi) — Pillə 0–2 amplifikasiya: keş, qayda routing + Auto, alət
+  yoxlaması, `savings_ledger` (qənaətin dürüst ölçülməsi)
 - **2** — tam Ladder, paralellik, git worktree izolyasiyası
 - **3** — memory (claude-mem adapter arxasında)
 - **4** — task dekompozisiyası, workflow zəncirləri

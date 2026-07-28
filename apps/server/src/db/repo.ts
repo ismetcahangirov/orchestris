@@ -108,6 +108,11 @@ export function getTask(db: Db, id: string): Task | undefined {
   return db.select().from(tasks).where(eq(tasks.id, id)).get()
 }
 
+/** Routing-in determinist təsnifatı — ledger bölgüsü buna görə qurulur. */
+export function setTaskType(db: Db, id: string, taskType: string): void {
+  db.update(tasks).set({ taskType }).where(eq(tasks.id, id)).run()
+}
+
 export function setTaskStatus(db: Db, id: string, status: string): void {
   db.update(tasks)
     .set({
