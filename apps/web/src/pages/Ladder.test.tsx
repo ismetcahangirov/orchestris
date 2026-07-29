@@ -39,30 +39,49 @@ const CONTEXTS = [
   },
 ]
 
+const TEMPLATES = {
+  templates: [
+    {
+      id: 'hash-1',
+      taskType: 'translate',
+      workerPrompt: 'ƏVVƏLCƏ DİLİ MÜƏYYƏN ET',
+      rubric: 'TAM TƏRCÜMƏ',
+      authoredByModelId: 'başçı',
+      authoringCostUsd: 0.0123,
+      uses: 12,
+      escalationsAfter: 2,
+      createdAt: 0,
+      lastUsedAt: null,
+    },
+  ],
+}
+
 interface Call {
   url: string
   init: RequestInit | undefined
 }
 
-function mockFetch(): Call[] {
+function mockFetch(templates: unknown = TEMPLATES): Call[] {
   const calls: Call[] = []
   globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
     calls.push({ url, init })
     const body =
       url === '/api/routing/rules'
         ? RULES
-        : url === '/api/contexts'
-          ? CONTEXTS
-          : url.startsWith('/api/models')
-            ? []
-            : { ...CONTEXTS[0], amplificationProfile: 'boss-only' }
+        : url === '/api/templates'
+          ? templates
+          : url === '/api/contexts'
+            ? CONTEXTS
+            : url.startsWith('/api/models')
+              ? []
+              : { ...CONTEXTS[0], amplificationProfile: 'boss-only' }
     return { ok: true, status: 200, json: async () => body, text: async () => '' } as Response
   }) as unknown as typeof fetch
   return calls
 }
 
-function renderPage(): Call[] {
-  const calls = mockFetch()
+function renderPage(templates?: unknown): Call[] {
+  const calls = mockFetch(templates)
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={qc}>
@@ -141,6 +160,23 @@ describe('Ladder səhifəsi — profillər', () => {
     const row = (await screen.findByText(/Plan güclü/)).closest('tr')
     expect(row?.textContent).toContain('işləyir')
     expect(row?.textContent).not.toContain('Faza 2')
+  })
+
+  it('şablonun İSTİFADƏSİNİ və sonrakı ESKALASİYALARINI birlikdə göstərir', async () => {
+    // Yalnız istifadə sayı göstərilsəydi mexanizm həmişə uğurlu görünərdi —
+    // halbuki şablon tətbiq olunub, task yenə başçıya qalxa bilər.
+    renderPage()
+
+    const row = (await screen.findByText('translate')).closest('tr')
+    expect(row?.textContent).toContain('12')
+    expect(row?.textContent).toContain('2')
+    expect(row?.textContent).toContain('$0.0123')
+  })
+
+  it('şablon yoxdursa SƏBƏBİNİ izah edir — boş cədvəl "sınıqdır" kimi oxunmasın', async () => {
+    renderPage({ templates: [] })
+
+    expect(await screen.findByText(/Hələ şablon yoxdur/)).toBeTruthy()
   })
 
   it('cari profildə hansı pillələrin aktiv olduğunu serverin verdiyi dəstdən göstərir', async () => {

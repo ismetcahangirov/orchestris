@@ -16,6 +16,15 @@ import {
 } from '../db/repo.js'
 import { recordRoutingDecision } from '../db/routing-repo.js'
 import { recordSavings } from '../db/savings-repo.js'
+import {
+  countBossAssistedTasks,
+  getTemplate,
+  recordTemplateEscalation,
+  recordTemplateUse,
+  saveTemplate,
+  type TaskTemplate,
+} from '../db/template-repo.js'
+import { classifyTask } from '../routing/classify.js'
 import type { WorkerRouter } from '../routing/decide.js'
 import type { RoutingDecision } from '../routing/router.js'
 import {
@@ -25,6 +34,14 @@ import {
 } from './agreement.js'
 import type { BudgetLimits } from './budget.js'
 import { computeCacheKey } from './cache-key.js'
+import {
+  buildDistillRequestPrompt,
+  buildTemplatedPrompt,
+  DISTILL_RUNG,
+  parseTemplate,
+  shouldDistill,
+  templateId,
+} from './distill.js'
 import {
   buildEscalationPrompt,
   collectAnswerText,
@@ -71,6 +88,15 @@ const RUNG_PLAN = 5
 const RUNG_SELF_ESCALATION = 6
 /** Pillə 7 — tam güclü model. Son çarə. */
 const RUNG_BOSS = 7
+
+/**
+ * Başçının qarışdığı pillələr — prompt distilləsinin qapısı bunları sayır.
+ *
+ * Distillə pillə DEYİL (kəsişən mexanizmdir), ona görə `PROFILE_RUNGS`-da
+ * yoxdur. Amma onun qapısı "bu tipdə başçı neçə dəfə lazım oldu?" sualına
+ * cavab verməlidir və o cavab MƏHZ bu nömrələrdədir.
+ */
+const BOSS_ASSIST_RUNGS = [RUNG_HINT, RUNG_PLAN, RUNG_BOSS] as const
 
 export { AMPLIFICATION_PROFILES }
 
@@ -319,6 +345,12 @@ interface Phase {
   budget: RemainingBudget
   /** İşçi icralarının pilləsi. `boss-only`-də işçi ELƏ başçıdır → 7. */
   workerRung: number
+  /** Kontekstin amplifikasiya profili — distillə qapısı ona baxır. */
+  profile: string
+  /** `classify.ts`-in determinist təsnifatı — şablon məhz tipə bağlıdır. */
+  taskType: string
+  /** Bu tip üçün hazır şablon (Prompt distilləsi). Yoxdursa `undefined`. */
+  template: TaskTemplate | undefined
 }
 
 type WorkerOutcome =
@@ -444,9 +476,14 @@ export class Ladder {
         errorMessage: selected.error,
       }
     }
-    const { runner, model, decision } = selected
+    const { runner, model, decision, taskType } = selected
 
     const rungs = activeRungs(profile)
+
+    // Prompt distilləsi — hazır şablon varsa işçi onu SIFIR əlavə başçı tokeni
+    // ilə alır. Profildən ASILI DEYİL: şablon pillə deyil, artıq ödənilmiş
+    // mətndir; `cheap` profilində də tətbiq olunmalıdır.
+    const template = getTemplate(this.db, taskType)
 
     const cacheKey = rungs.has(RUNG_CACHE)
       ? computeCacheKey({
@@ -455,6 +492,8 @@ export class Ladder {
           runnerId: runner.id,
           needsFileAccess: runner.capabilities.fileAccess,
           ...(cwd !== undefined ? { cwd } : {}),
+          // Şablon promptu dəyişir → köhnə cavab artıq eyni sualın cavabı deyil.
+          ...(template !== undefined ? { templateId: template.id } : {}),
         })
       : null
 
@@ -479,6 +518,9 @@ export class Ladder {
       // `boss-only` profilində işçi rolunu başçı oynayır — icranı 2-ci pillə
       // kimi qeyd etsək baseline ölçməsi (qayda 25) yalan olardı.
       workerRung: rungs.has(RUNG_WORKER) ? RUNG_WORKER : RUNG_BOSS,
+      profile,
+      taskType,
+      template,
     }
 
     const outcome = await this.workerPhase(phase)
@@ -498,6 +540,22 @@ export class Ladder {
     phase: Phase,
     outcome: Extract<WorkerOutcome, { kind: 'escalate' }>,
   ): Promise<LadderResult> {
+    // Şablon tətbiq olunmuşdu, amma task yenə qalxır — distillənin ÖLÇÜSÜ
+    // budur. Nəticədən ASILI OLMAYARAQ qeyd olunur: sonrakı başçı icrası uğurlu
+    // olsa da, şablon işçini saxlaya bilməyib.
+    if (phase.template !== undefined) recordTemplateEscalation(this.db, phase.taskType)
+
+    const final = await this.escalationResult(phase, outcome)
+    // Distillə eskalasiyadan SONRA gəlir: qapı "bu tipdə başçı neçə dəfə lazım
+    // oldu?" sualını sayır və cari taskın öz başçı icrası da o saya girməlidir.
+    await this.distill(phase, outcome, final)
+    return final
+  }
+
+  private async escalationResult(
+    phase: Phase,
+    outcome: Extract<WorkerOutcome, { kind: 'escalate' }>,
+  ): Promise<LadderResult> {
     const strategy = this.pickShepherd(phase, outcome)
     const shepherded =
       strategy === undefined ? {} : await this.shepherdPhase(phase, outcome, strategy)
@@ -513,6 +571,84 @@ export class Ladder {
     const result = await this.escalateToBoss(phase, next)
     if (strategy === undefined || shepherded.summary === undefined) return result
     return this.attachSummary(result, strategy, shepherded.summary)
+  }
+
+  /**
+   * Prompt distilləsi — başçıdan bu TASKIN həllini yox, bu TİPİN iş üsulunu
+   * istəyir və `task_templates`-ə yazır.
+   *
+   * Nərdivanın pilləsi DEYİL: nəticəyə toxunmur, yalnız gələcək taskları
+   * ucuzlaşdırır. Ona görə burada hər şey "ən pis halda heç nə olmasın"
+   * prinsipi ilə qurulub — uğursuz distillə taskın nəticəsini DƏYİŞMİR.
+   *
+   * İKİ İNCƏLİK:
+   *  - `RunSupervisor` hər icradan sonra taskın statusunu YAZIR. Distillə
+   *    icrası nəticə verildikdən SONRA gəldiyi üçün, sınsa taskı `failed`
+   *    göstərərdi — ona görə sonda status bərpa olunur (`settle`).
+   *  - İcra `DISTILL_RUNG` (mənfi) ilə qeyd olunur: `savings.ts` onu baseline
+   *    tokenlərindən çıxarır və orkestrasiya xərcinə yazır (bax `distill.ts`).
+   */
+  private async distill(
+    phase: Phase,
+    outcome: Extract<WorkerOutcome, { kind: 'escalate' }>,
+    settled: LadderResult,
+  ): Promise<void> {
+    if (this.router === undefined) return
+    const verdict = shouldDistill({
+      profile: phase.profile,
+      taskType: phase.taskType,
+      hasTemplate: phase.template !== undefined,
+      assistedTasks: countBossAssistedTasks(this.db, phase.taskType, BOSS_ASSIST_RUNGS),
+    })
+    if (!verdict.distill) return
+    // Büdcə bitibsə YENİ icra başlatmaq sərt limitin mənasını pozardı —
+    // üstəlik bu icra cari taskın nəticəsinə heç nə qatmır.
+    if (phase.budget.exhausted()) return
+
+    const boss = this.router.resolveBoss(`prompt distilləsi: ${verdict.reason}`)
+    if (!boss.ok) return
+
+    const exec = await this.supervisor.execute({
+      taskId: phase.input.task.id,
+      runner: boss.runner,
+      model: boss.decision.modelId,
+      prompt: buildDistillRequestPrompt({
+        taskType: phase.taskType,
+        examplePrompt: phase.input.task.prompt,
+        reason: outcome.reason,
+      }),
+      attempt: 1,
+      ladderRung: DISTILL_RUNG,
+      ...(phase.cwd !== undefined ? { cwd: phase.cwd } : {}),
+      ...(this.limitsFor(phase) ?? {}),
+    })
+    phase.budget.charge(getRun(this.db, exec.runId))
+
+    // Status bərpası HƏR yolda lazımdır: icra uğurlu olsa da supervisor taskı
+    // `succeeded` yazıb — halbuki nəticə `settled`-dəndir və o, `failed` ola bilər.
+    try {
+      if (exec.status !== 'succeeded') return
+      const template = parseTemplate(this.answerOf(exec.runId))
+      // Başçı müqaviləyə əməl etməyibsə (başlıqlar yoxdur, ya da hədd aşılıb)
+      // heç nə saxlanılmır: səhv şablon bir taska deyil, BÜTÜN gələcək
+      // tasklara yapışardı.
+      if (template === null) return
+
+      const run = getRun(this.db, exec.runId)
+      saveTemplate(this.db, {
+        id: templateId(template),
+        taskType: phase.taskType,
+        workerPrompt: template.workerPrompt,
+        rubric: template.rubric,
+        authoredByModelId: boss.decision.modelId,
+        authoringRunId: exec.runId,
+        ...(run?.costUsd !== null && run?.costUsd !== undefined
+          ? { authoringCostUsd: run.costUsd }
+          : {}),
+      })
+    } finally {
+      this.settle(phase, settled)
+    }
   }
 
   /**
@@ -686,7 +822,21 @@ export class Ladder {
     // Müqavilə istifadəçi mesajının SONUNA əlavə olunur — sistem promptu
     // toxunulmaz qalır (CLAUDE.md qayda 1: prefiks dəyişməsi keşi sındırır).
     const contractSuffix = useContract ? `\n\n${ESCALATION_CONTRACT}` : ''
-    let prompt = `${input.task.prompt}${contractSuffix}`
+
+    // Prompt distilləsi — başçının bir dəfə yazdığı təlimat. Onu tətbiq etmək
+    // SIFIR əlavə başçı tokeni xərcləyir; ödəniş çoxdan olub.
+    const workerPrompt =
+      phase.template === undefined
+        ? input.task.prompt
+        : buildTemplatedPrompt(input.task.prompt, phase.template)
+    if (phase.template !== undefined) {
+      // Task başına BİR dəfə: `workerPhase` bir taskda bir dəfə çağırılır.
+      // Cəhd/nüsxə başına saysaydıq, "şablon N taskda işlədildi" rəqəmi yoxlama
+      // dövrəsinin təkrarlarından şişərdi.
+      recordTemplateUse(this.db, phase.taskType)
+    }
+
+    let prompt = `${workerPrompt}${contractSuffix}`
     let attempts = 0
 
     while (attempts < MAX_ATTEMPTS) {
@@ -785,8 +935,9 @@ export class Ladder {
       }
 
       // Xəta mətnini modelə geri ötürüb yenidən cəhd et. Yoxlama SIFIR token
-      // xərcləyir; yalnız yeni icra xərcləyir.
-      prompt = `${input.task.prompt}\n\n${buildFeedbackPrompt(
+      // xərcləyir; yalnız yeni icra xərcləyir. Şablon SAXLANILIR — o, bu tipin
+      // iş üsuludur və səhv düzəlişində də keçərlidir.
+      prompt = `${workerPrompt}\n\n${buildFeedbackPrompt(
         verification.results,
       )}${contractSuffix}`
     }
@@ -1129,9 +1280,20 @@ export class Ladder {
     input: LadderInput,
     profile: string,
   ): Promise<
-    { runner: Runner; model: string; decision: RoutingDecision } | { error: string }
+    | { runner: Runner; model: string; decision: RoutingDecision; taskType: string }
+    | { error: string }
   > {
     if (input.runner !== undefined && input.model !== undefined) {
+      // Əl ilə seçimdə router işə düşmür, amma task TİPİ yenə lazımdır: prompt
+      // distilləsi şablonu tipə görə tapır. Təsnifat 0 token xərcləyir, ona
+      // görə burada təkrar hesablamaq sərbəstdir (`decide()` də eyni funksiyanı
+      // çağırır — `classify.ts` saf funksiyadır).
+      const taskType = classifyTask({
+        prompt: input.task.prompt,
+        ...(input.context.cwd !== null ? { cwd: input.context.cwd } : {}),
+      }).taskType
+      setTaskType(this.db, input.task.id, taskType)
+
       const decision: RoutingDecision = {
         strategy: 'manual',
         runnerId: input.runner.id,
@@ -1143,7 +1305,7 @@ export class Ladder {
         decisionCostUsd: 0,
       }
       recordRoutingDecision(this.db, input.task.id, decision)
-      return { runner: input.runner, model: input.model, decision }
+      return { runner: input.runner, model: input.model, decision, taskType }
     }
 
     if (this.router === undefined) {
@@ -1166,6 +1328,7 @@ export class Ladder {
       runner: outcome.runner,
       model: outcome.decision.modelId,
       decision: outcome.decision,
+      taskType: outcome.taskType,
     }
   }
 }

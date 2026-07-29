@@ -5,6 +5,7 @@ import { getTask, listEvents, listRunsForTask } from '../db/repo.js'
 import { listRoutingDecisions } from '../db/routing-repo.js'
 import { models } from '../db/schema.js'
 import { computeCostUsd, type TokenCounts } from '../registry/pricing.js'
+import { DISTILL_RUNG } from './distill.js'
 
 /**
  * Qənaətin DÜRÜST ölçülməsi.
@@ -95,6 +96,10 @@ export function computeTaskSavings(db: Db, taskId: string): TaskSavings {
     cacheWriteTokens: 0,
   }
   const rungs = new Map<number, RungCost>()
+  // Prompt distilləsinin xərci — bu taskın CAVABINA girmir, ona görə aşağıda
+  // orkestrasiya xərcinə qatılır (klassifikator ilə eyni məntiq, qayda 22).
+  let distillation = 0
+  let distillationKnown = true
 
   for (const run of runs) {
     const tokens: TokenCounts = run.cachedHit
@@ -106,10 +111,17 @@ export function computeTaskSavings(db: Db, taskId: string): TaskSavings {
           cacheWriteTokens: run.tokensCacheWrite,
         }
 
-    baselineTokens.inputTokens += tokens.inputTokens
-    baselineTokens.outputTokens += tokens.outputTokens
-    baselineTokens.cacheReadTokens += tokens.cacheReadTokens ?? 0
-    baselineTokens.cacheWriteTokens += tokens.cacheWriteTokens ?? 0
+    // Distillə icrası BASELINE-a girmir: baseline "başçı bu taskı təkbaşına
+    // həll etsəydi" əks-faktıdır, başçı isə orada şablon YAZMAZDI. Tokenlərini
+    // ora qatsaq baseline şişər və qənaət olduğundan böyük görünərdi (qayda 23,
+    // 25 ilə eyni prinsip). Xərci isə gizlədilmir — aşağıda görünür.
+    const isDistillation = run.ladderRung === DISTILL_RUNG
+    if (!isDistillation) {
+      baselineTokens.inputTokens += tokens.inputTokens
+      baselineTokens.outputTokens += tokens.outputTokens
+      baselineTokens.cacheReadTokens += tokens.cacheReadTokens ?? 0
+      baselineTokens.cacheWriteTokens += tokens.cacheWriteTokens ?? 0
+    }
 
     const usedTokens = tokens.inputTokens + tokens.outputTokens
     // Keş təkrarı HƏQİQƏTƏN pulsuzdur: model çağırılmayıb. Bu, `null`
@@ -124,6 +136,20 @@ export function computeTaskSavings(db: Db, taskId: string): TaskSavings {
       subscriptionUsd: 0,
     }
     bucket.runs += 1
+
+    if (isDistillation) {
+      // `byRung`-da GÖRÜNÜR (bucket yuxarıda artırıldı) — bir dəfəlik
+      // investisiya gizlədilməməlidir; sadəcə taskın həll xərci deyil.
+      if (cost === null) {
+        if (usedTokens > 0) distillationKnown = false
+      } else {
+        distillation += cost
+        if (run.subscriptionBilled) bucket.subscriptionUsd += cost
+        else bucket.costUsd += cost
+      }
+      rungs.set(run.ladderRung, bucket)
+      continue
+    }
 
     if (run.subscriptionBilled) {
       if (cost === null) {
@@ -144,8 +170,11 @@ export function computeTaskSavings(db: Db, taskId: string): TaskSavings {
   }
 
   // ── Orkestrasiya xərci ────────────────────────────────────────────────
-  let orchestration = 0
-  let orchestrationKnown = true
+  // Distillə buraya girir: o, taskın cavabını yazmır, gələcək taskların iş
+  // üsulunu yazır — yəni klassifikator kimi ORKESTRASİYA xərcidir. Net
+  // qənaətdən çıxılır, çünki pul REAL yanıb (qayda 22).
+  let orchestration = distillation
+  let orchestrationKnown = distillationKnown
   for (const decision of listRoutingDecisions(db, taskId)) {
     if (decision.decisionCostUsd === null) {
       // Qərar tokensizdirsə (qayda routing) xərc onsuz da 0-dır.

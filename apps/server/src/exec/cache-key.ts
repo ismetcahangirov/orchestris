@@ -36,6 +36,17 @@ export interface CacheKeyInput {
   /** Task fayl sisteminə toxunurmu? Toxunursa repo vəziyyəti açara girir. */
   needsFileAccess: boolean
   cwd?: string
+  /**
+   * Tətbiq olunan distillə şablonunun məzmun hash-i (`distill.ts`).
+   *
+   * Şablon işçinin promptunu DƏYİŞİR, yəni köhnə keş girişi artıq həmin sualın
+   * cavabı deyil. Açara girməsəydi, ilk şablon yazıldıqdan sonra bütün köhnə
+   * cavablar səssizcə "şablonlu" nəticə kimi qaytarılardı — və əksinə: şablon
+   * yenilənəndə köhnə cavab yeni təlimatın nəticəsi kimi görünərdi.
+   *
+   * Verilməyəndə açar HEÇ DƏYİŞMİR — şablonsuz bazaların mövcud keşi qalır.
+   */
+  templateId?: string
 }
 
 /**
@@ -56,6 +67,15 @@ export function computeCacheKey(input: CacheKeyInput): string | null {
   h.update('\0')
   h.update(input.runnerId)
   h.update('\0')
+
+  // Şablonsuz hal ƏLAVƏ HEÇ NƏ yazmır: mövcud bazalardakı açarlar dəyişməsin
+  // deyə. `templateId` verilməsi ilə verilməməsi arasındakı fərq onsuz da
+  // hash-in girişini dəyişir.
+  if (input.templateId !== undefined) {
+    h.update('template\0')
+    h.update(input.templateId)
+    h.update('\0')
+  }
 
   if (input.needsFileAccess) {
     const fp = repoFingerprint(input.cwd)

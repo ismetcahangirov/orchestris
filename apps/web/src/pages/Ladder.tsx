@@ -44,6 +44,7 @@ export default function LadderPage(): React.JSX.Element {
 
   const { data: rules } = useQuery({ queryKey: ['routing-rules'], queryFn: api.getRoutingRules })
   const { data: contexts } = useQuery({ queryKey: ['contexts'], queryFn: api.listContexts })
+  const { data: templates } = useQuery({ queryKey: ['templates'], queryFn: api.listTemplates })
 
   const selected = contexts?.find((c) => c.id === contextId) ?? contexts?.[0]
 
@@ -159,6 +160,57 @@ export default function LadderPage(): React.JSX.Element {
             ))}
           </tbody>
         </table>
+      </section>
+
+      <section className="mb-6 rounded-lg border border-white/10 bg-surface-2 p-5">
+        <h2 className="mb-1 text-sm font-semibold">Prompt distilləsi (şablonlar)</h2>
+        <p className="mb-3 text-xs text-ink-dim">
+          Pillə DEYİL — kəsişən mexanizm: başçı bir task tipi üçün BİR DƏFƏ işçi promptu +
+          rubrika yazır, sonrakı bütün eyni tipli tasklar onu sıfır əlavə başçı tokeni ilə
+          işlədir. Şablon bütün profillərdə tətbiq olunur; yalnız YAZILMASI başçı tələb edir.
+        </p>
+
+        {(templates?.templates ?? []).length === 0 ? (
+          <p className="text-xs text-ink-dim">
+            Hələ şablon yoxdur. Şablon yalnız bir task tipi TƏKRAR-TƏKRAR başçının köməyinə
+            möhtac qalanda yazılır — bir dəfəlik ilişmə üçün başçı icrası ödəmək özünü
+            ödəməzdi.
+          </p>
+        ) : (
+          <table className="w-full text-left text-xs">
+            <thead className="text-ink-dim">
+              <tr>
+                <th className="pb-2">Tip</th>
+                <th className="pb-2">Yazan model</th>
+                <th className="pb-2">Bir dəfəlik xərc</th>
+                <th className="pb-2">İstifadə</th>
+                <th className="pb-2">Sonra yenə qalxdı</th>
+              </tr>
+            </thead>
+            <tbody className="font-mono">
+              {(templates?.templates ?? []).map((t) => (
+                <tr key={t.id} className="border-t border-white/5 align-top">
+                  <td className="py-1.5">{t.taskType}</td>
+                  <td className="py-1.5">{t.authoredByModelId}</td>
+                  <td className="py-1.5">
+                    {/* Naməlum xərc `$0` kimi göstərilmir — investisiya olduğundan
+                        kiçik görünərdi. */}
+                    {t.authoringCostUsd === null
+                      ? 'bilinmir'
+                      : `$${t.authoringCostUsd.toFixed(4)}`}
+                  </td>
+                  <td className="py-1.5">{t.uses}</td>
+                  <td
+                    className={`py-1.5 ${t.escalationsAfter > 0 ? 'text-warn' : 'text-ink-dim'}`}
+                    title="Şablon tətbiq olundu, amma task yenə başçıya qalxdı — şablonun faydasının ölçüsü budur"
+                  >
+                    {t.escalationsAfter}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </section>
 
       <section className="rounded-lg border border-white/10 bg-surface-2 p-5">

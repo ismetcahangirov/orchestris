@@ -214,8 +214,14 @@ describe('köhnə (Faza 1A) baza', () => {
   it('mövcud cədvəlləri yenidən yaratmağa cəhd etmir və baseline-ı möhürləyir', () => {
     const file = seedFaza1aDb()
     open(file) // `CREATE TABLE contexts` təkrar icra olunsaydı burada sınardı
-    const rows = migrationRows(file)
-    expect(rows).toHaveLength(1)
+
+    // Sabit rəqəm YAZILMIR: hər yeni migrasiya bu testi səbəbsiz sındırardı və
+    // sındığı üçün "yeniləyək" deyib əslindəki invariantı gözdən qaçırardıq.
+    // İnvariant budur: möhürlənmiş köhnə baza TƏMİZ baza ilə eyni sayda
+    // migrasiya qeydi ilə bitir — nə az (0000 tətbiq olunmuş sayılmayıb), nə çox.
+    const fresh = tmpDb('fresh-baseline.db')
+    open(fresh)
+    expect(migrationRows(file)).toHaveLength(migrationRows(fresh).length)
   })
 
   it('təkrar açılışda heç nə etmir', () => {

@@ -484,6 +484,60 @@ Qalan hər şey Pillə 4 ilə eynidir: razılaşmama halında heç biri işə d�
 (qayda 34), cəhd BİRDİR, nəticə keşlənmir (qayda 33), qəbul yalnız pulsuz
 siqnalla ölçülür.
 
+### 37. Prompt distilləsi pillə DEYİL — `ladder_rung: -1`
+
+Distillə taskın cavabını yazmır; gələcək EYNİ TİPLİ taskların iş üsulunu yazır.
+0–7 aralığından bir nömrə seçsəydik iki ölçmə birdən yalan danışardı:
+
+- "taskların <20%-i 7-yə çatsın" hədəfi (qayda 31) bir dəfəlik investisiyanı
+  tam başçı icrası kimi sayardı
+- `byRung` bölgüsü onu taskın öz həll xərcinin içində gizlədərdi
+
+Mənfi nömrə "nərdivandan kənar" deməkdir və `PROFILE_RUNGS`-a girmir. Şablonun
+TƏTBİQİ də profildən asılı deyil — o, artıq ödənilmiş mətndir və `cheap`
+profilində belə sıfır əlavə token xərcləyir. Profil yalnız YAZILMASINA təsir
+edir (başçı lazımdır).
+
+Ölçmədə (`savings.ts`): distillə icrasının tokenləri **baseline-a girmir**
+(başçı bu taskı təkbaşına həll etsəydi şablon YAZMAZDI — girsəydi baseline
+şişər və qənaət olduğundan böyük görünərdi), xərci isə **orkestrasiya
+xərcinə** yazılır (klassifikatorla eyni məntiq, qayda 22) və `byRung`-da
+görünür. Gizlədilmir, sadəcə taskın həll xərci sayılmır.
+
+### 38. Şablon yalnız TƏKRARLANAN tipə yazılır
+
+Bir distillə icrası (~800 token) yalnız çox dəfə işlədiləndə özünü ödəyir. Ona
+görə qapı (`distill.ts` → `shouldDistill`) sübut tələb edir: həmin tipdə ƏN AZI
+**iki** task başçının köməyinə möhtac qalmalıdır (`DISTILL_MIN_ASSISTED_TASKS`).
+`1` yazsaydıq hər yeni tip ilk ilişmədə əlavə başçı icrası ödəyərdi — halbuki
+o task bir dəfəlik ola bilər və şablon heç vaxt işlədilməzdi.
+
+Say `runs`-dan gəlir və İKİ şərt birlikdə vacibdir (`countBossAssistedTasks`):
+`escalated_from_run_id IS NOT NULL` (nə isə SINDIQDAN sonra doğub) **və**
+`ladder_rung ∈ {4, 5, 7}`. Birincisiz `boss-only` profilinin adi tək icrası da
+qapını açardı, ikincisiz zəif modelin adi retry-ları açardı. Sayılan TASK-dır,
+icra yox: Pillə 4/5 bir taskda iki sətir yazır.
+
+`boss-only` və `unknown` tam kənardadır: birincisi baseline ölçməsidir (qayda
+25) və ora əlavə icra qatmaq ölçünün özünü korlayardı; ikincisi "bilmirəm"in
+adıdır və ora yazılan mətn təsnif oluna bilməyən HƏR taska yapışardı.
+
+### 39. Uzun şablon KƏSİLMİR, RƏDD edilir
+
+Şablon hər gələcək icrada giriş tokeni kimi ödənilir — yəni BİR DƏFƏLİK xərci
+DAİMİ vergiyə çevirir. Ona görə burada Pillə 4/5-in kəsmə davranışı (qayda 35)
+TƏTBİQ OLUNMUR: yarımçıq kəsilmiş təlimat yanıldıcıdır və o da sonsuz dəfə
+oxunardı. Hədd aşılanda (`TEMPLATE_CHAR_LIMIT`) şablon saxlanılmır — bir icranı
+itirmək daimi vergidən ucuzdur.
+
+Eyni sərtlik parse-a da aiddir (qayda 28 ilə eyni prinsip): hər iki başlıq
+(`### İŞÇİ PROMPTU`, `### RUBRİKA`) mütləqdir. Səhv parse olunmuş mətn bir
+taska deyil, BÜTÜN gələcək tasklara yapışardı.
+
+Şablonun `id`-si MƏZMUN hash-idir və keş açarına girir (`cache-key.ts`):
+şablonsuz cavabın şablonlu icraya (və əksinə) qaytarılması səssiz və təhlükəli
+səhv olardı. Şablonsuz halda açara heç nə əlavə olunmur — mövcud keşlər sınmır.
+
 ## Amplification Ladder
 
 Pillələr ucuzdan bahaya:
@@ -522,6 +576,18 @@ başçı əlçatmazdır                    → əvvəlki nəticə saxlanılır
     başçının qısa mətni → işçinin bir köməkli cəhdi → tutmasa başçının tam icrası
 ```
 
+Kəsişən mexanizm — **prompt distilləsi** (`exec/distill.ts`, pillə DEYİL):
+
+```
+eyni tipdə 2-ci task başçıya qalxdı → başçı BİR DƏFƏ işçi promptu + rubrika yazır
+                                       (`task_templates`, ladder_rung -1)
+sonrakı bütün eyni tipli tasklar     → şablon suffiks kimi əlavə olunur   0 token
+```
+
+Faydası `uses` / `escalations_after` nisbəti ilə ölçülür və `/ladder`
+səhifəsində göstərilir: şablon tətbiq olunub, task yenə qalxırsa mexanizm
+zərərə işləyir.
+
 Pillə 1 axını (`routing/decide.ts`):
 
 ```
@@ -551,9 +617,9 @@ həqiqət mənbəyi yoxdur.
 - **1C** (bitdi) — Pillə 0–2 amplifikasiya: keş, qayda routing + Auto, alət
   yoxlaması, `savings_ledger` (qənaətin dürüst ölçülməsi)
 - **2** (davam edir) — Pillə 3 (best-of-N + razılaşma), 4 (ipucu/shepherding),
-  5 (plan/icra bölgüsü), 6 (self-escalation) və 7-yə eskalasiya bitdi. Qalır:
-  prompt distilləsi (`task_templates`), paralellik və git worktree izolyasiyası
-  (issue #10)
+  5 (plan/icra bölgüsü), 6 (self-escalation), 7-yə eskalasiya və prompt
+  distilləsi (`task_templates`) bitdi. Qalır: paralellik və git worktree
+  izolyasiyası (issue #10)
 - **3** — memory (claude-mem adapter arxasında)
 - **4** — task dekompozisiyası, workflow zəncirləri
 
@@ -571,6 +637,13 @@ həqiqət mənbəyi yoxdur.
   və başçının nə qədər token yazdığı (`HintSummary.hintChars` /
   `PlanSummary.planChars`) yoxlanılmalıdır — başçı müqaviləyə əməl etməyib tam
   həll yazırsa pillə zərərə işləyir.
+- Prompt distilləsinin faydası ölçülməyib: `FakeRunner` ilə hər yol örtülüb,
+  amma zəif modelin başçının yazdığı şablonla NƏ QƏDƏR yaxşılaşdığı bilinmir.
+  İlk real şablonlardan sonra `/ladder` səhifəsindəki `uses` /
+  `escalations_after` nisbəti izlənilməlidir — nisbət pisdirsə şablon zərərə
+  işləyir və qapı (qayda 38) sərtləşdirilməlidir. Eyni şəkildə başçının
+  müqaviləyə əməl edib-etmədiyi (`worker_prompt` uzunluğu, nümunəyə xas
+  detalların sızması) əl ilə yoxlanılmalıdır.
 - `detectMultiStep`-in dəqiqliyi real task korpusunda ölçülməyib: siqnal dar
   seçilib (yalan-müsbət bahadır), amma neçə çoxaddımlı taskın SƏHVƏN Pillə 4-ə
   düşdüyü bilinmir. `runs.ladder_rung` üzərindən 4 və 5-in payı və qəbul

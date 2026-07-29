@@ -212,6 +212,27 @@ export interface RoutingRuleRow {
   prefer: string
 }
 
+/**
+ * Prompt distilləsi — task tipi başına bir dəfə yazılan işçi promptu.
+ *
+ * `uses` və `escalationsAfter` yanaşı durur: şablon tətbiq olunub, task yenə
+ * başçıya qalxa bilər — yalnız istifadə sayı göstərilsəydi mexanizm həmişə
+ * uğurlu görünərdi.
+ */
+export interface TaskTemplateRow {
+  id: string
+  taskType: string
+  workerPrompt: string
+  rubric: string
+  authoredByModelId: string
+  /** `null` = bir dəfəlik investisiyanın xərci bilinmir. */
+  authoringCostUsd: number | null
+  uses: number
+  escalationsAfter: number
+  createdAt: number
+  lastUsedAt: number | null
+}
+
 export interface TaskDetail {
   task: { id: string; prompt: string; status: string; createdAt: number }
   routing: RoutingDecisionRow | null
@@ -277,6 +298,8 @@ export const api = {
       /** Profil → aktiv pillə nömrələri. Həqiqət mənbəyi serverdədir. */
       profileRungs: Record<string, number[]>
     }>('/api/routing/rules'),
+
+  listTemplates: () => request<{ templates: TaskTemplateRow[] }>('/api/templates'),
 
   updateContext: (id: string, body: UpdateContextBody) =>
     request<ContextRow>(`/api/contexts/${id}`, {
