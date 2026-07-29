@@ -465,6 +465,146 @@ export const memoryOps = sqliteTable(
   (t) => [index('memory_ops_task_idx').on(t.taskId, t.at)],
 )
 
+/**
+ * Workflow zəncirləri (Faza 4) — bir taskın nəticəsi digərinin girişi.
+ *
+ * NİYƏ ADDIMLAR AYRICA CƏDVƏLDƏ DEYİL, JSON-DA: addımlar zəncirin TƏRİFİDİR,
+ * müstəqil varlıq deyil — heç vaxt tək-tək sorğulanmır, həmişə bütöv oxunur və
+ * bütöv yazılır. Ayrı cədvəl hər redaktədə sıra nömrələrinin yenidən
+ * hesablanmasını tələb edərdi və "addım silindi, ona istinad edən şərt qaldı"
+ * halını BAZA səviyyəsində həll etməzdi (bunu onsuz da Zod `superRefine` edir).
+ *
+ * `steps_json` sxemi `@orchestris/shared` → `WorkflowSteps`-dədir və HƏM server,
+ * HƏM UI onu oxuyur — iki mənbə olmasın deyə.
+ */
+export const workflows = sqliteTable(
+  'workflows',
+  {
+    id: text('id').primaryKey(),
+    contextId: text('context_id')
+      .notNull()
+      .references(() => contexts.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    description: text('description'),
+    /** `WorkflowSteps` JSON massivi. */
+    stepsJson: text('steps_json').notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+    /** Arxivləşdirilmiş zəncir işə salına bilmir, amma tarixçəsi QALIR. */
+    archivedAt: integer('archived_at'),
+  },
+  (t) => [index('workflows_context_idx').on(t.contextId, t.createdAt)],
+)
+
+/** Zəncirin bir icrası. */
+export const workflowRuns = sqliteTable(
+  'workflow_runs',
+  {
+    id: text('id').primaryKey(),
+    workflowId: text('workflow_id')
+      .notNull()
+      .references(() => workflows.id, { onDelete: 'cascade' }),
+    /** `manual` | `schedule` — avtomatik icranı əl ilə icradan ayırmaq üçün. */
+    trigger: text('trigger').notNull().default('manual'),
+    status: text('status').notNull().default('running'),
+    /**
+     * Zəncirin TƏRİFİ icra anında — sonrakı redaktə tarixçəni yalan
+     * danışdırmamalıdır. Tərifi yalnız `workflows`-dan oxusaydıq, addım
+     * dəyişdirildikdən sonra köhnə icra "başqa addımları qaçırıb" kimi
+     * görünərdi.
+     */
+    stepsJson: text('steps_json').notNull(),
+    startedAt: integer('started_at').notNull(),
+    endedAt: integer('ended_at'),
+    error: text('error'),
+  },
+  (t) => [index('workflow_runs_wf_idx').on(t.workflowId, t.startedAt)],
+)
+
+/**
+ * Zəncirin bir addımının bir icrası (təkrarda bir neçə sətir olur).
+ *
+ * `task_id`-də XARİCİ AÇAR YOXDUR: kontekst silinəndə tasklar kaskadla gedir,
+ * amma zəncirin tarixçəsi QALMALIDIR — "bu zəncir keçən ay nə etdi?" sualının
+ * cavabı taskın ömründən uzun yaşayır (eyni yanaşma: `task_templates`).
+ */
+export const workflowStepRuns = sqliteTable(
+  'workflow_step_runs',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    workflowRunId: text('workflow_run_id')
+      .notNull()
+      .references(() => workflowRuns.id, { onDelete: 'cascade' }),
+    stepId: text('step_id').notNull(),
+    /** Tərifdəki sıra nömrəsi, 0-dan. */
+    stepIndex: integer('step_index').notNull(),
+    /** `task` | `http` */
+    kind: text('kind').notNull(),
+    /** Təkrar nömrəsi, 1-dən. `repeat` olmayan addımda həmişə 1. */
+    attempt: integer('attempt').notNull().default(1),
+    /** Model addımının taskı. HTTP addımında NULL. */
+    taskId: text('task_id'),
+    status: text('status').notNull().default('running'),
+    /** Addımın çıxışı — növbəti addımın `{{previous}}` dəyəri. KƏSİLMİŞ saxlanılır. */
+    output: text('output').notNull().default(''),
+    /** Çıxış hədd aşıb kəsilibsə `true` — istifadəçi tam mətnin taskda olduğunu bilməlidir. */
+    outputTruncated: integer('output_truncated', { mode: 'boolean' })
+      .notNull()
+      .default(false),
+    /** Atlanan addımda "hansı şərt ödənmədi" — budaqlanma səbəbsiz qalmasın. */
+    detail: text('detail'),
+    startedAt: integer('started_at').notNull(),
+    endedAt: integer('ended_at'),
+  },
+  (t) => [index('workflow_step_runs_run_idx').on(t.workflowRunId, t.id)],
+)
+
+/**
+ * Cədvəl üzrə icra (Faza 4) — **hər limit `NOT NULL`**.
+ *
+ * Sxemin forması issue #12-dəki xəbərdarlıqdan doğur: *"nəzarətsiz cədvəl
+ * `$0.50 testdə → $50,000/ay` ssenarisinin ən asan yoludur"*. Limitləri
+ * opsional (NULL) saxlasaydıq, "sonra doldurram" deyən istifadəçi LİMİTSİZ
+ * avtomatik icra alardı — və bunu yalnız hesabı görəndə bilərdi. Baza
+ * səviyyəsindəki `NOT NULL` bunu qeyri-mümkün edir (eyni prinsip: qayda 26 —
+ * bazadakı təminat tətbiq qatındakından güclüdür).
+ *
+ * ÜÇ AYRI TAVAN, ÇÜNKİ HƏR BİRİ FƏRQLİ SIZMA YOLUNU BAĞLAYIR:
+ *  - `budget_usd_per_run` — bir icranın qaçması
+ *  - `budget_usd_total`   — icraların YIĞILMASI (dəqiqədə $0.50 = aylıq $21,600)
+ *  - `max_runs`           — abunəlik icraları: real xərc `0`-dır və USD tavanı
+ *    onları HEÇ VAXT tutmur; sayğac isə tutur
+ */
+export const schedules = sqliteTable(
+  'schedules',
+  {
+    id: text('id').primaryKey(),
+    workflowId: text('workflow_id')
+      .notNull()
+      .references(() => workflows.id, { onDelete: 'cascade' }),
+    intervalSeconds: integer('interval_seconds').notNull(),
+    enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+    budgetUsdPerRun: real('budget_usd_per_run').notNull(),
+    budgetUsdTotal: real('budget_usd_total').notNull(),
+    maxRuns: integer('max_runs').notNull(),
+    /** İndiyə qədər ölçülmüş REAL xərc. Abunəlik icralarında `0` qalır. */
+    spentUsd: real('spent_usd').notNull().default(0),
+    runs: integer('runs').notNull().default(0),
+    nextRunAt: integer('next_run_at').notNull(),
+    lastRunAt: integer('last_run_at'),
+    /**
+     * Cədvəl NİYƏ söndürüldü.
+     *
+     * Sahə olmasaydı istifadəçi "niyə işləmir?" sualının cavabını heç yerdə
+     * tapa bilməzdi — avtomatik icranın səssizcə dayanması ən pis haldır: adam
+     * işin getdiyini zənn edir.
+     */
+    disabledReason: text('disabled_reason'),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [index('schedules_due_idx').on(t.enabled, t.nextRunAt)],
+)
+
 export const contextsRelations = relations(contexts, ({ many }) => ({
   tasks: many(tasks),
 }))

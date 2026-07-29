@@ -836,6 +836,124 @@ altı mislini xərcləyə bilərdi. Büdcə bitəndə qalan alt-tasklar `pending
 QALMIR, `failed` işarələnir — UI-da "gözləyir" görünən, əslində heç vaxt
 başlamayacaq task yalandır.
 
+### 54. Zəncirin öz məntiqi SIFIR token xərcləyir
+
+Workflow zəncirlərində (Faza 4) şərtlər determinist predikatlardır və dəyişən
+əvəzlənməsi sadə mətn əməliyyatıdır (`exec/workflow.ts`). "Bu cavab yaxşıdırmı,
+növbəti addıma keçək?" sualını modelə vermək ən asan yol olardı — və hər addımda
+ƏLAVƏ icra ödəyərdi. Zəncir uzandıqca orkestrasiya xərci taskların öz xərcini
+üstələyərdi; bu, layihənin məqsədinin əksidir (eyni fəlsəfə: Pillə 2 — pulsuz
+həqiqət mənbəyi razılaşmadan güclüdür).
+
+`matches` (regex) şərti QƏSDƏN YOXDUR: istifadəçidən gələn regex katastrofik
+geri izləmə (ReDoS) ilə serveri dondura bilər, halbuki real ehtiyac status
+yoxlaması və mətn axtarışıdır.
+
+**Sınıq addım zənciri DAYANDIRIR** — `continueOnError: true` ilə açıq şəkildə
+ləğv edilməsə. Əks default sınmış birinci addımdan sonra qalan bütün addımların
+pulunu ZİBİL giriş üzərində yandırardı. Bayraq eyni zamanda `test: 'failed'`
+şərtini işlək edir: "sındısa təmir addımını qaçır" budağı yalnız zəncir sağ
+qaldıqda mümkündür. Davranış MAGİYA ilə təxmin edilmir (məs. "sonrakı addımda
+`failed` şərti varmı?"), istifadəçinin açıq qərarı olur.
+
+**Atlanan addım `{{previous}}` üçün ŞƏFFAFDIR** — `previous` son İCRA OLUNMUŞ
+addımdır. Əks halda budaqlanma özünü sındırardı: `when` ödənməyən addımdan
+sonrakı hər addım boş giriş alardı. Atlanan addım yenə də `workflow_step_runs`-a
+sətir yazır (səbəbi ilə): yoxsa istifadəçi "5-ci addım niyə işləmədi?" sualının
+cavabını heç yerdə tapa bilməzdi.
+
+**Təkrarda `{{previous}}` addımın ÖZ əvvəlki cəhdidir.** Səbəb Pillə 0-dır: eyni
+prompt eyni keş açarını verir, yəni dəyişməyən promptla təkrar həmişə eyni cavabı
+alar və dövrə `max`-a qədər boş fırlanardı. Öz çıxışını geri vermək təkrarı
+"düzəlişlə yenidən cəhd et"ə çevirir. `{{previous}}`-a toxunmayan prompt yenə
+keşə düşür — yəni mənasız təkrar bahalı yox, sadəcə faydasız olur.
+
+**Zəncir addımlarında izolyasiya SÖNDÜRÜLÜR** (`LadderInput.isolate: false`).
+Addımlar alt-tasklar kimi ASILIDIR (qayda 53): 2-ci addım 1-cinin yazdığı faylı
+görməlidir. Hər addıma ayrıca worktree açılsaydı, hər addımın işi öz `pending`
+diff-ində qalar və növbəti addım köhnə kod görərdi. Dekompozisiyadan fərqli
+olaraq ORTAQ ağac da açılmır: diff `artifacts`-da TASKA bağlıdır, zəncir
+icrasının isə öz taskı yoxdur (bax "Bilinən boşluqlar").
+
+### 55. `contains` müqayisəsi Azərbaycan `i` cütünü nəzərə almalıdır
+
+Qayda 20-nin ailəsindən, amma fərqli mexanizm. Ölçülmüş:
+
+```
+'QAYDASINDA'.toLowerCase()  →  'qaydasinda'   (I → i, NÖQTƏLİ)
+'qaydasında'                →  'qaydasında'   (ı, NÖQTƏSİZ)   ← uyğun GƏLMİR
+'İSTİFADƏ'.toLowerCase()    →  'i̇sti̇fadə'      (i + U+0307 birləşən nöqtə)
+```
+
+Yəni sadə `toLowerCase()` hər iki tərəfə tətbiq olunsa BELƏ, böyük hərfli
+Azərbaycan mətni axtarışa uyğun gəlmir. `toLocaleLowerCase('az')` bunu düzəldər,
+amma İNGİLİS mətnini sındırar (`API` → `apı`) — halbuki model çıxışı hər ikisini,
+üstəlik kodu da daşıyır.
+
+`workflow.ts` → `foldForSearch` hər iki tərəfi VAHİD formaya yığır: birləşən
+nöqtə atılır, `ı` → `i` çevrilir. Qiyməti: `contains` artıq `ı`/`i`
+fərqləndirmir ("sinif" mətni "sınıf" axtarışına da uyğun gəlir). Bu,
+GENİŞLƏNMƏDİR və şüurlu seçimdir — səssizcə uyğun GƏLMƏMƏK qat-qat pisdir:
+budaq işə düşmür və səbəbi heç yerdə görünmür.
+
+### 56. Xarici HTTP addımı FAIL-CLOSED-dur
+
+Zəncir taskın nəticəsini — istifadəçinin kodunu, sənədini, bəzən sirrini —
+XARİCİ ünvana göndərir. Ona görə default "heç nə göndərmə"dir və icazə yalnız
+`ORCHESTRIS_WORKFLOW_HTTP_ALLOW` ilə verilir (qayda 50 ilə eyni prinsip). Siyahı
+boşdursa hər HTTP addımı səhvlə dayanır və `fetch` ÇAĞIRILMIR. Fail-open
+yazsaydıq, dəyişəni təyin etməyi unudan istifadəçi ən geniş icazəni səssizcə
+alardı — və bunu yalnız məlumat kənara çıxandan sonra bilərdi.
+
+Üç əlavə məhdudiyyət, hər biri ayrıca bir sızma yolunu bağlayır:
+
+- **URL-də dəyişən əvəzlənmir**, yalnız gövdədə. URL-ə model çıxışını yapışdırmaq
+  ona ünvanı seçdirmək olardı — yəni zəif modelin (və ya onun oxuduğu ETİBARSIZ
+  yaddaş mətninin, qayda 45) sorğunu yönləndirməsi.
+- **Başlıq yazmaq olmur.** `Authorization` imkanı verilsəydi, istifadəçi açarını
+  zəncir tərifinə — yəni SQLite-a və oradan UI-a — yazardı (qayda 13).
+- **Host müqayisəsi TAM uyğunluqdur.** `endsWith` işlətsəydik `evil-example.com`
+  keçərdi; prefiks müqayisəsi isə `example.com.attacker.net`-i buraxardı.
+
+Cavab `redactAll`-dan keçir (qayda 18): endpoint göndərilən məzmunu əks etdirə
+bilir və o mətn `workflow_step_runs`-a yazılır.
+
+### 57. Cədvəldə ÜÇ tavan var və hər biri ayrı sızma yolunu bağlayır
+
+Issue #12 xəbərdarlığı bu sxemin bütün formasını təyin edir: *"nəzarətsiz cədvəl
+`$0.50 testdə → $50,000/ay` ssenarisinin ən asan yoludur"*. Ona görə hər üç limit
+`NOT NULL`-dur (bazada, tətbiq qatında yox — qayda 26 prinsipi):
+
+| Limit | Nəyin qarşısını alır |
+|---|---|
+| `budget_usd_per_run` | bir icranın qaçması — `BudgetGuard`-a ötürülür |
+| `budget_usd_total` | icraların YIĞILMASI: dəqiqədə $0.50 = aylıq $21,600 |
+| `max_runs` | abunəlik icraları: real xərc `0`-dır, USD tavanı ONLARI TUTMUR |
+
+**Ölçülmüş incəlik — keş USD tavanını dayandırır.** Cədvəlin addım mətnləri
+tərifdə SABİTDİR, yəni hər icra eyni keş açarını verir (Pillə 0). İkinci icradan
+sonra xərc praktiki olaraq `0`-a düşür və `budget_usd_total` bir daha ARTMIR.
+Qənaət baxımından yaxşı, tavan baxımından təhlükəli: USD tək başına cədvəli heç
+vaxt dayandırmaya bilər. `max_runs` məhz buna görə ayrıca və məcburi tavandır
+(`scheduler.test.ts`-də test edilib).
+
+**Naməlum xərc cədvəli SÖNDÜRÜR.** Qayda 4 deyir ki, naməlum `0` deyil. Adi
+taskda bu sadəcə ölçmənin boşluğudur; AVTOMATİK icrada isə "nə qədər
+xərclədiyimi bilmirəm, amma davam edirəm" deməkdir — yəni tavanın kor olması.
+
+Tavanlar `>=` ilə yoxlanılır (`>` yox): `maxRuns = 10` "on icra" deməkdir, on
+birinci başlamamalıdır — `>` yazsaydıq hər tavan bir vahid sızardı. Növbəti icra
+vaxtı və sayğac icradan ƏVVƏL yazılır: icra intervaldan uzun çəkərsə, sonra
+yazsaydıq hər tik yeni icra başladar və onlar üst-üstə yığılardı.
+
+**Taymer `buildApp`-da QURULMUR** (`startScheduler` default `false`).
+`buildApp` testlərin əsas giriş nöqtəsidir; hər test fon taymeri açsaydı,
+testlər bir-birinin cədvəlini qaçırar və ən pisi — səssizcə model çağıra
+bilərdi. Məntiq taymerdən asılı deyil: `Scheduler.tick(now)` saatı parametr kimi
+alır, ona görə aylıq davranış testdə saniyələrdə yoxlanılır. Taymer yalnız
+`main.ts`-dədir və `unref` edilir — əks halda `SIGINT`-dən sonra proses
+bağlanmazdı.
+
 ## Amplification Ladder
 
 Pillələr ucuzdan bahaya:
@@ -927,6 +1045,34 @@ Bölgü AVTOMATİK DEYİL (qayda 52) və nəticəyə toxunmur: parçaların cava
 `/tasks/:id` cavabındakı `subtasks` ağacındadır, xərci isə valideynin
 `savings_ledger` sətrində orkestrasiya xərci kimi görünür (qayda 51).
 
+Beşinci kəsişən mexanizm — **workflow zəncirləri** (`exec/workflow*.ts`, pillə
+DEYİL, Faza 4):
+
+```
+zəncir tərifi (`workflows.steps_json`) → addımlar SIRA İLƏ
+addım çıxışı → növbətinin `{{previous}}` girişi              0 token
+`when` şərti ödənmirsə → addım ATLANIR (zəncir davam edir)   0 token
+`repeat.until` ödənənə qədər → addım təkrarlanır (max 5)
+`continueOnError` yoxdursa → sınıq addım zənciri DAYANDIRIR
+`kind: 'http'` → xarici sorğu, YALNIZ ağ siyahıdakı hosta    (fail-closed)
+büdcə          → addımlar ARASINDA paylaşılır
+```
+
+Zəncirin öz məntiqi **sıfır token** xərcləyir (qayda 54) — hər addım isə tam
+nərdivandan keçir. İzolyasiya söndürülür: addımlar asılıdır.
+
+Altıncı kəsişən mexanizm — **cədvəl üzrə icra** (`exec/scheduler.ts`, Faza 4):
+
+```
+`schedules` sətri → hər `interval_seconds`-də bir zəncir icrası
+hər icraya      → `budget_usd_per_run` sərt limit kimi ötürülür
+hər icradan sonra → REAL xərc `savings_ledger`-dən yığılır
+tavan doldu (USD / icra sayı / naməlum xərc) → cədvəl SÖNDÜRÜLÜR + səbəb yazılır
+```
+
+Üç tavanın hər biri ayrı sızma yolunu bağlayır (qayda 57) və hamısı MƏCBURİDİR.
+Taymer yalnız `main.ts`-də qurulur; `Scheduler.tick(now)` saatı parametr alır.
+
 Pillə 1 axını (`routing/decide.ts`):
 
 ```
@@ -962,9 +1108,10 @@ həqiqət mənbəyi yoxdur.
 - **3** (bitdi) — memory: `MemoryProvider` adapteri (`NullProvider` default,
   `ClaudeMemProvider` opsional), token büdcəsi + prompt injection qoruması,
   yaddaş xərcinin ayrıca ölçülməsi (`memory_ops` → `savings_ledger`)
-- **4** (davam edir) — task dekompozisiyası (**bitdi**: `tasks.parent_task_id`,
-  `Decomposer`, alt-task ağacı UI-da); workflow zəncirləri, cədvəl üzrə icra və
-  `/workflows` səhifəsi **hələ yoxdur**
+- **4** (bitdi) — task dekompozisiyası (`tasks.parent_task_id`, `Decomposer`,
+  alt-task ağacı), workflow zəncirləri (`workflows` / `workflow_runs` /
+  `workflow_step_runs`, şərtli budaqlanma + təkrar + xarici HTTP addımı),
+  cədvəl üzrə icra (`schedules`, üç məcburi tavan) və `/workflows` səhifəsi
 
 ## Bilinən boşluqlar
 
@@ -984,11 +1131,39 @@ həqiqət mənbəyi yoxdur.
   üzərində qurur"). Paralel icra üçün başçıdan asılılıq QRAFI istənilməlidir və
   müstəqil parçalar ayrı worktree-lərdə qaçmalıdır; qazanc divar saatıdır, xərci
   isə N ağac + mürəkkəbləşən bölgü promptudur — ölçülməyib.
-- Yekun yoxlama SINANDA təmir dövrəsi YOXDUR: valideyn `verification_failed`
-  olur və istifadəçi özü qərar verir. Avtomatik təmir üçün "hansı parça sındı?"
-  sualına cavab lazımdır, `tsc` çıxışı isə bunu demir — səhv təxminlə yanlış
-  parçanı yenidən qaçırmaq pulu boşa yandırardı. Workflow zəncirləri (Faza 4-ün
-  qalan hissəsi) bu boşluğu qapatmalıdır.
+- Dekompozisiyada yekun yoxlama SINANDA avtomatik təmir dövrəsi YOXDUR: valideyn
+  `verification_failed` olur və istifadəçi özü qərar verir. Avtomatik təmir üçün
+  "hansı parça sındı?" sualına cavab lazımdır, `tsc` çıxışı isə bunu demir —
+  səhv təxminlə yanlış parçanı yenidən qaçırmaq pulu boşa yandırardı. Zəncirlə
+  bu, ƏL İLƏ qurula bilər (`continueOnError` + `test: 'failed'` budağı), amma
+  dekompozisiyanın içində avtomatik deyil.
+- **Zəncirin nəticəsi izolyasiya edilmir.** Addımlar asılı olduğu üçün hər
+  addıma ayrıca worktree açmaq mümkün deyil (qayda 54), ORTAQ ağac isə diff-i
+  yazacaq sahib tələb edir — `artifacts` cədvəli TASKA bağlıdır, zəncir
+  icrasının isə öz taskı yoxdur. Yəni `code` addımları istifadəçinin repo-suna
+  BİRBAŞA yazır və `git apply` baxış qapısı (qayda 42) işə düşmür. Həll yolu
+  bəllidir: zəncir icrasına dekompozisiyadakı kimi sintetik valideyn task vermək
+  — o zaman ağac, diff və alt-task ağacı maşınları olduğu kimi işləyər.
+- Zəncirlərin FAYDASI ölçülməyib: `FakeRunner` ilə hər yol örtülüb, amma
+  "çoxaddımlı işi zəncirə bölmək tək taskdan yaxşıdırmı?" sualı real modellə
+  sınanmayıb. Xüsusən `{{previous}}` ilə ötürülən mətnin uzunluğu hər addımda
+  giriş tokeni kimi ödənilir (`STEP_OUTPUT_CHAR_LIMIT` = 8000) — uzun zəncirdə
+  bu, dekompozisiyadan bahalı ola bilər. Ölçmə üsulu: eyni işi bir taskla,
+  dekompozisiya ilə və zəncirlə qaçırıb `savings_ledger` cəmini tutuşdurmaq.
+- **Cədvəl üzrə icra real modellə sınanmayıb.** Tavanlar `FakeRunner` ilə tam
+  örtülüdür (`scheduler.test.ts`), amma ən vacib sual — "keş səbəbindən USD
+  tavanı praktiki olaraq dayanır" (qayda 57) — real işçi ilə təsdiqlənməlidir.
+  İlk real cədvəldən sonra `schedules.spent_usd` və `runs` nisbəti izlənilməli,
+  `spent_usd` gözləniləndən çox kiçik qalırsa səbəb keşdir və `max_runs`
+  yeganə işləyən tavandır.
+- Cədvəl `interval + startAt` ilə qurulur, tam cron ifadəsi ilə YOX. "Hər gün
+  saat 9-da" `intervalSeconds: 86400` + uyğun `startAt` ilə ifadə olunur, amma
+  "iş günləri" və ya "ayın 1-i" ifadə oluna bilmir. Cron parseri asılılıq və ya
+  ~200 sətir kod + test tələb edir; ehtiyac real işlətmədə görünəndə əlavə
+  edilməlidir.
+- Zəncir redaktoru JSON-dur: struktur redaktor (sürüklə-burax) yoxdur. Səhvlər
+  eyni Zod sxemi ilə göndərilməzdən ƏVVƏL tutulur və addımlar oxunaqlı siyahı
+  kimi göstərilir (`StepList`), amma uzun zəncirlərdə bu, əlverişsizdir.
 - **`ClaudeMemProvider`-in sim protokolu təsdiqlənməyib.** Bu maşında
   claude-mem quraşdırılmayıb (`~/.claude-mem` yoxdur, `claude-mem` PATH-da
   yoxdur), ona görə endpoint yolları (`/health`, `/recall`, `/remember`), port

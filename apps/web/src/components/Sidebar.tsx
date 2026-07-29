@@ -5,6 +5,7 @@ const LINKS = [
   { to: '/contexts', label: 'Kontekstlər' },
   { to: '/providers', label: 'Provayderlər' },
   { to: '/ladder', label: 'Nərdivan' },
+  { to: '/workflows', label: 'Zəncirlər' },
   { to: '/history', label: 'Tarixçə' },
 ] as const
 
