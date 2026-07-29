@@ -10,6 +10,7 @@ import {
   listVerifications,
 } from '../db/repo.js'
 import { latestRoutingDecision, listRoutingDecisions } from '../db/routing-repo.js'
+import { listTemplates } from '../db/template-repo.js'
 import type { BudgetLimits } from '../exec/budget.js'
 import { activeRungs, type Ladder } from '../exec/ladder.js'
 import type { RunSupervisor } from '../exec/supervisor.js'
@@ -45,6 +46,17 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
       AMPLIFICATION_PROFILES.map((p) => [p, [...activeRungs(p)].sort((a, b) => a - b)]),
     ),
   }))
+
+  /**
+   * Prompt distilləsi — başçının bir dəfə yazdığı, sonsuz dəfə işlədilən
+   * şablonlar.
+   *
+   * `uses` və `escalationsAfter` BİRLİKDƏ qaytarılır: yalnız istifadə sayını
+   * göstərmək mexanizmi həmişə uğurlu kimi göstərərdi — halbuki şablon tətbiq
+   * olunub, task yenə başçıya qalxa bilər. Mətnin özü də qaytarılır ki,
+   * istifadəçi "başçı nə yazdı?" sualını yoxlaya bilsin.
+   */
+  app.get('/api/templates', async () => ({ templates: listTemplates(db) }))
 
   app.post('/api/tasks', async (req, reply) => {
     const parsed = CreateTaskBody.safeParse(req.body)

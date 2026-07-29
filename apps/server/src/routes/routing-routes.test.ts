@@ -10,6 +10,11 @@ import {
   upsertProvider,
   type ModelUpsert,
 } from '../db/registry-repo.js'
+import {
+  recordTemplateEscalation,
+  recordTemplateUse,
+  saveTemplate,
+} from '../db/template-repo.js'
 import type { Catalog } from '../registry/models-dev.js'
 import { FakeRunner } from '../runners/fake.js'
 import { MemoryStore } from '../secrets/keychain.js'
@@ -171,6 +176,39 @@ describe('GET /api/routing/rules', () => {
     // ikisi də 7-dən bahadır.
     expect(body.profileRungs.quality).toEqual([0, 1, 2, 3, 4, 5, 6, 7])
     expect(body.profileRungs['boss-only']).toEqual([7])
+  })
+})
+
+describe('GET /api/templates', () => {
+  it('şablon yoxdursa boş siyahı qaytarır', async () => {
+    const { app } = makeApp()
+    const body = (await app.inject({ method: 'GET', url: '/api/templates' })).json()
+
+    expect(body.templates).toEqual([])
+  })
+
+  it('istifadə və sonrakı eskalasiyaları BİRLİKDƏ verir', async () => {
+    // Yalnız `uses` göstərilsəydi UI distilləni həmişə uğurlu kimi göstərərdi.
+    const { app, db } = makeApp()
+    saveTemplate(db, {
+      id: 'hash-1',
+      taskType: 'translate',
+      workerPrompt: 'ADDIMLAR',
+      rubric: 'ŞƏRTLƏR',
+      authoredByModelId: 'başçı',
+    })
+    recordTemplateUse(db, 'translate')
+    recordTemplateEscalation(db, 'translate')
+
+    const body = (await app.inject({ method: 'GET', url: '/api/templates' })).json()
+
+    expect(body.templates[0]).toMatchObject({
+      taskType: 'translate',
+      uses: 1,
+      escalationsAfter: 1,
+      // Xərc bilinmirsə NULL qalır — `0` "pulsuz" yalanı olardı (qayda 4).
+      authoringCostUsd: null,
+    })
   })
 })
 

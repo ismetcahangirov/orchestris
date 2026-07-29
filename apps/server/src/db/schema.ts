@@ -257,6 +257,45 @@ export const models = sqliteTable(
 )
 
 /**
+ * Prompt distilləsi — task TİPİ başına bir dəfə yazılan işçi promptu + rubrika.
+ *
+ * Nərdivanın pilləsi DEYİL, kəsişən mexanizmdir: başçı bir dəfə ödənilir,
+ * sonrakı bütün eyni tipli tasklar onu SIFIR əlavə token ilə işlədir.
+ *
+ * NİYƏ `runs`-a XARİCİ AÇAR YOXDUR: şablonu ödəyən taskın silinməsi (kontekst
+ * silinəndə kaskad) şablonu APARMAMALIDIR — bütün məqsəd odur ki, investisiya
+ * onu doğuran taskdan UZUN yaşasın. `authoring_run_id` sadəcə izdir.
+ *
+ * `uses` və `escalations_after` birlikdə "şablon işləyirmi?" sualına cavab
+ * verir: şablon tətbiq olunub, amma task yenə başçıya qalxırsa, distillə
+ * zərərə işləyir və bu, ölçülə bilməlidir (eyni prinsip: qayda 22).
+ */
+export const taskTemplates = sqliteTable(
+  'task_templates',
+  {
+    /** Məzmun hash-i — şablon yenidən yazılanda DƏYİŞİR (keş açarı bundan asılıdır). */
+    id: text('id').primaryKey(),
+    taskType: text('task_type').notNull(),
+    workerPrompt: text('worker_prompt').notNull(),
+    rubric: text('rubric').notNull(),
+    authoredByModelId: text('authored_by_model_id').notNull(),
+    authoringRunId: text('authoring_run_id'),
+    /** NULL = bir dəfəlik investisiyanın xərci BİLİNMİR (qayda 4). */
+    authoringCostUsd: real('authoring_cost_usd'),
+    /** Şablon neçə taskda tətbiq olundu. */
+    uses: integer('uses').notNull().default(0),
+    /** Şablon tətbiq olunduğu HALDA yenə başçıya qalxan tasklar. */
+    escalationsAfter: integer('escalations_after').notNull().default(0),
+    createdAt: integer('created_at').notNull(),
+    lastUsedAt: integer('last_used_at'),
+  },
+  // Task tipi başına BİR aktiv şablon. Təminat BAZADA verilir: tətbiq qatında
+  // saxlansaydı, iki paralel task eyni tip üçün iki şablon yazıb bir-birinin
+  // investisiyasını görünməz edərdi.
+  (t) => [uniqueIndex('task_templates_type_idx').on(t.taskType)],
+)
+
+/**
  * Qənaətin ölçülməsi — task başına BİR sətir.
  *
  * Sütunların ayrılığı qəsdəndir və hər biri bir yalanın qarşısını alır:

@@ -1,6 +1,10 @@
 import type { RunRow } from '../lib/api.js'
 
 const RUNG_LABEL: Record<number, string> = {
+  // Prompt distilləsi nərdivanın pilləsi DEYİL (`exec/distill.ts`): bu icra
+  // taskın cavabını yazmır, gələcək eyni tipli taskların iş üsulunu yazır.
+  // "Pillə -1" kimi göstərsək istifadəçi onu ən ucuz addım sanardı.
+  [-1]: 'Prompt distilləsi (nərdivandan kənar)',
   0: 'Pillə 0 — keş',
   1: 'Pillə 1 — qayda',
   2: 'Pillə 2 — alət yoxlaması',
