@@ -314,6 +314,37 @@ edilir. Baza silinib yenidən yaradılmır.
   bazalarda "yalnız bir başçı" təminatı səssizcə itərdi (qayda: bazadakı
   təminat tətbiq qatındakından güclüdür).
 
+### 27. Partial axında eyni məzmun İKİ dəfə gəlir
+
+`--include-partial-messages` bayrağı ilə `claude` əvvəlcə `stream_event`
+deltalarını, SONRA həmin blokun tam `assistant` mesajını verir. Hər ikisini
+emit etsək cavab jurnalda və UI-da iki dəfə görünərdi (real fixture ilə
+sınandı: `"SALAM"` → `"SALAMSALAM"`).
+
+`ClaudeStreamParser` deltaları blok indeksi üzrə yığır və `assistant` bloku
+yığılmış mətnə BƏRABƏR olanda onu atır. Müqayisə məzmun üzrədir, indeks
+üzrə yox — `assistant` mesajı indeks daşımır. Axıdılmamış blok tapılmır və
+normal emit olunur, ona görə parser bayraq açıq da, bağlı da işləyir.
+
+Digər ölçülmüş incəliklər (`claude` 2.1.220):
+
+- **Bayraq prompt keşini SINDIRMIR.** Eyni prompt, ardıcıl iki icra:
+  bayraqsız `cache_read` 21,102 / `cache_creation` 2,224 / $0.0075;
+  bayraqla `cache_read` **21,102** / 2,180 / $0.0074. Ona görə bayraq
+  `CLAUDE_STABLE_FLAGS`-a əlavə EDİLMƏDİ (qayda 1 — dəst dondurulub),
+  ayrıca və söndürülə bilən şəkildə verilir.
+- `input_json_delta` alət girişinin **yarımçıq JSON** parçalarıdır — atılır,
+  tam giriş `assistant` blokundan götürülür.
+- `signature_delta` düşünmə imzasıdır — heç vaxt emit olunmur.
+- `stream_event/message_delta` KUMULYATİV `usage` daşıyır — emit edilsəydi
+  tokenlər iki dəfə sayılardı (qayda 3).
+- Hər API mesajı blok indeksini 0-dan başladır → `message_start`-da
+  akkumulyator təmizlənir, yoxsa ikinci mesajın mətni birincininki ilə
+  qarışardı.
+- Deltalar hərf-hərf DEYİL, ~5–15 tokenlik parçalarla gəlir (ölçülmüş: 58
+  tokenlik düşünmə = 4 delta). UI ardıcıl deltaları göstərişdə birləşdirir
+  (`lib/mergeDeltas.ts`) — jurnalda isə hamısı ayrıca qalır.
+
 ## Amplification Ladder (Faza 2+)
 
 Pillələr ucuzdan bahaya:
@@ -352,9 +383,9 @@ həqiqət mənbəyi yoxdur.
 ## Fazalar
 
 - **1A** (bitdi) — təməl: Runner interfeysi, CLI parser-lər, SQLite, REST/WS, UI
-- **1B** — API açarları + keychain (bitdi), models.dev model kəşfi (bitdi),
-  ApiRunner — AI SDK 7 (bitdi), `--include-partial-messages` hərf-hərf axını
-  (öz fixture-i ilə) — qalır
+- **1B** (bitdi) — API açarları + keychain, models.dev model kəşfi,
+  ApiRunner (AI SDK 7), `--include-partial-messages` hərf-hərf axını
+  (öz fixture-ləri ilə)
 - **1C** (bitdi) — Pillə 0–2 amplifikasiya: keş, qayda routing + Auto, alət
   yoxlaması, `savings_ledger` (qənaətin dürüst ölçülməsi)
 - **2** — tam Ladder, paralellik, git worktree izolyasiyası
@@ -367,6 +398,9 @@ həqiqət mənbəyi yoxdur.
   Ona görə codex parser-inin **uğur yolu** real fixture ilə yoxlanılmayıb —
   yalnız xəta yolu. `codex login` edildikdən sonra
   `fixtures/cli/codex-success.jsonl` tutulmalı və parser təsdiqlənməlidir.
+- Hərf-hərf axının **canlı UI-da** görünüşü brauzerdə əl ilə yoxlanılmayıb —
+  parser və `mergeDeltas` real fixture-lər üzərində test edilib, amma
+  WebSocket → React yolu yalnız mövcud testlərlə örtülüdür.
 - API provayderlərinin **uğur yolu** real açarla yoxlanılmayıb: model kəşfi
   saxta `fetch` ilə test olunur. Real açar əlavə edildikdə
   `/api/providers/:id/discover` bir dəfə əl ilə təsdiqlənməlidir.

@@ -1,6 +1,7 @@
 import type { RunEvent } from '@orchestris/shared'
 import { useState } from 'react'
 import type { StoredEventRow } from '../lib/api.js'
+import { mergeDeltas } from '../lib/mergeDeltas.js'
 
 const LABEL: Record<RunEvent['t'], string> = {
   start: 'Başladı',
@@ -71,8 +72,9 @@ export default function EventTimeline({
   events: readonly StoredEventRow[]
 }): React.JSX.Element {
   const [showThinking, setShowThinking] = useState(false)
-  const visible = showThinking ? events : events.filter((r) => r.event.t !== 'think')
-  const thinkCount = events.length - events.filter((r) => r.event.t !== 'think').length
+  const merged = mergeDeltas(events)
+  const visible = showThinking ? merged : merged.filter((r) => r.event.t !== 'think')
+  const thinkCount = merged.length - merged.filter((r) => r.event.t !== 'think').length
 
   return (
     <div>

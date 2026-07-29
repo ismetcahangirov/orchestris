@@ -10,6 +10,7 @@ testinin ehtiyacı olan yalnız budur.
     python fixtures/sanitize.py <giris.jsonl> <cixis.jsonl>
 """
 import json
+import os
 import re
 import sys
 import uuid
@@ -27,7 +28,7 @@ REDACT_FIELDS = {
     "output",
     "stdout",
     "stderr",
-    "thinking",
+    "signature",
     "slash_commands",
     "agents",
     "mcp_servers",
@@ -36,6 +37,15 @@ REDACT_FIELDS = {
     "plugins",
     "memory_paths",
 }
+
+# Uzunluq qoruyan maska ilə əvəz olunan sahələr.
+#
+# `--include-partial-messages` ilə eyni məzmun İKİ dəfə gəlir: əvvəlcə
+# `thinking_delta` parçaları, sonra tam `assistant` bloku. Parser dublikatı
+# məhz "parçaların birləşməsi == blok" bərabərliyi ilə tapır. `<redacted-...>`
+# yazsaq bu bərabərlik sınar və fixture parser-in ƏSAS məntiqini yoxlaya
+# bilməz. Ona görə məzmun silinir, UZUNLUQ isə saxlanılır.
+MASK_FIELDS = {"thinking"}
 
 _uuid_map: dict[str, str] = {}
 
@@ -50,10 +60,21 @@ def stable_uuid(original: str) -> str:
 
 HOME_RE = re.compile(r"[A-Za-z]:[\\/]{1,2}Users[\\/]{1,2}[^\\/\"\s]+")
 
+# İstifadəçi adı yolun ORTASINDA da qala bilər: qovluq adları onu içinə ala
+# bilir (`C--Users-cahan-projects-...`), `input_json_delta` isə yolu ixtiyari
+# yerdən iki parçaya bölür — hər iki halda HOME_RE uyğun gəlmir. Ona görə adın
+# özü ayrıca əvəz olunur. 3 hərfdən qısa adlar buraxılır: adi mətni korlayardı.
+USERNAME = os.path.basename(os.path.expanduser("~"))
+USERNAME_RE = (
+    re.compile(re.escape(USERNAME), re.IGNORECASE) if len(USERNAME) >= 3 else None
+)
+
 
 def scrub_string(s: str) -> str:
     s = UUID_RE.sub(lambda m: stable_uuid(m.group(0)), s)
     s = HOME_RE.sub("/home/user", s)
+    if USERNAME_RE is not None:
+        s = USERNAME_RE.sub("user", s)
     return s
 
 
@@ -61,7 +82,9 @@ def scrub(node, key: str | None = None):
     if isinstance(node, dict):
         out = {}
         for k, v in node.items():
-            if k in REDACT_FIELDS:
+            if k in MASK_FIELDS and isinstance(v, str):
+                out[k] = "x" * len(v)
+            elif k in REDACT_FIELDS:
                 if isinstance(v, list):
                     out[k] = [f"<redacted-{k}-{i}>" for i in range(len(v))]
                 elif isinstance(v, str):
