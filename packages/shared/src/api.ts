@@ -102,6 +102,18 @@ export const SetModelRoleBody = z.object({
   id: z.string().min(1),
   role: z.enum(MODEL_ROLES),
   value: z.boolean(),
+  /**
+   * YALNIZ `role: 'worker'` üçün: bu model TƏK işçi olsun, qalanlarından rol
+   * alınsın.
+   *
+   * NİYƏ BAYRAQ, NİYƏ AYRICA ROUTE DEYİL: `boss`/`classifier` onsuz da
+   * eksklüzivdir, `worker` isə çoxluqdur — fərq rolun ÖZÜNDƏ deyil, çağıranın
+   * NİYYƏTİNDƏdir. `/providers`-dəki checkbox "bunu da əlavə et" deyir, idarə
+   * panelindəki dropdown "işçi budur" deyir. Bayraq olmasaydı, dropdown köhnə
+   * işçiləri təmizləmək üçün N ayrı sorğu göndərməli olardı — yarıda sınsa
+   * sistem "işçi yoxdur" vəziyyətində qalardı.
+   */
+  exclusive: z.boolean().optional(),
 })
 export type SetModelRoleBody = z.infer<typeof SetModelRoleBody>
 

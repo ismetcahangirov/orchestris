@@ -2,8 +2,40 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ApiProviderRow, ProvidersResponse } from '../lib/api.js'
+import type { ApiProviderRow, ModelRow, ProvidersResponse } from '../lib/api.js'
 import Dashboard from './Dashboard.js'
+
+/** Seçicidə görünəcək model sətri — default: aktiv, rolsuz. */
+function modelRow(over: Partial<ModelRow> = {}): ModelRow {
+  return {
+    id: 'anthropic:haiku',
+    providerId: 'anthropic',
+    modelId: 'haiku',
+    displayName: 'Haiku',
+    contextLimit: 200_000,
+    outputLimit: null,
+    priceIn: 1,
+    priceOut: 5,
+    priceCacheRead: null,
+    priceCacheWrite: null,
+    toolCall: true,
+    structuredOutput: true,
+    reasoning: false,
+    source: 'models.dev',
+    enabled: true,
+    roleBoss: false,
+    roleWorker: false,
+    roleClassifier: false,
+    priceKnown: true,
+    ...over,
+  }
+}
+
+/** Default model dəsti: biri CLI (abunəlik), biri API (real pul). */
+const MODELS: ModelRow[] = [
+  modelRow({ id: 'cli:claude:sonnet', providerId: 'cli:claude', modelId: 'sonnet-4-5' }),
+  modelRow(),
+]
 
 function apiProvider(over: Partial<ApiProviderRow> = {}): ApiProviderRow {
   return {
@@ -38,13 +70,15 @@ interface Call {
   init: RequestInit | undefined
 }
 
-function mockFetch(data: ProvidersResponse): Call[] {
+function mockFetch(data: ProvidersResponse, models: ModelRow[] = MODELS): Call[] {
   const calls: Call[] = []
   globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
     calls.push({ url, init })
     const body =
       url === '/api/providers'
         ? data
+        : url === '/api/models'
+          ? models
         : url === '/api/contexts'
           ? [
               {
@@ -86,8 +120,11 @@ function mockFetch(data: ProvidersResponse): Call[] {
   return calls
 }
 
-function renderPage(data: ProvidersResponse = providers()): Call[] {
-  const calls = mockFetch(data)
+function renderPage(
+  data: ProvidersResponse = providers(),
+  models: ModelRow[] = MODELS,
+): Call[] {
+  const calls = mockFetch(data, models)
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={qc}>

@@ -1,6 +1,8 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import ModelRolePanel from '../components/ModelRolePanel.js'
+import { selectableModels } from '../lib/selectableModels.js'
 import SavingsPanel from '../components/SavingsPanel.js'
 import { api } from '../lib/api.js'
 
@@ -20,7 +22,10 @@ export default function Dashboard(): React.JSX.Element {
   const [contextId, setContextId] = useState('')
   // `auto` = Pillə 1 (qayda routing) işçini özü seçir.
   const [runner, setRunner] = useState('auto')
-  const [model, setModel] = useState('claude-haiku-4-5-20251001')
+  // Boş sətir = "hələ seçilməyib". Əvvəllər burada SABİT KODLANMIŞ model adı
+  // vardı (`claude-haiku-4-5-20251001`) — o, istifadəçinin quraşdırmasında
+  // ümumiyyətlə olmaya bilərdi və task icra anında sınardı.
+  const [model, setModel] = useState('')
   const [prompt, setPrompt] = useState('')
   // Faza 4 — başçı taskı alt-tasklara bölsün. AÇIQ seçimdir: bölgü bir başçı
   // icrası + N nərdivan dövrəsi ödəyir, faydası isə hələ ölçülməyib.
@@ -28,12 +33,41 @@ export default function Dashboard(): React.JSX.Element {
 
   const { data: contexts } = useQuery({ queryKey: ['contexts'], queryFn: api.listContexts })
   const { data: providers } = useQuery({ queryKey: ['providers'], queryFn: api.listProviders })
+  // Eyni `queryKey` `ModelRolePanel`-də də işlədilir — react-query onu bir dəfə
+  // yükləyib paylaşır, yəni ikinci sorğu getmir.
+  const { data: models } = useQuery({ queryKey: ['models'], queryFn: () => api.listModels() })
   const { data: savings } = useQuery({
     queryKey: ['savings', 'month'],
     queryFn: () => api.getSavings('month'),
   })
 
   const auto = runner === AUTO
+
+  // Əl ilə seçimdə model siyahısı SEÇİLMİŞ RUNNER-ə görə süzülür: `api:openai`
+  // seçib Anthropic modeli yazmaq mümkün olmamalıdır (əvvəlki sərbəst mətn
+  // sahəsində məhz bu mümkün idi və səhv yalnız icra anında üzə çıxırdı).
+  const modelChoices = selectableModels(models ?? [], providers).filter(
+    (o) => o.runnerId === runner,
+  )
+  /**
+   * Faktiki model — seçim TÖRƏMƏdir, ayrıca state deyil.
+   *
+   * Səbəb: runner dəyişəndə köhnə model artıq siyahıda olmaya bilər. State-i
+   * `onChange`-də sinxronlaşdırsaydıq, modellər hələ yüklənməmiş runner
+   * dəyişikliyi boş seçim buraxardı (yükləmə ilə klik arasında yarış). Törəmə
+   * dəyər həmişə cari siyahıya uyğun gəlir.
+   *
+   * Əvvəlki davranış SABİT KODLANMIŞ ad idi (`claude-haiku-4-5-20251001`) — o,
+   * istifadəçinin quraşdırmasında ümumiyyətlə olmaya bilərdi və səhv yalnız
+   * icra anında üzə çıxardı.
+   */
+  const effectiveModel =
+    model !== '' && modelChoices.some((o) => o.model.modelId === model)
+      ? model
+      : (modelChoices[0]?.model.modelId ?? '')
+  // Seçiləcək model yoxdursa əl ilə icra göndərilə bilməz — server boş model
+  // adını "əl ilə seçim" kimi oxuyardı və icra dərhal sınardı.
+  const needsModel = !auto && effectiveModel === ''
 
   const submit = useMutation({
     mutationFn: () =>
@@ -42,7 +76,7 @@ export default function Dashboard(): React.JSX.Element {
         prompt,
         // Auto rejimində runner və model GÖNDƏRİLMİR — onları router seçir.
         // Boş sətir göndərsək server onu "əl ilə seçim" kimi oxuyardı.
-        ...(auto ? {} : { runner, model }),
+        ...(auto ? {} : { runner, model: effectiveModel }),
         // `false` GÖNDƏRİLMİR: server sahənin YOXLUĞUNU "bölmə" kimi oxuyur və
         // hər sorğuya `decompose: false` qoymaq köhnə klientləri fərqləndirilməz
         // edərdi.
@@ -93,16 +127,21 @@ export default function Dashboard(): React.JSX.Element {
   const selected = options.find((o) => o.id === runner)
   const blocked = selected !== undefined && !selected.ready
 
+
   return (
     <div className="max-w-3xl">
       <h1 className="mb-1 text-xl font-semibold">İdarə paneli</h1>
       <p className="mb-6 text-sm text-ink-dim">Yeni task başlat və canlı izlə.</p>
 
+      <ModelRolePanel />
+
       <form
         className="space-y-4 rounded-lg border border-white/10 bg-surface-2 p-5"
         onSubmit={(e) => {
           e.preventDefault()
-          if (contextId !== '' && prompt.trim() !== '' && !blocked) submit.mutate()
+          if (contextId !== '' && prompt.trim() !== '' && !blocked && !needsModel) {
+            submit.mutate()
+          }
         }}
       >
         <div className="flex flex-wrap gap-3">
@@ -140,11 +179,22 @@ export default function Dashboard(): React.JSX.Element {
           {!auto && (
             <label className="flex flex-col gap-1 text-xs text-ink-dim">
               Model
-              <input
-                value={model}
+              <select
+                value={effectiveModel}
                 onChange={(e) => setModel(e.target.value)}
                 className="w-72 rounded border border-white/15 bg-surface px-3 py-2 font-mono text-sm text-ink"
-              />
+              >
+                {modelChoices.map((o) => (
+                  <option key={o.model.id} value={o.model.modelId}>
+                    {o.model.modelId}
+                  </option>
+                ))}
+              </select>
+              {modelChoices.length === 0 && (
+                <span className="text-warn">
+                  Bu runner üçün aktiv model yoxdur — /providers səhifəsinə bax
+                </span>
+              )}
             </label>
           )}
         </div>
@@ -189,7 +239,9 @@ export default function Dashboard(): React.JSX.Element {
 
         <button
           type="submit"
-          disabled={contextId === '' || prompt.trim() === '' || blocked || submit.isPending}
+          disabled={
+            contextId === '' || prompt.trim() === '' || blocked || needsModel || submit.isPending
+          }
           className="rounded bg-accent/20 px-4 py-2 text-sm text-accent disabled:opacity-40"
         >
           {submit.isPending ? 'Başladılır…' : 'İşə sal'}

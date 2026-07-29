@@ -17,6 +17,7 @@ import {
   setModelEnabled,
   setProviderCredentialRef,
   setProviderDiscoveryResult,
+  setSoleWorkerRole,
   setWorkerRole,
   upsertModels,
   upsertProvider,
@@ -235,7 +236,13 @@ export function registerProviderRoutes(app: FastifyInstance, deps: ProviderRoute
     if (model === undefined) return reply.code(404).send({ error: 'Model tapılmadı' })
 
     if (parsed.data.role === 'worker') {
-      setWorkerRole(db, model.id, parsed.data.value)
+      // `exclusive` yalnız rol VERİLƏNDƏ mənalıdır: "tək işçi bu olsun".
+      // Rol ALINANDA (`value: false`) onun mənası olmazdı — nəyi tək qoyaq?
+      if (parsed.data.value && parsed.data.exclusive === true) {
+        setSoleWorkerRole(db, model.id)
+      } else {
+        setWorkerRole(db, model.id, parsed.data.value)
+      }
     } else if (parsed.data.value) {
       setExclusiveRole(db, parsed.data.role, model.id)
     } else {

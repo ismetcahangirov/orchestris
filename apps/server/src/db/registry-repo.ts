@@ -196,6 +196,28 @@ export function setWorkerRole(db: Db, id: string, isWorker: boolean): void {
   db.update(models).set({ roleWorker: isWorker }).where(eq(models.id, id)).run()
 }
 
+/**
+ * İşçi rolunu YALNIZ bir modelə verir — qalanlarından alır.
+ *
+ * NİYƏ AYRICA FUNKSİYA: `role_worker` ÇOXLUQdur (Auto onun içindən seçir) və
+ * `/providers` səhifəsindəki checkbox-lar məhz bunu idarə edir. İdarə
+ * panelindəki DROPDOWN isə tək seçim deməkdir — "işçi budur". İki fərqli
+ * niyyət, iki fərqli əməliyyat; birini digərinin üstündən yazsaydıq, checkbox
+ * ilə qurulmuş çoxlu-işçi konfiqurasiyası hər dropdown toxunuşunda səssizcə
+ * dağılardı və istifadəçi bunu yalnız routing qərarlarında görərdi.
+ *
+ * `setExclusiveRole` ilə eyni forma (tranzaksiya: əvvəlcə hamıdan al, sonra
+ * hədəfə ver) — amma bazada UNİKAL İNDEKS YOXDUR, çünki çoxlu işçi QANUNİDİR.
+ * Yəni burada tənhalıq tətbiq qatının qərarıdır, baza təminatı deyil; bu fərq
+ * qəsdəndir və `models_single_boss_idx` ilə qarışdırılmamalıdır.
+ */
+export function setSoleWorkerRole(db: Db, id: string): void {
+  db.transaction((tx) => {
+    tx.update(models).set({ roleWorker: false }).where(eq(models.roleWorker, true)).run()
+    tx.update(models).set({ roleWorker: true }).where(eq(models.id, id)).run()
+  })
+}
+
 export function listWorkerModels(db: Db): ModelRecord[] {
   return db
     .select()
