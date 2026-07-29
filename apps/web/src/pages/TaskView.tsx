@@ -4,10 +4,30 @@ import EventTimeline from '../components/EventTimeline.js'
 import RoutingBadge from '../components/RoutingBadge.js'
 import RunHeader from '../components/RunHeader.js'
 import UsageBadge from '../components/UsageBadge.js'
-import { api, type StoredEventRow } from '../lib/api.js'
+import WorktreePanel from '../components/WorktreePanel.js'
+import { api, type StoredEventRow, type TaskDetail } from '../lib/api.js'
 import { useRunStream } from '../lib/useRunStream.js'
 
 const TERMINAL = new Set(['succeeded', 'failed', 'interrupted', 'budget_exceeded'])
+
+/**
+ * Worktree diff-i taskın statusundan bir qədər SONRA yazılır — nərdivan onu
+ * `finally` blokunda toplayır (`exec/ladder.ts`). Sorğunu status terminal olan
+ * kimi dayandırsaydıq, diff paneli yalnız səhifə əl ilə yeniləndikdə görünərdi.
+ *
+ * Gözləmə MƏHDUDDUR: dəyişiklik yoxdursa artefakt HEÇ VAXT yazılmır (worktree
+ * dərhal silinir), yəni "artefakt gələnə qədər gözlə" şərti tək başına sonsuz
+ * sorğu deməkdir.
+ */
+const DIFF_GRACE_MS = 15_000
+
+function needsPoll(data: TaskDetail | undefined): boolean {
+  if (data === undefined) return true
+  if (!TERMINAL.has(data.task.status)) return true
+  if (data.artifacts.length > 0) return false
+  if (!data.runs.some((r) => r.worktreePath !== null)) return false
+  return Date.now() - (data.task.completedAt ?? 0) < DIFF_GRACE_MS
+}
 
 export default function TaskView(): React.JSX.Element {
   const { id } = useParams<{ id: string }>()
@@ -18,8 +38,7 @@ export default function TaskView(): React.JSX.Element {
     queryFn: () => api.getTask(id as string),
     enabled: id !== undefined,
     // Fon icrası bitənə qədər qısa interval; sonra dayanır.
-    refetchInterval: (q) =>
-      q.state.data !== undefined && TERMINAL.has(q.state.data.task.status) ? false : 1500,
+    refetchInterval: (q) => (needsPoll(q.state.data) ? 1500 : false),
   })
 
   if (error !== null) return <p className="text-bad">{String(error)}</p>
@@ -52,6 +71,12 @@ export default function TaskView(): React.JSX.Element {
       <div className="mb-4">
         <RoutingBadge decision={data.routing} />
       </div>
+
+      {/* Diff icra jurnalından ƏVVƏL gəlir: task bitəndə istifadəçinin ilk
+          sualı "nə dəyişdi və qəbul edimmi?" olur, "hansı hadisələr oldu?" yox. */}
+      {(data.artifacts ?? []).map((artifact) => (
+        <WorktreePanel key={artifact.id} artifact={artifact} />
+      ))}
 
       <div className="space-y-5">
         {data.runs.map((run) => {

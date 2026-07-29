@@ -4,7 +4,9 @@ import Fastify, { type FastifyInstance } from 'fastify'
 import type { Db } from './db/client.js'
 import { getRunTaskId, getTask, markOrphanedRunsInterrupted } from './db/repo.js'
 import { Ladder } from './exec/ladder.js'
+import { TaskPool } from './exec/pool.js'
 import { RunSupervisor } from './exec/supervisor.js'
+import type { WorktreeManager } from './exec/worktree.js'
 import type { Catalog } from './registry/models-dev.js'
 import { registerContextRoutes } from './routes/contexts.js'
 import {
@@ -34,6 +36,16 @@ export interface BuildAppInput {
   /** Testlərdə model kəşfi və kataloq yeniləməsi şəbəkəyə çıxmasın. */
   fetchImpl?: typeof fetch
   catalogCacheFile?: string
+  /**
+   * Paralel kod taskları üçün git worktree izolyasiyası.
+   *
+   * Verilməsə izolyasiya söndürülür və tasklar birbaşa kontekstin `cwd`-sində
+   * işləyir. Default QƏSDƏN yoxdur: testlərin əksəriyyəti `cwd` təyin etmir,
+   * amma default `GitWorktrees` qoysaydıq, `cwd` verən hər test istifadəçinin
+   * REAL `~/.orchestris/worktrees/` qovluğuna yazardı (eyni prinsip:
+   * `KeyringStore` — CLAUDE.md qayda 13).
+   */
+  worktrees?: WorktreeManager
 }
 
 export function buildApp(input: BuildAppInput): FastifyInstance {
@@ -55,7 +67,10 @@ export function buildApp(input: BuildAppInput): FastifyInstance {
   const router = new WorkerRouter(db, runners, {
     isRunnerReady: (id) => readiness.isReady(id),
   })
-  const ladder = new Ladder(db, supervisor, router)
+  const ladder = new Ladder(db, supervisor, router, input.worktrees)
+  // Kontekst başına paralellik. Limit hər task göndərişində oxunur, ona görə
+  // istifadəçi ayarı dəyişəndə server yenidən başladılmır.
+  const pool = new TaskPool()
 
   // runId → taskId çevirməsi keşlənir: hər hadisə üçün DB sorğusu artıqdır.
   const runToTask = new Map<string, string>()
@@ -87,7 +102,15 @@ export function buildApp(input: BuildAppInput): FastifyInstance {
 
   registerContextRoutes(app, db)
   registerStatsRoutes(app, db)
-  registerTaskRoutes(app, { db, supervisor, ladder, runners, readiness })
+  registerTaskRoutes(app, {
+    db,
+    supervisor,
+    ladder,
+    runners,
+    readiness,
+    pool,
+    ...(input.worktrees !== undefined ? { worktrees: input.worktrees } : {}),
+  })
   registerProviderRoutes(app, {
     db,
     runners,

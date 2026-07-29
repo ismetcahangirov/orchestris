@@ -22,6 +22,14 @@ export default function Contexts(): React.JSX.Element {
     },
   })
 
+  const setParallel = useMutation({
+    mutationFn: (input: { id: string; maxParallel: number }) =>
+      api.updateContext(input.id, { maxParallel: input.maxParallel }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['contexts'] })
+    },
+  })
+
   return (
     <div className="max-w-3xl">
       <h1 className="mb-1 text-xl font-semibold">Kontekstlər</h1>
@@ -70,13 +78,45 @@ export default function Contexts(): React.JSX.Element {
       <ul className="space-y-2">
         {data?.map((c) => (
           <li key={c.id} className="rounded-lg border border-white/10 bg-surface-2 p-4">
-            <div className="font-medium">{c.name}</div>
-            <div className="mt-1 font-mono text-xs text-ink-dim">
-              {c.cwd ?? '(iş qovluğu yoxdur)'}
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="font-medium">{c.name}</div>
+                <div className="mt-1 font-mono text-xs text-ink-dim">
+                  {c.cwd ?? '(iş qovluğu yoxdur)'}
+                </div>
+                <div className="mt-1 text-xs text-ink-dim">
+                  profil: {c.amplificationProfile} · işçi rejimi: {c.workerMode}
+                </div>
+              </div>
+              <label className="flex flex-col gap-1 text-xs text-ink-dim">
+                Paralel task
+                <select
+                  value={String(c.maxParallel)}
+                  onChange={(e) =>
+                    setParallel.mutate({ id: c.id, maxParallel: Number(e.target.value) })
+                  }
+                  className="rounded border border-white/15 bg-surface px-2 py-1 text-sm text-ink"
+                >
+                  {/* `0` = avtomatik: `min(4, nüvə-2)`. Sabit rəqəm default ola
+                      bilməz, çünki cavab maşından asılıdır. */}
+                  <option value="0">avtomatik</option>
+                  {[1, 2, 3, 4, 6, 8].map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
-            <div className="mt-1 text-xs text-ink-dim">
-              profil: {c.amplificationProfile} · işçi rejimi: {c.workerMode}
-            </div>
+            {c.cwd !== null && c.maxParallel !== 1 && (
+              // İzolyasiya YALNIZ paralel kod tasklarında işə düşür — istifadəçi
+              // "niyə mənim repoma birbaşa yazıldı?" sualının cavabını burada
+              // görməlidir.
+              <p className="mt-2 text-xs text-ink-dim">
+                Paralel kod taskları ayrıca git worktree-də icra olunur; nəticə
+                diff kimi göstərilir və repoya yalnız siz qəbul edəndə yazılır.
+              </p>
+            )}
           </li>
         ))}
       </ul>

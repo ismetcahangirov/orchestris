@@ -1,5 +1,6 @@
 import { AMPLIFICATION_PROFILES, CreateTaskBody, type Runner } from '@orchestris/shared'
 import type { FastifyInstance } from 'fastify'
+import { getDiffArtifact, listArtifacts, resolveArtifact } from '../db/artifact-repo.js'
 import type { Db } from '../db/client.js'
 import {
   createTask,
@@ -13,7 +14,9 @@ import { latestRoutingDecision, listRoutingDecisions } from '../db/routing-repo.
 import { listTemplates } from '../db/template-repo.js'
 import type { BudgetLimits } from '../exec/budget.js'
 import { activeRungs, type Ladder } from '../exec/ladder.js'
+import type { TaskPool } from '../exec/pool.js'
 import type { RunSupervisor } from '../exec/supervisor.js'
+import { resolveMaxParallel, type WorktreeManager } from '../exec/worktree.js'
 import type { RunnerReadiness } from '../routing/readiness.js'
 import { BUILTIN_RULES } from '../routing/rules.js'
 
@@ -24,6 +27,10 @@ export interface TaskRouteDeps {
   runners: ReadonlyMap<string, Runner>
   /** Auto rejimindən əvvəl runner-lərin auth vəziyyətini təzələyir. */
   readiness?: RunnerReadiness
+  /** Kontekst başına paralellik hovuzu. Verilməsə tasklar hovuzsuz qaçır. */
+  pool?: TaskPool
+  /** Diff-in qəbulu/rəddi üçün. Verilməsə həmin route-lar 503 qaytarır. */
+  worktrees?: WorktreeManager
 }
 
 export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): void {
@@ -113,10 +120,8 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
           : {}),
     }
 
-    // İcra fon rejimində gedir — HTTP cavabı onu gözləmir. Vəziyyət WebSocket
-    // və `GET /api/tasks/:id` vasitəsilə izlənilir.
-    void ladder
-      .run({
+    const start = (): Promise<unknown> =>
+      ladder.run({
         task: { id: task.id, prompt: body.prompt },
         context: {
           id: ctx.id,
@@ -124,6 +129,7 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
           verifyCommandsJson: ctx.verifyCommandsJson,
           amplificationProfile: ctx.amplificationProfile,
           defaultWorkerModelId: ctx.defaultWorkerModelId,
+          maxParallel: ctx.maxParallel,
         },
         // Hər ikisi birlikdə verilir və ya heç biri — Ladder bunu "əl ilə
         // seçim" və ya "Auto" kimi oxuyur.
@@ -132,9 +138,21 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
           : {}),
         limits,
       })
-      .catch((err: unknown) => {
-        app.log.error({ err }, 'ladder.run tutulmamış xəta')
-      })
+
+    // İcra fon rejimində gedir — HTTP cavabı onu gözləmir. Vəziyyət WebSocket
+    // və `GET /api/tasks/:id` vasitəsilə izlənilir.
+    //
+    // Hovuz limiti aşılıbsa task NÖVBƏDƏ gözləyir və `pending` statusunda qalır:
+    // hovuzsuz halda istifadəçinin ard-arda göndərdiyi hər task dərhal öz CLI
+    // prosesini açardı (bax `pool.ts`).
+    const queued =
+      deps.pool === undefined
+        ? start()
+        : deps.pool.run(ctx.id, resolveMaxParallel(ctx.maxParallel), start)
+
+    void queued.catch((err: unknown) => {
+      app.log.error({ err }, 'ladder.run tutulmamış xəta')
+    })
 
     return reply.code(202).send({ taskId: task.id })
   })
@@ -149,12 +167,82 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
       // tasklarda bir neçə qərar ola bilər (klassifikator + fallback).
       routing: latestRoutingDecision(db, task.id) ?? null,
       routingHistory: listRoutingDecisions(db, task.id),
+      // İzolyasiya edilmiş worktree-dəki dəyişiklik. `pending` sətir = diskdə
+      // gözləyən iş; istifadəçi onu qəbul edənə qədər əsas repoya HEÇ NƏ
+      // yazılmır.
+      artifacts: listArtifacts(db, task.id),
       runs: listRunsForTask(db, task.id).map((r) => ({
         ...r,
         events: listEvents(db, r.id),
         verifications: listVerifications(db, r.id),
       })),
     }
+  })
+
+  /**
+   * Diff-i əsas repoya TƏTBİQ edir (istifadəçinin "qəbul et" qərarı).
+   *
+   * NİYƏ AVTOMATİK DEYİL: paralel agentlər eyni faylı fərqli cür dəyişə bilər
+   * və hansının qalacağını yalnız insan bilir. Avtomatik merge etsəydik, iki
+   * taskın nəticəsi bir-birini səssizcə üstələyərdi — məhz izolyasiyanın
+   * qarşısını almaq istədiyi hal.
+   */
+  app.post<{ Params: { id: string } }>('/api/tasks/:id/diff/accept', async (req, reply) => {
+    const artifact = getDiffArtifact(db, req.params.id)
+    if (artifact === undefined) return reply.code(404).send({ error: 'Diff tapılmadı' })
+    if (artifact.status !== 'pending') {
+      return reply.code(409).send({ error: `Diff artıq həll olunub: ${artifact.status}` })
+    }
+    // Kəsilmiş diff YARIMÇIQDIR — `git apply` onu ya rədd edər, ya da (daha
+    // pisi) yarısını tətbiq edərdi. Belə halda istifadəçi worktree-dən əl ilə
+    // götürməlidir; yalan "qəbul edildi" cavabı vermirik.
+    if (artifact.truncated) {
+      return reply.code(409).send({
+        error: 'Diff həddi aşdığı üçün kəsilib — tam dəyişikliyi worktree-dən götürün',
+        worktreePath: artifact.worktreePath,
+      })
+    }
+    if (deps.worktrees === undefined) {
+      return reply.code(503).send({ error: 'Worktree dəstəyi qurulmayıb' })
+    }
+
+    const applied = await deps.worktrees.apply({
+      repo: artifact.repoPath,
+      diff: artifact.content,
+    })
+    if (!applied.ok) {
+      return reply.code(409).send({ error: applied.error ?? 'Diff tətbiq olunmadı' })
+    }
+
+    resolveArtifact(db, artifact.id, 'accepted')
+    await deps.worktrees.remove({
+      repo: artifact.repoPath,
+      path: artifact.worktreePath,
+      branch: artifact.branch,
+    })
+    return { ok: true, files: artifact.files }
+  })
+
+  /** Diff-i atır və worktree-ni silir. Əsas repoya heç nə yazılmır. */
+  app.post<{ Params: { id: string } }>('/api/tasks/:id/diff/reject', async (req, reply) => {
+    const artifact = getDiffArtifact(db, req.params.id)
+    if (artifact === undefined) return reply.code(404).send({ error: 'Diff tapılmadı' })
+    if (artifact.status !== 'pending') {
+      return reply.code(409).send({ error: `Diff artıq həll olunub: ${artifact.status}` })
+    }
+    if (deps.worktrees === undefined) {
+      return reply.code(503).send({ error: 'Worktree dəstəyi qurulmayıb' })
+    }
+
+    // Sətir SİLİNMİR, `rejected` işarələnir: "bu task nə etmişdi?" sualının
+    // cavabı diff mətnindədir və o, qərardan sonra da lazım ola bilər.
+    resolveArtifact(db, artifact.id, 'rejected')
+    await deps.worktrees.remove({
+      repo: artifact.repoPath,
+      path: artifact.worktreePath,
+      branch: artifact.branch,
+    })
+    return { ok: true }
   })
 
   app.post<{ Params: { id: string } }>('/api/tasks/:id/cancel', async (req, reply) => {

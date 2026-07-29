@@ -52,6 +52,8 @@ export interface ContextUpdate {
   workerMode?: string | undefined
   defaultWorkerModelId?: string | null | undefined
   verifyCommands?: readonly string[] | undefined
+  /** `0` = avtomatik (`resolveMaxParallel`). */
+  maxParallel?: number | undefined
   budgetTokens?: number | null | undefined
   budgetUsd?: number | null | undefined
   budgetSeconds?: number | null | undefined
@@ -76,6 +78,7 @@ export function updateContext(db: Db, id: string, input: ContextUpdate): Context
     ...(input.verifyCommands !== undefined
       ? { verifyCommandsJson: JSON.stringify(input.verifyCommands) }
       : {}),
+    ...(input.maxParallel !== undefined ? { maxParallel: input.maxParallel } : {}),
     ...(input.budgetTokens !== undefined ? { budgetTokens: input.budgetTokens } : {}),
     ...(input.budgetUsd !== undefined ? { budgetUsd: input.budgetUsd } : {}),
     ...(input.budgetSeconds !== undefined ? { budgetSeconds: input.budgetSeconds } : {}),

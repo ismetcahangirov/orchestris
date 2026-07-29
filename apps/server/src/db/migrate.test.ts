@@ -224,6 +224,18 @@ describe('köhnə (Faza 1A) baza', () => {
     expect(migrationRows(file)).toHaveLength(migrationRows(fresh).length)
   })
 
+  it('köhnə `max_parallel = 1` dəyərini avtomatikə (0) çevirir', () => {
+    const file = seedFaza1aDb()
+    const sqlite = open(file).$client
+    const row = sqlite.prepare('SELECT max_parallel AS v FROM contexts WHERE id = ?').get('ctx1') as {
+      v: number
+    }
+    // `1` istifadəçinin seçimi DEYİL — onu dəyişmək üçün API ümumiyyətlə yox
+    // idi. Olduğu kimi saxlasaydıq, mövcud bütün kontekstlərdə paralellik
+    // əbədi söndürülü qalardı.
+    expect(row.v).toBe(0)
+  })
+
   it('təkrar açılışda heç nə etmir', () => {
     const file = seedFaza1aDb()
     open(file)

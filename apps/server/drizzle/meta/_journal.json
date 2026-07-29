@@ -15,6 +15,13 @@
       "when": 1785323291773,
       "tag": "0001_sloppy_orphan",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1785325529648,
+      "tag": "0002_demonic_ironclad",
+      "breakpoints": true
     }
   ]
 }
