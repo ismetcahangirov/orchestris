@@ -48,6 +48,12 @@ export interface WorkflowRunRow {
   trigger: string
   status: string
   stepsJson: string
+  /**
+   * Zəncirin sintetik valideyn taskı (issue #36) — addımların ORTAQ worktree-si
+   * onun adına açılır və diff onun `artifacts` sətrinə `pending` yazılır.
+   * Yalnız `http` addımlarından ibarət zəncirdə `null`.
+   */
+  rootTaskId: string | null
   startedAt: number
   endedAt: number | null
   error: string | null

@@ -91,7 +91,13 @@ export function parseSteps(row: { stepsJson: string }): WorkflowStep[] | null {
 
 export function createWorkflowRun(
   db: Db,
-  input: { workflowId: string; trigger: string; stepsJson: string },
+  input: {
+    workflowId: string
+    trigger: string
+    stepsJson: string
+    /** Sintetik valideyn task (issue #36). `http`-only zəncirdə verilmir. */
+    rootTaskId?: string | undefined
+  },
 ): WorkflowRunRow {
   const id = randomUUID()
   db.insert(workflowRuns)
@@ -100,6 +106,7 @@ export function createWorkflowRun(
       workflowId: input.workflowId,
       trigger: input.trigger,
       stepsJson: input.stepsJson,
+      ...(input.rootTaskId !== undefined ? { rootTaskId: input.rootTaskId } : {}),
       startedAt: now(),
     })
     .run()

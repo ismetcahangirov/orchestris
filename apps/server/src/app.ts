@@ -121,11 +121,14 @@ export function buildOrchestris(input: BuildAppInput): OrchestrisApp {
   const pool = new TaskPool()
   // Workflow zəncirləri (Faza 4). Xarici HTTP addımları FAIL-CLOSED-dur: icazə
   // yalnız `ORCHESTRIS_WORKFLOW_HTTP_ALLOW` ilə verilir (`workflow-http.ts`).
+  // `worktrees` ötürülür ki, zəncirin kod addımları da baxış qapısından keçsin
+  // (issue #36) — diff sintetik valideyn taskın adına `pending` yazılır.
   const workflowEngine = new WorkflowEngine({
     db,
     ladder,
     decomposer,
     pool,
+    ...(input.worktrees !== undefined ? { worktrees: input.worktrees } : {}),
     ...(input.fetchImpl !== undefined ? { fetchImpl: input.fetchImpl } : {}),
   })
 
