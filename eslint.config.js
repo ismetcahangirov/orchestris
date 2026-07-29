@@ -18,6 +18,7 @@ export default tseslint.config(
             'eslint.config.js',
             'vitest.config.ts',
             'apps/web/vitest.config.ts',
+            'apps/server/drizzle.config.ts',
             'scripts/fetch-models-snapshot.mjs',
           ],
         },

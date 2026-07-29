@@ -1,4 +1,4 @@
-import { relations } from 'drizzle-orm'
+import { relations, sql } from 'drizzle-orm'
 import { index, integer, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
 
 /** İş sahəsi — istifadəçinin "yeni kontekst başlat" dediyi şey. */
@@ -240,7 +240,20 @@ export const models = sqliteTable(
       .default(false),
     updatedAt: integer('updated_at').notNull(),
   },
-  (t) => [index('models_provider_idx').on(t.providerId)],
+  (t) => [
+    index('models_provider_idx').on(t.providerId),
+    // Başçı və klassifikator YALNIZ BİR model ola bilər. Qismən (partial)
+    // unikal indeks: yalnız 1 olan sətirlərə tətbiq olunur, 0-lar sərbəst
+    // təkrarlanır. Bu, "iki başçı" vəziyyətini tətbiq qatında yox, BAZADA
+    // qeyri-mümkün edir — ona görə sxemdə olmalıdır, yoxsa migrasiya onu
+    // yaratmaz və yeni bazalarda təminat itər.
+    uniqueIndex('models_single_boss_idx')
+      .on(t.roleBoss)
+      .where(sql`${t.roleBoss} = 1`),
+    uniqueIndex('models_single_classifier_idx')
+      .on(t.roleClassifier)
+      .where(sql`${t.roleClassifier} = 1`),
+  ],
 )
 
 /**

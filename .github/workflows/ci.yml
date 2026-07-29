@@ -36,6 +36,24 @@ jobs:
 
       - run: pnpm typecheck
 
+      # Sxem ↔ migrasiya dreyfi. `schema.ts` dəyişib migrasiya generasiya
+      # olunmasa, tətbiq işə düşəndə köhnə sxemlə qalar və səhv yalnız
+      # istifadəçinin bazasında görünərdi. `generate` dəyişiklik yoxdursa heç
+      # nə yazmır — fayl yaranırsa deməli generasiya unudulub.
+      # `</dev/null`: drizzle-kit ada dəyişikliyində sual verə bilər, CI-da
+      # asılıb qalmaq əvəzinə dərhal sınmalıdır.
+      - name: Migrasiya sinxronluğu
+        shell: bash
+        run: |
+          pnpm --filter @orchestris/server db:check </dev/null
+          pnpm --filter @orchestris/server db:generate </dev/null
+          if [ -n "$(git status --porcelain apps/server/drizzle)" ]; then
+            echo "::error::schema.ts dəyişib, amma migrasiya generasiya olunmayıb."
+            echo "Düzəliş: pnpm --filter @orchestris/server db:generate"
+            git status --porcelain apps/server/drizzle
+            exit 1
+          fi
+
       - run: pnpm test
 
       - run: pnpm --filter @orchestris/web build
