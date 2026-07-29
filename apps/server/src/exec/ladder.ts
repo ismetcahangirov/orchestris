@@ -1,5 +1,4 @@
 import { AMPLIFICATION_PROFILES, type RunEvent, type Runner } from '@orchestris/shared'
-import { saveDiffArtifact } from '../db/artifact-repo.js'
 import type { Db } from '../db/client.js'
 import {
   appendEvent,
@@ -57,6 +56,7 @@ import { computeTaskSavings } from './savings.js'
 import type { RunSupervisor } from './supervisor.js'
 import { buildFeedbackPrompt, runVerifications } from './verify.js'
 import { shouldIsolate, type Worktree, type WorktreeManager } from './worktree.js'
+import { finalizeWorktree } from './worktree-artifact.js'
 
 /** Yoxlama dövrəsinin maksimum cəhd sayı. */
 const MAX_ATTEMPTS = 3
@@ -204,6 +204,16 @@ export interface LadderInput {
   runner?: Runner
   model?: string
   limits?: BudgetLimits
+  /**
+   * ÇAĞIRAN TƏRƏFİN AÇDIĞI worktree (dekompozisiya).
+   *
+   * Verilibsə nərdivan öz ağacını AÇMIR və verilən ağacı BAĞLAMIR — sahibi
+   * çağırandır. Səbəb qayda 40-dakı ilə eynidir, sadəcə bir səviyyə yuxarıda:
+   * bölünmüş taskın alt-taskları EYNİ ağacda işləməlidir, yoxsa 2-ci alt-task
+   * 1-cinin işini görməz və "sonrakı əvvəlkinin üzərində qurur" müqaviləsi
+   * səssizcə pozulardı.
+   */
+  worktree?: Worktree
 }
 
 export interface AgreementSummary {
@@ -303,8 +313,13 @@ export interface LadderResult {
  *
  * `Ladder`-in sahəsi DEYİL, hər `run()` üçün yeni yaradılır — eyni instansiya
  * paralel tasklar arasında paylaşılır.
+ *
+ * EXPORT OLUNUR, çünki dekompozisiya eyni problemi BİR SƏVİYYƏ YUXARIDA həll
+ * edir: bölünmüş taskın hər alt-taskı öz `Ladder.run` çağırışıdır və hər biri
+ * limiti təzədən alsaydı, altı alt-taskı olan task büdcənin altı mislini
+ * xərcləyə bilərdi.
  */
-class RemainingBudget {
+export class RemainingBudget {
   private readonly startedAt = Date.now()
   private outputTokens = 0
   private costUsd = 0
@@ -521,26 +536,7 @@ export class Ladder {
    */
   private async closeWorktree(taskId: string, worktree: Worktree | undefined): Promise<void> {
     if (this.worktrees === undefined || worktree === undefined) return
-    try {
-      const diff = await this.worktrees.collect(worktree)
-      if (diff.files === 0) {
-        await this.worktrees.remove(worktree)
-        return
-      }
-      saveDiffArtifact(this.db, {
-        taskId,
-        worktreePath: worktree.path,
-        branch: worktree.branch,
-        repoPath: worktree.repo,
-        content: diff.diff,
-        files: diff.files,
-        truncated: diff.truncated,
-      })
-    } catch {
-      // Diff toplanmadı (git sındı, disk doldu) — worktree DİSKDƏ SAXLANILIR.
-      // Silmək agentin işini geri qaytarılmaz şəkildə məhv etmək olardı;
-      // qalan qovluğu isə istifadəçi əl ilə də oxuya bilər.
-    }
+    await finalizeWorktree({ db: this.db, worktrees: this.worktrees, taskId, worktree })
   }
 
   /**
@@ -680,7 +676,15 @@ export class Ladder {
     // ── İzolyasiya — paralel kod taskları üçün ayrıca git worktree ─────
     // Keş yoxlanışından SONRA gəlir: keşdən cavab alınan task heç nə icra
     // etmir, ona ~200–500 ms worktree açmaq təmiz israf olardı.
-    session.worktree = await this.openWorktree(input, taskType, runner)
+    //
+    // Ağac ÇAĞIRAN tərəfdən gəlibsə (dekompozisiya) `session`-a YAZILMIR —
+    // `run()`-ın `finally` bloku yalnız ÖZ açdığı ağacı bağlamalıdır, yoxsa
+    // birinci alt-task qurtaran kimi ağac silinər və qalan alt-tasklar boş
+    // qovluqda işləyərdi.
+    if (input.worktree === undefined) {
+      session.worktree = await this.openWorktree(input, taskType, runner)
+    }
+    const worktree = input.worktree ?? session.worktree
 
     const phase: Phase = {
       input,
@@ -688,8 +692,8 @@ export class Ladder {
       model,
       // Worktree açılıbsa BÜTÜN icralar (yoxlama əmrləri daxil) orada işləyir —
       // əks halda agent bir ağacda yazar, `tsc` başqasında oxuyardı.
-      cwd: session.worktree?.path ?? cwd,
-      worktree: session.worktree ?? undefined,
+      cwd: worktree?.path ?? cwd,
+      worktree: worktree ?? undefined,
       rungs,
       cacheKey,
       decision,

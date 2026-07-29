@@ -3,6 +3,7 @@ import websocket from '@fastify/websocket'
 import Fastify, { type FastifyInstance } from 'fastify'
 import type { Db } from './db/client.js'
 import { getRunTaskId, getTask, markOrphanedRunsInterrupted } from './db/repo.js'
+import { Decomposer } from './exec/decomposer.js'
 import { Ladder } from './exec/ladder.js'
 import { TaskPool } from './exec/pool.js'
 import { RunSupervisor } from './exec/supervisor.js'
@@ -87,6 +88,9 @@ export function buildApp(input: BuildAppInput): FastifyInstance {
   const memory =
     input.memory === undefined ? undefined : new MemorySession(db, memoryProvider)
   const ladder = new Ladder(db, supervisor, router, input.worktrees, memory)
+  // Task dekompozisiyası (Faza 4) — nərdivanın ÜSTÜNDƏ oturur və yalnız
+  // `POST /api/tasks` gövdəsində `decompose: true` verildikdə işə düşür.
+  const decomposer = new Decomposer(db, supervisor, ladder, router, input.worktrees)
   // Kontekst başına paralellik. Limit hər task göndərişində oxunur, ona görə
   // istifadəçi ayarı dəyişəndə server yenidən başladılmır.
   const pool = new TaskPool()
@@ -129,6 +133,7 @@ export function buildApp(input: BuildAppInput): FastifyInstance {
     runners,
     readiness,
     pool,
+    decomposer,
     ...(input.worktrees !== undefined ? { worktrees: input.worktrees } : {}),
   })
   registerProviderRoutes(app, {

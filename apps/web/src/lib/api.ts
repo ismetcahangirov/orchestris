@@ -275,11 +275,25 @@ export interface ArtifactRow {
   resolvedAt: number | null
 }
 
+/** Faza 4 — bölünmüş taskın parçası. */
+export interface SubtaskRow {
+  id: string
+  prompt: string
+  status: string
+  taskType: string
+  /** Sıra nömrəsi, 0-dan. Bölgü müqaviləsi məhz SIRADIR. */
+  subtaskIndex: number | null
+  createdAt: number
+  completedAt: number | null
+}
+
 export interface TaskDetail {
   task: {
     id: string
     prompt: string
     status: string
+    /** Bu task başqa taskın parçasıdırsa valideynin id-si (Faza 4). */
+    parentTaskId: string | null
     createdAt: number
     completedAt: number | null
   }
@@ -288,6 +302,8 @@ export interface TaskDetail {
   artifacts: ArtifactRow[]
   /** Faza 3 — bu taskda yaddaşın etdiyi işlər (boş massiv = yaddaş işə düşməyib). */
   memory: MemoryOpRow[]
+  /** Faza 4 — alt-task ağacı. Bölünməmiş taskda boş massiv. */
+  subtasks: SubtaskRow[]
   runs: RunRow[]
 }
 

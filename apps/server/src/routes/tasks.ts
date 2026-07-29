@@ -9,11 +9,13 @@ import {
   getTask,
   listEvents,
   listRunsForTask,
+  listSubtasks,
   listVerifications,
 } from '../db/repo.js'
 import { latestRoutingDecision, listRoutingDecisions } from '../db/routing-repo.js'
 import { listTemplates } from '../db/template-repo.js'
 import type { BudgetLimits } from '../exec/budget.js'
+import type { Decomposer } from '../exec/decomposer.js'
 import { activeRungs, type Ladder } from '../exec/ladder.js'
 import type { TaskPool } from '../exec/pool.js'
 import type { RunSupervisor } from '../exec/supervisor.js'
@@ -32,6 +34,12 @@ export interface TaskRouteDeps {
   pool?: TaskPool
   /** Diff-in qəbulu/rəddi üçün. Verilməsə həmin route-lar 503 qaytarır. */
   worktrees?: WorktreeManager
+  /**
+   * Task dekompozisiyası (Faza 4). Verilməsə `decompose: true` sadəcə NƏZƏRƏ
+   * ALINMIR və task adi nərdivandan keçir — bölgü optimallaşdırmadır, tələb
+   * deyil (eyni prinsip: worktree izolyasiyası, qayda 41).
+   */
+  decomposer?: Decomposer
 }
 
 export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): void {
@@ -121,26 +129,45 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
           : {}),
     }
 
-    const start = (): Promise<unknown> =>
-      ladder.run({
+    const ladderContext = {
+      id: ctx.id,
+      cwd: ctx.cwd,
+      verifyCommandsJson: ctx.verifyCommandsJson,
+      amplificationProfile: ctx.amplificationProfile,
+      defaultWorkerModelId: ctx.defaultWorkerModelId,
+      maxParallel: ctx.maxParallel,
+      memoryScope: ctx.memoryScope,
+      memoryEnabled: ctx.memoryEnabled,
+    }
+    // Hər ikisi birlikdə verilir və ya heç biri — Ladder bunu "əl ilə seçim"
+    // və ya "Auto" kimi oxuyur.
+    const manual =
+      runner !== undefined && manualModel !== undefined
+        ? { runner, model: manualModel }
+        : {}
+
+    const start = async (): Promise<unknown> => {
+      // Dekompozisiya nərdivandan ƏVVƏL sınanır, amma onu ƏVƏZ ETMİR: bölgü
+      // alınmasa (başçı yoxdur, JSON qaytarmadı, bir parça verdi) task adi
+      // nərdivandan keçir. Bir orkestrasiya qərarının uğursuzluğu istifadəçinin
+      // nəticəsini məhv etməməlidir (monoton qayda, qayda 32).
+      if (deps.decomposer !== undefined && body.decompose === true) {
+        const split = await deps.decomposer.run({
+          task: { id: task.id, prompt: body.prompt },
+          context: ladderContext,
+          requested: true,
+          ...manual,
+          limits,
+        })
+        if (split.decomposed) return split
+      }
+      return ladder.run({
         task: { id: task.id, prompt: body.prompt },
-        context: {
-          id: ctx.id,
-          cwd: ctx.cwd,
-          verifyCommandsJson: ctx.verifyCommandsJson,
-          amplificationProfile: ctx.amplificationProfile,
-          defaultWorkerModelId: ctx.defaultWorkerModelId,
-          maxParallel: ctx.maxParallel,
-          memoryScope: ctx.memoryScope,
-          memoryEnabled: ctx.memoryEnabled,
-        },
-        // Hər ikisi birlikdə verilir və ya heç biri — Ladder bunu "əl ilə
-        // seçim" və ya "Auto" kimi oxuyur.
-        ...(runner !== undefined && manualModel !== undefined
-          ? { runner, model: manualModel }
-          : {}),
+        context: ladderContext,
+        ...manual,
         limits,
       })
+    }
 
     // İcra fon rejimində gedir — HTTP cavabı onu gözləmir. Vəziyyət WebSocket
     // və `GET /api/tasks/:id` vasitəsilə izlənilir.
@@ -174,6 +201,10 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
       // gözləyən iş; istifadəçi onu qəbul edənə qədər əsas repoya HEÇ NƏ
       // yazılmır.
       artifacts: listArtifacts(db, task.id),
+      // Dekompozisiya (Faza 4) — alt-task ağacı. Bölünməmiş taskda boş massiv.
+      // Ayrıca endpoint kimi YOX: task səhifəsi onsuz da bu cavabı çəkir və
+      // ikinci sorğu eyni məlumatın iki mənbəyini yaradardı.
+      subtasks: listSubtasks(db, task.id),
       // Yaddaş əməliyyatları (Faza 3). `runs` ilə yanaşı verilir, ayrıca
       // endpoint kimi YOX: task səhifəsi onsuz da bu cavabı çəkir və ikinci
       // sorğu eyni məlumatın iki mənbəyini yaradardı.

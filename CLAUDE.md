@@ -761,6 +761,81 @@ yox: yaddaş taskların mətnini XARİCİ prosesə yazır və bu, istifadəçini
 qərarı olmalıdır. Kontekst səviyyəsindəki `memory_enabled` isə UI-dadır — o,
 verilmiş razılığı geri götürməkdir, yeni razılıq vermək yox.
 
+### 51. Dekompozisiya pillə DEYİL — `ladder_rung: -2`
+
+Bölgü taskın cavabını yazmır, onu PARÇALARA bölür. Distillə ilə (qayda 37) eyni
+səbəbdən mənfi nömrə alır: 0–7 aralığından bir rəqəm seçsəydik "taskların
+<20%-i 7-yə çatsın" hədəfi (qayda 31) bölgünü tam başçı icrası kimi sayardı,
+`byRung` bölgüsü isə orkestrasiya xərcini taskın öz həll xərcinin içində
+gizlədərdi.
+
+Ölçmədə (`savings.ts` → `ORCHESTRATION_RUNGS`) hər iki mənfi pillə eynidir:
+tokenləri **baseline-a girmir** (başçı taskı təkbaşına həll etsəydi nə şablon,
+nə bölgü yazardı — girsəydi baseline şişər və qənaət olduğundan böyük
+görünərdi), xərci isə **orkestrasiya xərcinə** yazılır və `byRung`-da görünür.
+
+Valideyn taskın ledger sətrində yalnız bölgünün xərci olur; həllin xərci və
+qənaəti hər alt-taskın ÖZ sətrindədir. Bu, qəsdəndir: bölgü təmiz xərcdir və
+qənaət alt-tasklarda yaranırsa yaranır — cəmi bir sətrə yığsaydıq mexanizmin
+zərərə işlədiyi hal görünməz olardı.
+
+### 52. Dekompozisiya AÇIQ istənilir — avtomatik deyil
+
+Qapı (`decompose.ts` → `shouldDecompose`) `POST /api/tasks` gövdəsindəki
+`decompose: true` tələb edir. Səbəb ölçülə bilən xərcdir: bölgü **bir başçı
+icrası + N nərdivan dövrəsi** ödəyir, faydası isə hələ ölçülməyib.
+
+Avtomatik açsaydıq hər çoxaddımlı task əlavə başçı icrası ödəyərdi — halbuki
+MƏHZ o hal üçün Pillə 5 (plan) var və o, cəmi bir başçı + bir işçi icrasıdır
+(qayda 36). Yəni avtomatik dekompozisiya ucuz mexanizmin üstündən bahalısını
+qoymaq olardı.
+
+`boss-only` kənardadır (qayda 25 ilə eyni səbəb: bir taskı N taska çevirsək
+baseline ölçməsi mənasız olar), router yoxdursa da açılmır — bölgünü yazacaq
+başçı yoxdur.
+
+İkinci qapı BAŞÇININ ÖZÜDÜR: cavab sərt parse olunur (qayda 28 prinsipi — JSON
+cavabın BÜTÜNÜ olmalıdır) və ən azı **iki** parça tələb edir. Bir parçalı bölgü
+bölgü deyil: başçının icrası ödənilib, task isə eyni qalıb.
+
+Uzun və ya çox parça **RƏDD edilir, KƏSİLMİR** (qayda 39 prinsipi): yarımçıq
+kəsilmiş alt-task mətni icra olunanda pul iki dəfə yanardı — bir dəfə səhv işə,
+bir dəfə düzəlişə.
+
+Bölgü alınmasa mexanizm SƏSSİZCƏ geri çəkilir və task adi nərdivandan keçir
+(monoton qayda, qayda 32): bir orkestrasiya qərarının uğursuzluğu istifadəçinin
+nəticəsini məhv etməməlidir.
+
+### 53. Alt-tasklar ARDICIL və EYNİ ağacda qaçır, yoxlama isə SONDA bir dəfə
+
+Bölgü müqaviləsi başçıya "sonrakı alt-task əvvəlkinin nəticəsi üzərində işləyir"
+deyir — yəni parçalar ASILIDIR. Onları paralel qaçırsaydıq iki nəticədən biri
+qaçılmaz olardı: ya eyni fayllarda yarış, ya da ayrı worktree-lərdə bir-birinin
+işini GÖRMƏMƏK — məhz qayda 40-ın qarşısını aldığı səhv. Paralellik onsuz da
+var və orada yeri var: MÜSTƏQİL istifadəçi taskları arasında (`pool.ts`).
+
+Ona görə ağac VALİDEYN taskındır: `Decomposer` onu açır, hər alt-taskın
+`Ladder.run` çağırışına ötürür (`LadderInput.worktree`) və sonda özü bağlayır.
+Nərdivan verilən ağacı NƏ AÇIR, NƏ BAĞLAYIR — birinci alt-task qurtaran kimi
+bağlasaydı, qalanları boş qovluqda işləyərdi. Diff `artifacts`-a **valideyn**
+taskın adına yazılır: bölgü bir iş vahididir, parça-parça diff isə istifadəçiyə
+eyni dəyişikliyin yarımçıq variantlarını göstərərdi.
+
+Determinist yoxlama alt-tasklarda **söndürülür** (`verifyCommandsJson: '[]'`).
+Səbəb quruluşdadır, təsadüf deyil: 4 parçadan 1-cisi bitəndə kod hələ tamam
+deyil və `tsc` QURULUŞ ETİBARI İLƏ sınır. Yoxlamanı orada saxlasaydıq, hər
+alt-task 3 cəhd yandırıb başçıya qalxardı — yəni mexanizm ən bahalı halı
+MƏCBURİ edərdi. Ağac ortaq olduğu üçün sonda bir dəfə qaçan yoxlama bütün
+parçaların BİRLİKDƏ nəticəsini görür və `verification_runs`-a BÖLGÜ icrasının
+adına yazılır (alt-taskın icrasına yazsaydıq, həmin parça başqasının səhvinə
+görə uğursuz görünərdi).
+
+Büdcə alt-tasklar ARASINDA paylaşılır (`RemainingBudget` — `ladder.ts`-dən
+export olunur): hər alt-task limiti təzədən alsaydı, altı parçalı task büdcənin
+altı mislini xərcləyə bilərdi. Büdcə bitəndə qalan alt-tasklar `pending`
+QALMIR, `failed` işarələnir — UI-da "gözləyir" görünən, əslində heç vaxt
+başlamayacaq task yalandır.
+
 ## Amplification Ladder
 
 Pillələr ucuzdan bahaya:
@@ -836,6 +911,22 @@ Default `NullProvider`-dir: yaddaş yalnız `ORCHESTRIS_MEMORY=claude-mem` ilə
 qoşulur (qayda 50). Vəziyyət `/ladder` səhifəsində, task başına əməliyyatlar
 isə `/tasks/:id` cavabında görünür.
 
+Dördüncü kəsişən mexanizm — **task dekompozisiyası** (`exec/decompose.ts`,
+`exec/decomposer.ts`, pillə DEYİL, Faza 4):
+
+```
+istifadəçi `decompose: true` verdi → başçı BİR DƏFƏ bölgü yazır (ladder_rung -2)
+bölgü 2–6 parça verdi              → hər parça `tasks.parent_task_id` ilə yaradılır
+                                     və ÖZ nərdivanından keçir (keş, routing, 3, 6, 7)
+parçalar ARDICIL, EYNİ worktree-də → sonrakı əvvəlkinin işini görür (qayda 53)
+hamısı bitdi                       → yoxlama əmrləri BİR dəfə, bütöv nəticə üzərində
+bölgü alınmadı                     → task ADİ nərdivandan keçir (nəticə itmir)
+```
+
+Bölgü AVTOMATİK DEYİL (qayda 52) və nəticəyə toxunmur: parçaların cavabları
+`/tasks/:id` cavabındakı `subtasks` ağacındadır, xərci isə valideynin
+`savings_ledger` sətrində orkestrasiya xərci kimi görünür (qayda 51).
+
 Pillə 1 axını (`routing/decide.ts`):
 
 ```
@@ -871,10 +962,33 @@ həqiqət mənbəyi yoxdur.
 - **3** (bitdi) — memory: `MemoryProvider` adapteri (`NullProvider` default,
   `ClaudeMemProvider` opsional), token büdcəsi + prompt injection qoruması,
   yaddaş xərcinin ayrıca ölçülməsi (`memory_ops` → `savings_ledger`)
-- **4** — task dekompozisiyası, workflow zəncirləri
+- **4** (davam edir) — task dekompozisiyası (**bitdi**: `tasks.parent_task_id`,
+  `Decomposer`, alt-task ağacı UI-da); workflow zəncirləri, cədvəl üzrə icra və
+  `/workflows` səhifəsi **hələ yoxdur**
 
 ## Bilinən boşluqlar
 
+- **Dekompozisiyanın faydası ölçülməyib.** `FakeRunner` ilə hər yol örtülüb,
+  amma "zəif model 4 kiçik parçanı bir böyük taskdan yaxşı həll edirmi?" sualı
+  real modellə sınanmayıb. Ölçmə üsulu var: eyni task dəstini `decompose: true`
+  və `false` ilə qaçırıb `runs.ladder_rung` bölgüsünü (7-yə çatan parça faizi)
+  və `savings_ledger`-dəki net qənaəti tutuşdurmaq. Bölgü ZƏRƏRƏ işləyirsə bu,
+  valideynin orkestrasiya xərcində dərhal görünəcək (qayda 51) — mexanizm
+  qəsdən belə qurulub.
+- Başçının bölgü müqaviləsinə NƏ QƏDƏR əməl etdiyi bilinmir: `MAX_SUBTASKS`,
+  `SUBTASK_CHAR_LIMIT` və "həlli yazma" tələbi mühakimə ilə seçilib. İlk real
+  bölgülərdən sonra rədd nisbəti (`parseDecomposition` → `null`) izlənilməlidir
+  — hər rədd bir başçı icrasının boşa getməsidir.
+- **Alt-tasklar PARALEL qaçmır** (qayda 53). Issue #12 paralel icranı nəzərdə
+  tuturdu, amma bölgünün öz müqaviləsi parçaları ASILI edir ("sonrakı əvvəlkinin
+  üzərində qurur"). Paralel icra üçün başçıdan asılılıq QRAFI istənilməlidir və
+  müstəqil parçalar ayrı worktree-lərdə qaçmalıdır; qazanc divar saatıdır, xərci
+  isə N ağac + mürəkkəbləşən bölgü promptudur — ölçülməyib.
+- Yekun yoxlama SINANDA təmir dövrəsi YOXDUR: valideyn `verification_failed`
+  olur və istifadəçi özü qərar verir. Avtomatik təmir üçün "hansı parça sındı?"
+  sualına cavab lazımdır, `tsc` çıxışı isə bunu demir — səhv təxminlə yanlış
+  parçanı yenidən qaçırmaq pulu boşa yandırardı. Workflow zəncirləri (Faza 4-ün
+  qalan hissəsi) bu boşluğu qapatmalıdır.
 - **`ClaudeMemProvider`-in sim protokolu təsdiqlənməyib.** Bu maşında
   claude-mem quraşdırılmayıb (`~/.claude-mem` yoxdur, `claude-mem` PATH-da
   yoxdur), ona görə endpoint yolları (`/health`, `/recall`, `/remember`), port

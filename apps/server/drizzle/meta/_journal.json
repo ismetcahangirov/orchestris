@@ -29,6 +29,13 @@
       "when": 1785330794710,
       "tag": "0003_tough_hardball",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1785334131984,
+      "tag": "0004_massive_yellow_claw",
+      "breakpoints": true
     }
   ]
 }

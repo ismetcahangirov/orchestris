@@ -97,7 +97,15 @@ export function updateContext(db: Db, id: string, input: ContextUpdate): Context
 
 export function createTask(
   db: Db,
-  input: { contextId: string; prompt: string; taskType?: string },
+  input: {
+    contextId: string
+    prompt: string
+    taskType?: string
+    /** Dekompozisiya (Faza 4) — bu task hansı taskın parçasıdır. */
+    parentTaskId?: string
+    /** Alt-taskın sırası, 0-dan. Valideyn tasklarda verilmir. */
+    subtaskIndex?: number
+  },
 ): Task {
   const id = randomUUID()
   db.insert(tasks)
@@ -106,10 +114,29 @@ export function createTask(
       contextId: input.contextId,
       prompt: input.prompt,
       taskType: input.taskType ?? 'unknown',
+      ...(input.parentTaskId !== undefined ? { parentTaskId: input.parentTaskId } : {}),
+      ...(input.subtaskIndex !== undefined ? { subtaskIndex: input.subtaskIndex } : {}),
       createdAt: now(),
     })
     .run()
   return required(db.select().from(tasks).where(eq(tasks.id, id)).get(), 'tasks')
+}
+
+/**
+ * Bölünmüş taskın alt-taskları — SIRA İLƏ.
+ *
+ * Sıralama `subtask_index` üzrədir, `created_at` üzrə YOX: alt-tasklar eyni
+ * millisaniyədə yaradılır və vaxta görə sıralama müqavilənin ("sonrakı
+ * əvvəlkinin üzərində qurur") pozulduğunu göstərməzdi — sadəcə səssizcə səhv
+ * sıra verərdi.
+ */
+export function listSubtasks(db: Db, parentTaskId: string): Task[] {
+  return db
+    .select()
+    .from(tasks)
+    .where(eq(tasks.parentTaskId, parentTaskId))
+    .orderBy(tasks.subtaskIndex)
+    .all()
 }
 
 export function getTask(db: Db, id: string): Task | undefined {

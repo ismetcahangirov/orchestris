@@ -98,7 +98,17 @@ describe('resolveMaxParallel', () => {
   })
 })
 
-describe('GitWorktrees', () => {
+/**
+ * REAL `git` bir testdə 5–8 proses spawn edir (`init`, `config`, `commit`,
+ * `worktree add`, `diff`, `apply`) və hər biri Windows-da ~200–600 ms çəkir.
+ * Vitest-in 5 s default-u paralel yüklə (bütün paket birlikdə qaçanda) ölçülmüş
+ * halda 3–5 s-ə çatan bu testləri təsadüfən kəsirdi — yəni sınma kodun deyil,
+ * maşının yüklənməsinin funksiyası idi. Belə test "flaky" olur və ən pis
+ * nəticəni verir: adamlar qırmızı CI-ı görməzdən gəlməyə öyrəşir.
+ */
+const GIT_TEST_TIMEOUT_MS = 30_000
+
+describe('GitWorktrees', { timeout: GIT_TEST_TIMEOUT_MS }, () => {
   it('git repo olmayan qovluqda null qaytarır — icra əsas cwd-də davam edir', async () => {
     const plain = await tempDir('orchestris-plain-')
     const root = await tempDir('orchestris-wt-')
@@ -196,7 +206,7 @@ describe('GitWorktrees', () => {
   })
 })
 
-describe('yetim təmizləyicisi', () => {
+describe('yetim təmizləyicisi', { timeout: GIT_TEST_TIMEOUT_MS }, () => {
   it('worktree-nin .git faylından repo yolunu oxuyur', async () => {
     const repo = await makeRepo()
     const root = await tempDir('orchestris-wt-')
