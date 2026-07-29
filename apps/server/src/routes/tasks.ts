@@ -11,7 +11,7 @@ import {
 } from '../db/repo.js'
 import { latestRoutingDecision, listRoutingDecisions } from '../db/routing-repo.js'
 import type { BudgetLimits } from '../exec/budget.js'
-import type { Ladder } from '../exec/ladder.js'
+import { activeRungs, type Ladder } from '../exec/ladder.js'
 import type { RunSupervisor } from '../exec/supervisor.js'
 import type { RunnerReadiness } from '../routing/readiness.js'
 import { BUILTIN_RULES } from '../routing/rules.js'
@@ -38,6 +38,12 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
       prefer: r.prefer,
     })),
     profiles: AMPLIFICATION_PROFILES,
+    // Hansı profil hansı pillələri açır. UI-da təkrar yazılsaydı iki mənbə
+    // olardı və biri dəyişəndə səhifə səssizcə yalan danışardı — pillə dəsti
+    // yalnız `ladder.ts`-dədir.
+    profileRungs: Object.fromEntries(
+      AMPLIFICATION_PROFILES.map((p) => [p, [...activeRungs(p)].sort((a, b) => a - b)]),
+    ),
   }))
 
   app.post('/api/tasks', async (req, reply) => {

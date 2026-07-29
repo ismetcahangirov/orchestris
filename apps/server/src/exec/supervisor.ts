@@ -23,6 +23,8 @@ export interface ExecuteInput {
   ladderRung?: number
   /** Yoxlama dövrəsində neçənci cəhd. Default 1. */
   attempt?: number
+  /** Pillə qalxaraq başlanan icra üçün — hansı icradan sonra gəldi. */
+  escalatedFromRunId?: string
   limits?: BudgetLimits
 }
 
@@ -86,6 +88,9 @@ export class RunSupervisor {
       subscriptionBilled,
       ...(input.ladderRung !== undefined ? { ladderRung: input.ladderRung } : {}),
       ...(input.attempt !== undefined ? { attempt: input.attempt } : {}),
+      ...(input.escalatedFromRunId !== undefined
+        ? { escalatedFromRunId: input.escalatedFromRunId }
+        : {}),
     })
     setTaskStatus(this.db, input.taskId, 'running')
 

@@ -24,6 +24,7 @@ function makeRun(overrides: Partial<RunRow>): RunRow {
     ladderRung: 0,
     attempt: 1,
     cachedHit: false,
+    escalatedFromRunId: null,
     verifications: [],
     ...overrides,
   }

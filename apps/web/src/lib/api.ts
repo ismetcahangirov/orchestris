@@ -136,6 +136,11 @@ export interface RunRow {
   ladderRung: number
   attempt: number
   cachedHit: boolean
+  /**
+   * Bu icra hansı icradan sonra, PİLLƏ QALXARAQ başladı. `attempt`-dən
+   * fərqlidir: o, eyni pillədə təkrar cəhddir.
+   */
+  escalatedFromRunId: string | null
   verifications: VerificationRow[]
 }
 
@@ -266,7 +271,12 @@ export const api = {
     ),
 
   getRoutingRules: () =>
-    request<{ rules: RoutingRuleRow[]; profiles: string[] }>('/api/routing/rules'),
+    request<{
+      rules: RoutingRuleRow[]
+      profiles: string[]
+      /** Profil → aktiv pillə nömrələri. Həqiqət mənbəyi serverdədir. */
+      profileRungs: Record<string, number[]>
+    }>('/api/routing/rules'),
 
   updateContext: (id: string, body: UpdateContextBody) =>
     request<ContextRow>(`/api/contexts/${id}`, {

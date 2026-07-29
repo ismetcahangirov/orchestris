@@ -134,6 +134,11 @@ export function createRun(
     cachedHit?: boolean
     subscriptionBilled?: boolean
     worktreePath?: string
+    /**
+     * Bu icra hansı icradan sonra, PİLLƏ QALXARAQ başladı (Pillə 6/3 → 7).
+     * `attempt`-dən FƏRQLİDİR: o, eyni pillədə təkrar cəhddir.
+     */
+    escalatedFromRunId?: string
   },
 ): Run {
   const id = randomUUID()
@@ -148,6 +153,7 @@ export function createRun(
       cachedHit: input.cachedHit ?? false,
       subscriptionBilled: input.subscriptionBilled ?? false,
       worktreePath: input.worktreePath ?? null,
+      escalatedFromRunId: input.escalatedFromRunId ?? null,
       startedAt: now(),
     })
     .run()

@@ -160,6 +160,15 @@ describe('GET /api/routing/rules', () => {
     const body = (await app.inject({ method: 'GET', url: '/api/routing/rules' })).json()
     expect(body.profiles).toContain('boss-only')
   })
+
+  it('hər profilin aktiv pillələrini verir — UI onu təkrar yazmamalıdır', async () => {
+    const { app } = makeApp()
+    const body = (await app.inject({ method: 'GET', url: '/api/routing/rules' })).json()
+
+    expect(body.profileRungs.cheap).toEqual([0, 1, 2])
+    expect(body.profileRungs.balanced).toEqual([0, 1, 2, 3, 6, 7])
+    expect(body.profileRungs['boss-only']).toEqual([7])
+  })
 })
 
 describe('PATCH /api/contexts/:id', () => {

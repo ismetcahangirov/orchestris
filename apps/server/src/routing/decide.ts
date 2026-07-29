@@ -67,6 +67,34 @@ export class WorkerRouter {
     this.options = options;
   }
 
+  /**
+   * Pillə 7-nin hədəfi — başçı modeli.
+   *
+   * `decide()`-dən AYRIDIR və taskı görmür: eskalasiya qərarı artıq verilib
+   * (işçi "bacarmıram" dedi, ya da nüsxələr razılaşmadı) — burada yalnız
+   * "başçı kimdir?" sualına cavab verilir. Ona görə SIFIR token xərcləyir və
+   * `async` deyil.
+   *
+   * `boss-only` profili ilə eyni funksiyanı işlədir: başçı bir dənədir və iki
+   * yerdə fərqli seçilsə, baseline ölçməsi (qayda 25) real eskalasiya ilə
+   * müqayisə edilə bilməzdi.
+   */
+  resolveBoss(reason: string): DecideOutcome {
+    return this.bossOnly(
+      {
+        db: this.db,
+        runners: this.runners,
+        ...(this.options.isRunnerReady !== undefined
+          ? { isRunnerReady: this.options.isRunnerReady }
+          : {}),
+      },
+      // Taskın tipi burada YENİDƏN təyin edilmir: o, `decide()`-də artıq
+      // hesablanıb və DB-yə yazılıb. Eskalasiya taskın nə olduğunu dəyişmir.
+      "unknown",
+      reason,
+    );
+  }
+
   async decide(input: DecideInput): Promise<DecideOutcome> {
     // Təsnifat HƏR yolda hesablanır (0 token): əl ilə seçimdə də task tipi
     // ledger bölgüsü üçün lazımdır — `unknown` qalsaydı "mətn tasklarında
@@ -193,13 +221,14 @@ export class WorkerRouter {
       isRunnerReady?: (runnerId: string) => boolean;
     },
     taskType: TaskType,
+    reason = "boss-only profili: baseline ölçməsi üçün hər task başçıya gedir",
   ): DecideOutcome {
     const boss = findRoleModel(candidateInput, "boss");
     if (boss === undefined) {
       return {
         ok: false,
         error:
-          'boss-only profili üçün başçı modeli təyin olunmayıb — /providers səhifəsində bir modeli "başçı" seç',
+          'Başçı modeli təyin olunmayıb — /providers səhifəsində bir modeli "başçı" seç',
       };
     }
     return this.resolve(
@@ -209,8 +238,7 @@ export class WorkerRouter {
         modelId: boss.modelId,
         chosenRowId: boss.rowId,
         confidence: 1,
-        reason:
-          "boss-only profili: baseline ölçməsi üçün hər task başçıya gedir",
+        reason,
         decisionTokens: 0,
         decisionCostUsd: 0,
       },

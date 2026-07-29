@@ -23,9 +23,16 @@ const DONE: RunEvent[] = [
   { t: 'done', stopReason: 'end_turn' },
 ]
 
-function setup(verifyCommands: string[] = []) {
+/**
+ * Bu fayl Pillə 0 və 2-ni yoxlayır, ona görə default profil `cheap`-dir —
+ * MƏHZ o iki pillə (+ routing). `balanced` yoxlama əmri olmayan taskda
+ * Pillə 3-ü də işə salır və hər test üç nüsxə qaçırardı; pillə 3/6/7
+ * `ladder-escalation.test.ts`-də ayrıca yoxlanılır.
+ */
+function setup(verifyCommands: string[] = [], amplificationProfile = 'cheap') {
   const db = openDb(':memory:')
-  const ctx = createContext(db, { name: 'C', verifyCommands })
+  const row = createContext(db, { name: 'C', verifyCommands })
+  const ctx = { ...row, amplificationProfile }
   const sup = new RunSupervisor(db)
   const ladder = new Ladder(db, sup)
   const newTask = (prompt = 'salam') =>

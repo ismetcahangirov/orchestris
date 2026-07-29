@@ -17,6 +17,12 @@ const RULES = {
     },
   ],
   profiles: ['cheap', 'balanced', 'quality', 'boss-only'],
+  profileRungs: {
+    cheap: [0, 1, 2],
+    balanced: [0, 1, 2, 3, 6, 7],
+    quality: [0, 1, 2, 3, 6, 7],
+    'boss-only': [7],
+  },
 }
 
 const CONTEXTS = [
@@ -120,5 +126,13 @@ describe('Ladder səhifəsi — profillər', () => {
   it('boss-only profilinin baseline üçün olduğunu izah edir', async () => {
     renderPage()
     expect(await screen.findByText(/baseline/i)).toBeTruthy()
+  })
+
+  it('cari profildə hansı pillələrin aktiv olduğunu serverin verdiyi dəstdən göstərir', async () => {
+    // Kontekst `balanced`-dir → 4 və 5 aktiv DEYİL, qalan altısı aktivdir.
+    // Siyahını UI-da təkrar yazsaydıq, server dəyişəndə bu test yaşıl qalar,
+    // səhifə isə yalan danışardı.
+    renderPage()
+    await waitFor(() => expect(screen.getAllByText('aktiv')).toHaveLength(6))
   })
 })
