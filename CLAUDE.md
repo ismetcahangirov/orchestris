@@ -538,6 +538,97 @@ taska deyil, BÜTÜN gələcək tasklara yapışardı.
 şablonsuz cavabın şablonlu icraya (və əksinə) qaytarılması səssiz və təhlükəli
 səhv olardı. Şablonsuz halda açara heç nə əlavə olunmur — mövcud keşlər sınmır.
 
+### 40. İzolyasiya YALNIZ paralel kod tasklarında açılır
+
+`git worktree add` ~200–500 ms və disk yeri tələb edir. Hər taska worktree
+açsaydıq, "bu funksiyanı izah et" sualı da reponun tam nüsxəsini ödəyərdi —
+heç bir toqquşmanın qarşısını almadan.
+
+`shouldIsolate` (`exec/worktree.ts`, saf funksiya, **0 token**) ÜÇ şərti
+BİRLİKDƏ tələb edir və hər biri ayrıca bir israfı kəsir:
+
+- `max_parallel > 1` — izolyasiya yalnız iki task eyni anda eyni fayllara
+  toxuna biləndə məna daşıyır. Ardıcıl rejimdə qarşısı alınacaq toqquşma yoxdur.
+- runner `fileAccess` — API runner-i fayl yazmır, onun üçün worktree boş qovluqdur.
+- task tipi `code` və ya `test` — mətn taskı repoya toxunmur.
+
+Worktree taskın ÖZÜ üçündür, icra üçün yox: nərdivan eyni taskda bir neçə icra
+qaçırır (yoxlama dövrəsi, best-of-N, ipucu, başçı) və hamısı EYNİ ağacda işləyir.
+Hər icraya ayrı ağac versəydik, 2-ci cəhd 1-ci cəhdin işini görməzdi — halbuki
+yoxlama dövrəsinin bütün mənası məhz əvvəlki işi düzəltməkdir.
+
+Açılış Pillə 0-dan SONRADIR: keşdən cavab alan task heç nə icra etmir.
+
+### 41. Worktree istifadəçinin COMMIT EDİLMƏMİŞ işini daşıyır
+
+`git worktree add … HEAD` yalnız son commit-i alır. Köçürməsək, yarımçıq işi
+olan repoda agent KÖHNƏ kodu görər: "bu funksiyanı düzəlt" taskı artıq mövcud
+olmayan kodu düzəldər və nəticə diff-i əsas repoya heç vaxt təmiz oturmazdı.
+
+İki mexanizm lazımdır, çünki `git diff HEAD` izlənilməyən faylı GÖRMÜR:
+izlənilən dəyişikliklər patch ilə, izlənilməyən fayllar (`ls-files --others
+--exclude-standard`) kopyalanaraq keçir. `.gitignore`-dakılar kopyalanmır —
+`node_modules` köçürülsəydi hər worktree gigabaytlar yeyərdi.
+
+Köçürmə alınmasa worktree SİLİNİR və izolyasiya ləğv olunur: izolyasiyasız,
+amma DÜZGÜN kod üzərində işləmək — səssizcə köhnə kod üzərində işləməkdən
+yaxşıdır. Eyni prinsip bütün yollarda: git yoxdur, repo deyil, commit yoxdur →
+task əsas `cwd`-də normal davam edir. İzolyasiya optimallaşdırmadır, tələb deyil.
+
+### 42. Diff `git apply` ilə tətbiq olunur, merge ilə YOX — və qərar insanındır
+
+Paralel agentlər eyni faylı fərqli cür dəyişə bilər. Avtomatik merge etsəydik,
+ikinci taskın nəticəsi birincini səssizcə üstələyərdi — MƏHZ izolyasiyanın
+qarşısını almaq istədiyi hal. Ona görə nəticə `artifacts` cədvəlinə `pending`
+kimi yazılır və əsas repoya istifadəçi "qəbul et" deyənə qədər HEÇ NƏ yazılmır.
+
+`merge` yox, `apply` — çünki merge istifadəçinin branch-ına və commit
+tarixçəsinə toxunur, münaqişədə isə repo yarımçıq merge vəziyyətində qalır.
+`apply` yalnız işçi ağacı dəyişir; `--check` ƏVVƏLCƏ qaçır ki, yarım tətbiq
+olunmuş patch istifadəçinin ağacını sındırmasın. Tətbiq alınmasa sətir `pending`
+QALIR və worktree SİLİNMİR — dəyişikliyin yeganə nüsxəsi hələ oradadır.
+
+Diff `git add -A` + `git diff --cached` ilə toplanır: adi `git diff`
+izlənilməyən faylı göstərmir, halbuki agentin yaratdığı YENİ fayl dəyişikliyin
+ən vacib hissəsi ola bilər.
+
+`DIFF_CHAR_LIMIT` aşılanda diff kəsilir və `truncated` işarələnir — belə diff
+YALNIZ baxış üçündür və qəbul route-u onu 409 ilə rədd edir (qayda 39 ilə eyni
+prinsip: yarımçıq mətn tətbiq olunmamalıdır).
+
+### 43. `max_parallel = 0` "avtomatik" deməkdir
+
+Sabit rəqəm default ola bilməz: cavab maşından asılıdır. `resolveMaxParallel`
+`min(4, nüvə - 2)` verir — bir nüvə serverə, biri istifadəçinin redaktoruna
+qalır. Yuxarı hədd `4`-dür: hər paralel icra ~21.7k token prompt döşəməsi ödəyir
+(qayda 1), yəni paralelliyi nüvə sayına görə sonsuz artırmaq pul yandırmaqdır.
+
+Köhnə default `1` idi və onu dəyişmək üçün API ÜMUMİYYƏTLƏ YOX İDİ — yəni
+bazadakı hər `1` istifadəçinin seçimi deyil, məhz köhnə default-dur. Migrasiya
+0002 onları bir dəfə `0`-a çevirir; saxlasaydıq mövcud bütün kontekstlərdə
+paralellik əbədi söndürülü qalardı.
+
+Hovuz (`exec/pool.ts`) KONTEKST BAŞINADIR: limitin mənası "bu iş sahəsində eyni
+anda neçə agent". İki fərqli kontekst fərqli qovluqlarda işləyir — birinin
+növbəsi digərini gözlətməməlidir. Slot ötürülməsi sinxrondur (buraxılış anında
+sayğac azalıb dərhal növbədəki üçün artırılır): aralıqda `await` olsaydı, həmin
+an gələn task boş slot görüb keçər və limit səssizcə aşılardı.
+
+### 44. Yetim təmizləyicisi `pending` diff-lərə TOXUNMUR
+
+Server çökəndə nərdivanın `finally` bloku qaçmır — diff toplanmır, qovluq isə
+qalır. Başlanğıcdakı təmizləyici (`cleanupOrphanWorktrees`, `main.ts`) onları
+silir, amma `pending` artefaktı olan qovluqlara toxunmur: onlar yetim deyil,
+istifadəçinin baxmadığı işdir. Silsəydik bir yenidən başlatma bütün baxılmamış
+nəticələri məhv edərdi.
+
+Orfan qovluğun hansı repodan doğduğunu DB bilmir (heç bir sətir yazılmayıb) —
+cavab worktree-nin öz `.git` FAYLINDADIR (`gitdir: …/.git/worktrees/<ad>`).
+
+Windows uzun yol: worktree qovluğunun adı taskın UUID-sidir (36 simvol), tam yol
+`~/.orchestris/worktrees/<uuid>` ≈ 60 simvol. Repo adını və ya task mətnini ora
+qatsaydıq dərin qovluqlu layihələrdə 260 simvol limiti asanca aşılardı.
+
 ## Amplification Ladder
 
 Pillələr ucuzdan bahaya:
@@ -588,6 +679,17 @@ Faydası `uses` / `escalations_after` nisbəti ilə ölçülür və `/ladder`
 səhifəsində göstərilir: şablon tətbiq olunub, task yenə qalxırsa mexanizm
 zərərə işləyir.
 
+İkinci kəsişən mexanizm — **paralellik və izolyasiya** (`exec/pool.ts`,
+`exec/worktree.ts`, pillə DEYİL, nəticəyə TOXUNMUR):
+
+```
+task göndərildi          → kontekst hovuzu: eyni anda ən çox `max_parallel` icra
+paralel KOD taskı        → ayrıca git worktree (`orchestris/<taskId>` branch-ı)
+icra bitdi, dəyişiklik var → diff `artifacts`-a `pending` yazılır, ağac QALIR
+istifadəçi qəbul etdi     → `git apply` əsas repoya, ağac silinir
+istifadəçi rədd etdi      → ağac silinir, repoya heç nə yazılmır
+```
+
 Pillə 1 axını (`routing/decide.ts`):
 
 ```
@@ -616,15 +718,29 @@ həqiqət mənbəyi yoxdur.
   (öz fixture-ləri ilə)
 - **1C** (bitdi) — Pillə 0–2 amplifikasiya: keş, qayda routing + Auto, alət
   yoxlaması, `savings_ledger` (qənaətin dürüst ölçülməsi)
-- **2** (davam edir) — Pillə 3 (best-of-N + razılaşma), 4 (ipucu/shepherding),
-  5 (plan/icra bölgüsü), 6 (self-escalation), 7-yə eskalasiya və prompt
-  distilləsi (`task_templates`) bitdi. Qalır: paralellik və git worktree
-  izolyasiyası (issue #10)
+- **2** (bitdi) — Pillə 3 (best-of-N + razılaşma), 4 (ipucu/shepherding),
+  5 (plan/icra bölgüsü), 6 (self-escalation), 7-yə eskalasiya, prompt
+  distilləsi (`task_templates`), paralel icra hovuzu (`contexts.max_parallel`)
+  və git worktree izolyasiyası + diff qəbulu (`artifacts`)
 - **3** — memory (claude-mem adapter arxasında)
 - **4** — task dekompozisiyası, workflow zəncirləri
 
 ## Bilinən boşluqlar
 
+- Worktree izolyasiyası **real paralel yükdə** ölçülməyib: git yolu müvəqqəti
+  repo üzərində real `git` ilə test olunur (`worktree.test.ts`), nərdivan yolu
+  isə saxta manager ilə — amma iki agentin EYNİ ANDA iki worktree-də işləməsi
+  yalnız real modellə görünəcək. Xüsusi risk: yoxlama əmrləri (`pnpm test`,
+  dev server portu, paylaşılan build keşi) paralel worktree-lərdə bir-birinə
+  mane ola bilər. `max_parallel > 1` ilə ilk real sınaqdan sonra yoxlanmalıdır.
+- **İkili (binary) fayllar** diff-ə `Binary files … differ` kimi düşür və
+  `git apply` onları tətbiq edə bilmir. Diff `--binary` olmadan toplanır, çünki
+  base64 blob UI-da oxunmaz olar və SQLite sətrini şişirdərdi. Belə halda
+  istifadəçi faylı worktree qovluğundan əl ilə götürməlidir — hazırda bunu UI
+  ayrıca xəbərdarlıqla göstərmir.
+- Pillə 3-ün nüsxələri EYNİ worktree-də ARDICIL qaçır (bax qayda 40). Nüsxələri
+  paralel qaçırmaq üçün hər nüsxəyə ayrıca ağac lazımdır — qazanc divar saatıdır,
+  xərci isə N ağacdır; ölçülməyib.
 - Pillə 3, 4, 5 və 6 **real modellə** yoxlanılmayıb: `FakeRunner` ilə hər yol
   örtülüb, amma zəif modelin müqaviləyə NƏ QƏDƏR əməl etdiyi (imtina nisbəti,
   yanlış-müsbət) ölçülməyib. Real işçi modeli təyin olunandan sonra bir neçə
@@ -648,8 +764,6 @@ həqiqət mənbəyi yoxdur.
   seçilib (yalan-müsbət bahadır), amma neçə çoxaddımlı taskın SƏHVƏN Pillə 4-ə
   düşdüyü bilinmir. `runs.ladder_rung` üzərindən 4 və 5-in payı və qəbul
   nisbətləri tutuşdurulmalıdır.
-- Pillə 3 nüsxələri **ardıcıl** qaçır, paralel yox — 3 nüsxə divar saatı üzrə
-  3x uzun çəkir. Paralellik issue #10-dadır (`contexts.max_parallel`).
 - `codex` bu maşında login olunmayıb (`codex login status` → `Not logged in`).
   Ona görə codex parser-inin **uğur yolu** real fixture ilə yoxlanılmayıb —
   yalnız xəta yolu. `codex login` edildikdən sonra

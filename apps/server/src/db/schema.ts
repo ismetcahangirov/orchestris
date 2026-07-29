@@ -15,7 +15,14 @@ export const contexts = sqliteTable('contexts', {
   budgetTokens: integer('budget_tokens'),
   budgetUsd: real('budget_usd'),
   budgetSeconds: integer('budget_seconds'),
-  maxParallel: integer('max_parallel').notNull().default(1),
+  /**
+   * Bu kontekstdə eyni anda neçə task icra oluna bilər.
+   *
+   * `0` = **avtomatik** (`resolveMaxParallel` → `min(4, nüvə-2)`). Sabit rəqəm
+   * default ola bilməz, çünki cavab maşından asılıdır; `1` yazsaydıq isə
+   * paralellik heç vaxt öz-özünə işə düşməzdi.
+   */
+  maxParallel: integer('max_parallel').notNull().default(0),
   createdAt: integer('created_at').notNull(),
   archivedAt: integer('archived_at'),
 })
@@ -335,6 +342,47 @@ export const savingsLedger = sqliteTable(
     at: integer('at').notNull(),
   },
   (t) => [uniqueIndex('savings_task_idx').on(t.taskId), index('savings_at_idx').on(t.at)],
+)
+
+/**
+ * Paralel icranın nəticəsi — izolyasiya edilmiş worktree-dəki diff.
+ *
+ * NİYƏ AYRI CƏDVƏL, NİYƏ `runs`-DA SÜTUN DEYİL: diff bir İCRANIN deyil, bütün
+ * TASKIN nəticəsidir. Nərdivan eyni taskda bir neçə icra qaçırır (yoxlama
+ * dövrəsi, best-of-N, başçı) və hamısı EYNİ worktree-də işləyir — hər icraya
+ * ayrıca diff yazsaydıq, istifadəçi eyni dəyişikliyin üç yarımçıq variantını
+ * görərdi.
+ *
+ * `status` ilə `pending` qalan sətir diskdə QALAN worktree deməkdir: qəbul və
+ * ya rədd edilənə qədər dəyişiklik heç yerə getmir. Server başlanğıcındakı
+ * yetim təmizləyicisi məhz bu sətirlərə baxır — `pending` worktree yetim DEYİL,
+ * istifadəçinin baxmadığı işdir.
+ */
+export const artifacts = sqliteTable(
+  'artifacts',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    taskId: text('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    /** Hazırda yalnız `diff`. Sahə gələcək artefakt növləri üçün açıq saxlanılır. */
+    kind: text('kind').notNull().default('diff'),
+    worktreePath: text('worktree_path').notNull(),
+    branch: text('branch').notNull(),
+    /** Diff hansı repoya tətbiq olunmalıdır. Worktree silindikdən sonra yeganə ünvan budur. */
+    repoPath: text('repo_path').notNull(),
+    content: text('content').notNull(),
+    files: integer('files').notNull().default(0),
+    /** Diff hədd aşıb kəsilibsə `true` — belə diff TƏTBİQ EDİLƏ BİLMƏZ, yalnız baxış üçündür. */
+    truncated: integer('truncated', { mode: 'boolean' }).notNull().default(false),
+    /** `pending` | `accepted` | `rejected` */
+    status: text('status').notNull().default('pending'),
+    createdAt: integer('created_at').notNull(),
+    resolvedAt: integer('resolved_at'),
+  },
+  // Task + növ başına BİR sətir: nərdivanın sonrakı icrası diff-i ƏVƏZ edir,
+  // yeni sətir yaratmır (yoxsa "hansı diff sonuncudur?" sualı yaranardı).
+  (t) => [uniqueIndex('artifacts_task_kind_idx').on(t.taskId, t.kind)],
 )
 
 export const contextsRelations = relations(contexts, ({ many }) => ({

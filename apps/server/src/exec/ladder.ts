@@ -1,4 +1,5 @@
 import { AMPLIFICATION_PROFILES, type RunEvent, type Runner } from '@orchestris/shared'
+import { saveDiffArtifact } from '../db/artifact-repo.js'
 import type { Db } from '../db/client.js'
 import {
   appendEvent,
@@ -54,6 +55,7 @@ import { buildPlannedPrompt, buildPlanRequestPrompt, detectMultiStep } from './p
 import { computeTaskSavings } from './savings.js'
 import type { RunSupervisor } from './supervisor.js'
 import { buildFeedbackPrompt, runVerifications } from './verify.js'
+import { shouldIsolate, type Worktree, type WorktreeManager } from './worktree.js'
 
 /** Yoxlama dövrəsinin maksimum cəhd sayı. */
 const MAX_ATTEMPTS = 3
@@ -177,6 +179,14 @@ export interface LadderContext {
   amplificationProfile?: string
   /** Qayda tutmadıqda seçilən işçi (`models.id`). */
   defaultWorkerModelId?: string | null
+  /**
+   * `contexts.max_parallel` XAM dəyəri (0 = avtomatik).
+   *
+   * Nərdivan taskları paralel qaçırmır — hovuz bunu ondan kənarda edir. Dəyər
+   * BURADA yalnız bir suala cavab verir: "eyni anda başqa task da işləyə
+   * bilərmi?" Cavab yoxdursa ayrıca worktree açmaq boş xərcdir (`shouldIsolate`).
+   */
+  maxParallel?: number
 }
 
 export interface LadderInput {
@@ -337,7 +347,10 @@ interface Phase {
   input: LadderInput
   runner: Runner
   model: string
+  /** İcranın işlədiyi qovluq — izolyasiya varsa worktree, yoxsa kontekstin `cwd`-si. */
   cwd: string | undefined
+  /** İzolyasiya açıqdırsa worktree; yoxsa `undefined` (davranış əvvəlki kimi qalır). */
+  worktree: Worktree | undefined
   rungs: ReadonlySet<number>
   cacheKey: string | null
   verifyCommands: string[]
@@ -420,23 +433,78 @@ export class Ladder {
   private readonly db: Db
   private readonly supervisor: RunSupervisor
   private readonly router: WorkerRouter | undefined
+  private readonly worktrees: WorktreeManager | undefined
 
-  constructor(db: Db, supervisor: RunSupervisor, router?: WorkerRouter) {
+  constructor(
+    db: Db,
+    supervisor: RunSupervisor,
+    router?: WorkerRouter,
+    worktrees?: WorktreeManager,
+  ) {
     this.db = db
     this.supervisor = supervisor
     this.router = router
+    // Verilməsə izolyasiya TAMAMİLƏ söndürülür — nərdivan Faza 1C-dəki kimi
+    // birbaşa kontekstin `cwd`-sində işləyir.
+    this.worktrees = worktrees
   }
 
   /**
-   * Taskı başdan-sona aparır və SONDA qənaət ledger-ini yazır.
+   * Taskı başdan-sona aparır və SONDA qənaət ledger-ini + worktree diff-ini yazır.
    *
-   * Ledger yazılışı `run()`-ın hər `return`-ündən sonra təkrarlanmasın deyə
-   * burada, bir yerdə edilir — unudulan bir yol ölçmədə səssiz boşluq yaradardı.
+   * Hər ikisi `run()`-ın hər `return`-ündən sonra təkrarlanmasın deyə burada,
+   * bir yerdə edilir — unudulan bir yol ölçmədə səssiz boşluq, worktree-də isə
+   * diskdə qalan yetim qovluq yaradardı. Ona görə diff toplanması `finally`-dədir:
+   * icra atılan xəta ilə bitsə də agentin yazdıqları itməməlidir.
    */
   async run(input: LadderInput): Promise<LadderResult> {
-    const result = await this.execute(input)
-    this.recordLedger(input.task.id)
-    return result
+    // Worktree `execute()`-in İÇİNDƏ açılır (task tipi yalnız routing-dən sonra
+    // bilinir), amma bağlanışı BURADA olmalıdır — ona görə vəziyyət paylaşılan
+    // obyektlə ötürülür.
+    const session: { worktree: Worktree | undefined } = { worktree: undefined }
+    try {
+      const result = await this.execute(input, session)
+      this.recordLedger(input.task.id)
+      return result
+    } finally {
+      await this.closeWorktree(input.task.id, session.worktree)
+    }
+  }
+
+  /**
+   * Worktree-ni yekunlaşdırır: dəyişiklik varsa diff saxlanılır, yoxdursa qovluq
+   * DƏRHAL silinir.
+   *
+   * "Dəyişiklik yoxdursa sil" qaydası vacibdir: hər mətn və ya uğursuz task
+   * diskdə boş worktree qoysaydı, istifadəçinin `~/.orchestris/worktrees/`
+   * qovluğu yüzlərlə mənasız qovluqla dolardı və UI-da "baxılası dəyişiklik"
+   * siyahısı yalan danışardı.
+   *
+   * Dəyişiklik VARSA worktree QALIR — diff-in tətbiqi istifadəçinin qərarıdır
+   * və o qərar verilənə qədər işi silmək olmaz.
+   */
+  private async closeWorktree(taskId: string, worktree: Worktree | undefined): Promise<void> {
+    if (this.worktrees === undefined || worktree === undefined) return
+    try {
+      const diff = await this.worktrees.collect(worktree)
+      if (diff.files === 0) {
+        await this.worktrees.remove(worktree)
+        return
+      }
+      saveDiffArtifact(this.db, {
+        taskId,
+        worktreePath: worktree.path,
+        branch: worktree.branch,
+        repoPath: worktree.repo,
+        content: diff.diff,
+        files: diff.files,
+        truncated: diff.truncated,
+      })
+    } catch {
+      // Diff toplanmadı (git sındı, disk doldu) — worktree DİSKDƏ SAXLANILIR.
+      // Silmək agentin işini geri qaytarılmaz şəkildə məhv etmək olardı;
+      // qalan qovluğu isə istifadəçi əl ilə də oxuya bilər.
+    }
   }
 
   /**
@@ -451,7 +519,10 @@ export class Ladder {
     recordSavings(this.db, computeTaskSavings(this.db, taskId))
   }
 
-  private async execute(input: LadderInput): Promise<LadderResult> {
+  private async execute(
+    input: LadderInput,
+    session: { worktree: Worktree | undefined },
+  ): Promise<LadderResult> {
     const cwd = input.context.cwd ?? undefined
     const profile = input.context.amplificationProfile ?? 'balanced'
 
@@ -503,11 +574,19 @@ export class Ladder {
       if (hit !== null) return { ...hit, decision }
     }
 
+    // ── İzolyasiya — paralel kod taskları üçün ayrıca git worktree ─────
+    // Keş yoxlanışından SONRA gəlir: keşdən cavab alınan task heç nə icra
+    // etmir, ona ~200–500 ms worktree açmaq təmiz israf olardı.
+    session.worktree = await this.openWorktree(input, taskType, runner)
+
     const phase: Phase = {
       input,
       runner,
       model,
-      cwd,
+      // Worktree açılıbsa BÜTÜN icralar (yoxlama əmrləri daxil) orada işləyir —
+      // əks halda agent bir ağacda yazar, `tsc` başqasında oxuyardı.
+      cwd: session.worktree?.path ?? cwd,
+      worktree: session.worktree ?? undefined,
       rungs,
       cacheKey,
       decision,
@@ -619,7 +698,7 @@ export class Ladder {
       }),
       attempt: 1,
       ladderRung: DISTILL_RUNG,
-      ...(phase.cwd !== undefined ? { cwd: phase.cwd } : {}),
+      ...this.where(phase),
       ...(this.limitsFor(phase) ?? {}),
     })
     phase.budget.charge(getRun(this.db, exec.runId))
@@ -730,7 +809,7 @@ export class Ladder {
       attempt: 1,
       ladderRung: strategy.rung,
       escalatedFromRunId: outcome.fromRunId,
-      ...(phase.cwd !== undefined ? { cwd: phase.cwd } : {}),
+      ...this.where(phase),
       ...(this.limitsFor(phase) ?? {}),
     })
     phase.budget.charge(getRun(this.db, assistExec.runId))
@@ -1096,7 +1175,7 @@ export class Ladder {
       attempt: 1,
       ladderRung: RUNG_BOSS,
       escalatedFromRunId: outcome.fromRunId,
-      ...(phase.cwd !== undefined ? { cwd: phase.cwd } : {}),
+      ...this.where(phase),
       ...(this.limitsFor(phase) ?? {}),
     })
     phase.budget.charge(getRun(this.db, exec.runId))
@@ -1172,7 +1251,7 @@ export class Ladder {
       ...(step.escalatedFromRunId !== undefined
         ? { escalatedFromRunId: step.escalatedFromRunId }
         : {}),
-      ...(phase.cwd !== undefined ? { cwd: phase.cwd } : {}),
+      ...this.where(phase),
       ...(this.limitsFor(phase) ?? {}),
     })
     phase.budget.charge(getRun(this.db, exec.runId))
@@ -1183,6 +1262,46 @@ export class Ladder {
   private limitsFor(phase: Phase): { limits: BudgetLimits } | undefined {
     const limits = phase.budget.remaining()
     return limits === undefined ? undefined : { limits }
+  }
+
+  /**
+   * Hər icranın "harada işlədi" hissəsi — bir yerdən verilir.
+   *
+   * Nərdivan `supervisor.execute`-i dörd yerdən çağırır (işçi/nüsxə, ipucu-plan,
+   * başçı, distillə). Qovluğu hər çağırış yerində əl ilə yazsaydıq, biri
+   * unudulanda həmin icra izolyasiyadan KƏNARDA — istifadəçinin əsl repo-sunda —
+   * işləyərdi. Belə səhv yalnız real fayl korlanmasında görünərdi.
+   */
+  private where(phase: Phase): { cwd?: string; worktreePath?: string } {
+    return {
+      ...(phase.cwd !== undefined ? { cwd: phase.cwd } : {}),
+      ...(phase.worktree !== undefined ? { worktreePath: phase.worktree.path } : {}),
+    }
+  }
+
+  /**
+   * Lazımdırsa izolyasiya edilmiş worktree açır.
+   *
+   * Alınmasa `undefined` qaytarır və nərdivan əsas `cwd`-də davam edir: git
+   * yoxdur, repo deyil, commit yoxdur və ya `worktree add` sındı — heç biri
+   * taskı dayandırmaq üçün səbəb deyil. İzolyasiya OPTİMALLAŞDIRMADIR, tələb
+   * deyil.
+   */
+  private async openWorktree(
+    input: LadderInput,
+    taskType: string,
+    runner: Runner,
+  ): Promise<Worktree | undefined> {
+    const cwd = input.context.cwd
+    if (this.worktrees === undefined || cwd === null) return undefined
+    const isolate = shouldIsolate({
+      maxParallel: input.context.maxParallel ?? 0,
+      taskType,
+      cwd,
+      fileAccess: runner.capabilities.fileAccess,
+    })
+    if (!isolate) return undefined
+    return (await this.worktrees.create({ repo: cwd, taskId: input.task.id })) ?? undefined
   }
 
   /** İcranın mətn cavabı — Pillə 6 və 3 bunun üzərində işləyir. */

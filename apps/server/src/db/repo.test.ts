@@ -40,7 +40,9 @@ describe('createContext', () => {
     expect(ctx.amplificationProfile).toBe('balanced')
     expect(ctx.workerMode).toBe('auto')
     expect(ctx.autoSubmode).toBe('cheap')
-    expect(ctx.maxParallel).toBe(1)
+    // `0` = AVTOMATİK (`resolveMaxParallel` → min(4, nüvə-2)). Sabit rəqəm
+    // default ola bilməz: cavab maşından asılıdır.
+    expect(ctx.maxParallel).toBe(0)
     expect(ctx.verifyCommandsJson).toBe('[]')
   })
 

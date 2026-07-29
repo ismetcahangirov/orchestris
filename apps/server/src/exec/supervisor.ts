@@ -18,6 +18,13 @@ export interface ExecuteInput {
   model: string
   prompt: string
   cwd?: string
+  /**
+   * İzolyasiya edilmiş worktree-nin yolu — YALNIZ qeyd üçün (`runs.worktree_path`).
+   *
+   * İcra onsuz da `cwd` ilə yönləndirilir; sütun "bu icra hansı ağacda işlədi?"
+   * sualının cavabıdır və worktree silindikdən sonra da qalır.
+   */
+  worktreePath?: string
   resumeSessionId?: string
   subscriptionBilled?: boolean
   ladderRung?: number
@@ -87,6 +94,7 @@ export class RunSupervisor {
       modelId: input.model,
       subscriptionBilled,
       ...(input.ladderRung !== undefined ? { ladderRung: input.ladderRung } : {}),
+      ...(input.worktreePath !== undefined ? { worktreePath: input.worktreePath } : {}),
       ...(input.attempt !== undefined ? { attempt: input.attempt } : {}),
       ...(input.escalatedFromRunId !== undefined
         ? { escalatedFromRunId: input.escalatedFromRunId }

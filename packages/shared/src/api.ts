@@ -49,6 +49,14 @@ export const UpdateContextBody = z.object({
   /** `models.id` (`anthropic:claude-haiku-4-5`). `null` = təyinatı sil. */
   defaultWorkerModelId: z.string().min(1).nullable().optional(),
   verifyCommands: z.array(z.string()).optional(),
+  /**
+   * Eyni anda neçə task icra oluna bilər. `0` = **avtomatik** (`min(4, nüvə-2)`).
+   *
+   * Yuxarı hədd qəsdən aşağıdır: hər paralel icra ~21.7k token prompt döşəməsi
+   * ödəyir (CLAUDE.md qayda 1) və maşında eyni anda 30 CLI prosesi açmaq nə
+   * sürət verir, nə də pul qənaət edir.
+   */
+  maxParallel: z.number().int().min(0).max(16).optional(),
   budgetTokens: z.number().int().positive().nullable().optional(),
   budgetUsd: z.number().positive().nullable().optional(),
   budgetSeconds: z.number().int().positive().nullable().optional(),

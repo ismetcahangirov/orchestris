@@ -141,6 +141,8 @@ export interface RunRow {
    * fərqlidir: o, eyni pillədə təkrar cəhddir.
    */
   escalatedFromRunId: string | null
+  /** İcra izolyasiya edilmiş worktree-də işlədisə onun yolu. `null` = əsas `cwd`. */
+  worktreePath: string | null
   verifications: VerificationRow[]
 }
 
@@ -233,10 +235,40 @@ export interface TaskTemplateRow {
   lastUsedAt: number | null
 }
 
+/**
+ * İzolyasiya edilmiş worktree-dəki dəyişiklik.
+ *
+ * `status: 'pending'` = diff DİSKDƏ gözləyir və əsas repoya HEÇ NƏ yazılmayıb.
+ * Qəbul/rədd istifadəçinin qərarıdır: paralel agentlər eyni faylı fərqli cür
+ * dəyişə bilər və hansının qalacağını yalnız insan bilir.
+ */
+export interface ArtifactRow {
+  id: number
+  taskId: string
+  kind: string
+  worktreePath: string
+  branch: string
+  repoPath: string
+  content: string
+  files: number
+  /** `true` = diff hədd aşıb kəsilib və TƏTBİQ EDİLƏ BİLMƏZ, yalnız baxış üçündür. */
+  truncated: boolean
+  status: string
+  createdAt: number
+  resolvedAt: number | null
+}
+
 export interface TaskDetail {
-  task: { id: string; prompt: string; status: string; createdAt: number }
+  task: {
+    id: string
+    prompt: string
+    status: string
+    createdAt: number
+    completedAt: number | null
+  }
   routing: RoutingDecisionRow | null
   routingHistory: RoutingDecisionRow[]
+  artifacts: ArtifactRow[]
   runs: RunRow[]
 }
 
@@ -312,4 +344,14 @@ export const api = {
   getTask: (id: string) => request<TaskDetail>(`/api/tasks/${id}`),
   cancelTask: (id: string) =>
     request<{ cancelled: string[] }>(`/api/tasks/${id}/cancel`, { method: 'POST' }),
+
+  /** Diff-i əsas repoya tətbiq edir. Münaqişədə 409 → `request` throw edir. */
+  acceptDiff: (taskId: string) =>
+    request<{ ok: boolean; files: number }>(`/api/tasks/${taskId}/diff/accept`, {
+      method: 'POST',
+    }),
+
+  /** Diff-i atır və worktree-ni silir. Əsas repoya heç nə yazılmır. */
+  rejectDiff: (taskId: string) =>
+    request<{ ok: boolean }>(`/api/tasks/${taskId}/diff/reject`, { method: 'POST' }),
 }

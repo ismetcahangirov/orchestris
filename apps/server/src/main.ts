@@ -1,6 +1,8 @@
 import type { Runner } from '@orchestris/shared'
 import { buildApp } from './app.js'
+import { listPendingArtifacts } from './db/artifact-repo.js'
 import { openDb } from './db/client.js'
+import { cleanupOrphanWorktrees, GitWorktrees } from './exec/worktree.js'
 import { createApiRunners } from './runners/api-factory.js'
 import { ClaudeCliRunner } from './runners/claude.js'
 import { CodexCliRunner } from './runners/codex.js'
@@ -19,7 +21,21 @@ const runners = new Map<string, Runner>([
   ...createApiRunners({ db, credentials }).runners,
 ])
 
-const app = buildApp({ db, runners, credentials, logger: true })
+// Worktree izolyasiyası YALNIZ burada qurulur, `buildApp`-da yox: default
+// olsaydı hər test istifadəçinin real `~/.orchestris/worktrees/` qovluğuna
+// yazardı.
+const worktrees = new GitWorktrees()
+
+// Çökmədən sonra qalan yetim worktree-lər. İstifadəçinin hələ qərar vermədiyi
+// (`pending`) diff-lərin qovluqlarına TOXUNULMUR — onlar yetim deyil.
+const orphanWorktrees = await cleanupOrphanWorktrees(worktrees, {
+  keep: listPendingArtifacts(db).map((a) => a.worktreePath),
+})
+
+const app = buildApp({ db, runners, credentials, worktrees, logger: true })
+if (orphanWorktrees.removed.length > 0) {
+  app.log.warn(`${orphanWorktrees.removed.length} yetim worktree silindi`)
+}
 
 // Yalnız 127.0.0.1 — xarici şəbəkəyə açılmır (spesifikasiya tələbi).
 await app.listen({ port: PORT, host: '127.0.0.1' })
