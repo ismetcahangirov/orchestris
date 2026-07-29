@@ -25,6 +25,8 @@ pnpm test                                  # bütün testlər — SIFIR token x�
 pnpm typecheck
 pnpm --filter @orchestris/server dev       # http://127.0.0.1:4319
 pnpm --filter @orchestris/web dev          # http://localhost:5319
+
+pnpm --filter @orchestris/server db:generate   # schema.ts dəyişdikdən SONRA
 ```
 
 ## Dəyişməz qaydalar
@@ -288,6 +290,30 @@ boss-only profil: actual $15  ← REAL baseline
 proqnoz == real ✓
 ```
 
+### 26. Sxem yalnız migrasiya ilə dəyişir — köhnə bazalar "möhürlənir"
+
+`db/client.ts` artıq xam DDL işlətmir: `openDb` hər açılışda
+`drizzle/`-dakı migrasiyaları qaçırır. `schema.ts`-i dəyişəndən sonra
+`pnpm --filter @orchestris/server db:generate` MÜTLƏQ çağırılmalıdır — CI
+bunu yoxlayır (generasiya yeni fayl yaradırsa iş axını sınır).
+
+Faza 1A–1C bazalarında cədvəllər VAR, `__drizzle_migrations` YOXDUR.
+Migrator onları təmiz baza sayıb `CREATE TABLE contexts` icra edər və
+"table already exists" ilə sınardı — istifadəçinin bütün tarixçəsi əlçatmaz
+olardı. `migrate.ts` belə bazaları bir dəfə **möhürləyir**: 0000-in yalnız
+ÇATIŞMAYAN obyektləri yaradılır, sonra migrasiya tətbiq olunmuş kimi qeyd
+edilir. Baza silinib yenidən yaradılmır.
+
+İki incəlik ölçülüb:
+- `foreign_keys` pragma-sı migrasiyadan SONRA açılır. SQLite onu tranzaksiya
+  daxilində saymır, drizzle isə migrasiyaları `BEGIN`/`COMMIT` arasında qaçırır
+  — SQLite-da sütun dəyişikliyi cədvəlin yenidən qurulmasıdır və FK açıq ikən
+  sınardı.
+- Qismən unikal indekslər (`models_single_boss_idx`) indi `schema.ts`-dədir.
+  Əvvəl yalnız əl DDL-də idi; migrasiyaya keçəndə sxemə köçürülməsəydi, YENİ
+  bazalarda "yalnız bir başçı" təminatı səssizcə itərdi (qayda: bazadakı
+  təminat tətbiq qatındakından güclüdür).
+
 ## Amplification Ladder (Faza 2+)
 
 Pillələr ucuzdan bahaya:
@@ -341,8 +367,6 @@ həqiqət mənbəyi yoxdur.
   Ona görə codex parser-inin **uğur yolu** real fixture ilə yoxlanılmayıb —
   yalnız xəta yolu. `codex login` edildikdən sonra
   `fixtures/cli/codex-success.jsonl` tutulmalı və parser təsdiqlənməlidir.
-- `drizzle-kit` migrasiyaları yoxdur — `db/client.ts` xam DDL + idempotent
-  `ALTER` işlədir. Sxem böyüdükcə bu davam edə bilməz (issue #13).
 - API provayderlərinin **uğur yolu** real açarla yoxlanılmayıb: model kəşfi
   saxta `fetch` ilə test olunur. Real açar əlavə edildikdə
   `/api/providers/:id/discover` bir dəfə əl ilə təsdiqlənməlidir.
