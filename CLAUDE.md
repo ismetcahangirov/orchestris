@@ -1043,6 +1043,49 @@ spesifikatorlarını həll edə bilmir (`MODULE_NOT_FOUND`) — import migrasiya
 generasiyasını tamamilə sındırardı. İki mənbənin ayrılmasını
 `scheduler-diff.test.ts` bağlayır.
 
+### 60. Tətbiq oluna bilməyən diff QAPIDA dayandırılır, `git apply`-də yox
+
+Issue #41. `git apply` patch-i BÜTÖV qəbul edir və ya BÜTÖV rədd edir — ölçülüb
+(real `git`, mətn + PNG dəyişikliyi):
+
+```
+error: cannot apply binary patch to 'logo.png' without full index line
+error: logo.png: patch does not apply
+```
+
+`a.txt` toxunulmamış qaldı. Yəni doqquz mətn faylı + bir PNG dəyişən task
+"Qəbul et" düyməsi ilə **heç nə** tətbiq etmir.
+
+Repo toxunulmaz qalır (qayda 42 doğru işləyir) — sınıq olan İSTİFADƏÇİYƏ DEYİLƏN
+SÖZDÜR. Ona görə qapı `apply`-dən ƏVVƏLƏ qoyulur və üç şey verir: səbəb,
+FAYLLARIN ADI, worktree yolu. Xam git xətası bunların yalnız birini verir və ən
+vacibini — dəyişikliyin HƏLƏ DƏ diskdə olduğunu — heç demir.
+
+Bu, `truncated` ilə eyni müqavilədir (qayda 39): tətbiq oluna bilməyən diff
+baxış üçün qalır, mənbə isə worktree qovluğudur. Fərq saxlanmadadır —
+`truncated` SÜTUNDUR, çünki kəsmə `collect()` anında baş verir və məzmundan geri
+oxuna bilmir; ikili marker isə saxlanılan mətnin İÇİNDƏDİR, ona görə HESABLANIR
+(eyni mühakimə: issue #38-dəki `pendingDiffs`). Sütun əlavə etsəydik, mövcud
+sətirlərə yanlış "boş" dəyər yazılar və qapı köhnə diff-lərdə səssizcə işləməzdi.
+
+Marker sətrin ƏVVƏLİNDƏ axtarılır, `includes` ilə yox (qayda 9 prinsipi):
+unified diff-də məzmun sətirləri həmişə `+`/`-`/` ` ilə başlayır, yəni 0-cı
+sütun git-in özünə aiddir. Bu olmasaydı, məhz BU sənədi (və ya `worktree.ts`-i)
+dəyişən hər task "ikili fayl var" kimi oxunardı.
+
+Üç forma da tutulur (hər biri real `git` ilə ölçülüb) — yalnız birincisini
+tutsaydıq, YENİ əlavə edilmiş şəkil qapıdan səssizcə keçərdi:
+
+| Hal | Marker |
+|---|---|
+| dəyişib | `Binary files a/X and b/X differ` |
+| silinib | `Binary files a/X and /dev/null differ` |
+| yaranıb | `Binary files /dev/null and b/X differ` |
+
+`GIT binary patch` markeri QƏSDƏN axtarılmır: o yalnız `--binary` ilə yaranır və
+həmin halda patch TƏTBİQ OLUNA BİLİR — onu da "ikili" saysaydıq, işləyən diff-i
+səhvən bloklayardıq.
+
 ## Amplification Ladder
 
 Pillələr ucuzdan bahaya:
@@ -1102,6 +1145,7 @@ paralel KOD taskı        → ayrıca git worktree (`orchestris/<taskId>` branch
 icra bitdi, dəyişiklik var → diff `artifacts`-a `pending` yazılır, ağac QALIR
 istifadəçi qəbul etdi     → `git apply` əsas repoya, ağac silinir
 istifadəçi rədd etdi      → ağac silinir, repoya heç nə yazılmır
+kəsilmiş / İKİLİ diff     → qəbul QAPIDA dayanır (409), ağac QALIR (qayda 60)
 ```
 
 Üçüncü kəsişən mexanizm — **yaddaş** (`memory/`, pillə DEYİL, Faza 3):
@@ -1295,11 +1339,13 @@ həqiqət mənbəyi yoxdur.
   yalnız real modellə görünəcək. Xüsusi risk: yoxlama əmrləri (`pnpm test`,
   dev server portu, paylaşılan build keşi) paralel worktree-lərdə bir-birinə
   mane ola bilər. `max_parallel > 1` ilə ilk real sınaqdan sonra yoxlanmalıdır.
-- **İkili (binary) fayllar** diff-ə `Binary files … differ` kimi düşür və
-  `git apply` onları tətbiq edə bilmir. Diff `--binary` olmadan toplanır, çünki
-  base64 blob UI-da oxunmaz olar və SQLite sətrini şişirdərdi. Belə halda
-  istifadəçi faylı worktree qovluğundan əl ilə götürməlidir — hazırda bunu UI
-  ayrıca xəbərdarlıqla göstərmir.
+- **İkili (binary) fayl hələ də ƏL İLƏ götürülməlidir** (qayda 60, issue #41).
+  Xəbərdarlıq artıq var — qəbul qapısı belə diff-i bloklayır və faylları adbaad
+  sadalayır — amma sistem faylı istifadəçi üçün ÇIXARMIR. Diff-i `--binary` ilə
+  toplamaq bunu həll edərdi, lakin qiyməti ölçülməyib: base64 blob UI-da oxunmaz
+  olar və SQLite sətrini şişirdər. Ölçmə üsulu: real ikili dəyişiklikli bir neçə
+  taskda `--binary` diff-in uzunluğunu mövcud `DIFF_CHAR_LIMIT` ilə tutuşdurmaq.
+  Alternativ (daha ucuz) yol: faylı worktree-dən birbaşa endirmək üçün route.
 - Pillə 3-ün nüsxələri EYNİ worktree-də ARDICIL qaçır (bax qayda 40). Nüsxələri
   paralel qaçırmaq üçün hər nüsxəyə ayrıca ağac lazımdır — qazanc divar saatıdır,
   xərci isə N ağacdır; ölçülməyib.

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   branchName,
   cleanupOrphanWorktrees,
+  detectBinaryFiles,
   GitWorktrees,
   readWorktreeRepo,
   resolveMaxParallel,
@@ -241,5 +242,90 @@ describe('yetim təmizləyicisi', { timeout: GIT_TEST_TIMEOUT_MS }, () => {
     const root = join(await tempDir('orchestris-wt-'), 'yoxdur')
     const scan = await cleanupOrphanWorktrees(new GitWorktrees(root), { root, keep: [] })
     expect(scan.removed).toEqual([])
+  })
+})
+
+describe('detectBinaryFiles (issue #41)', () => {
+  it('dəyişmiş ikili faylı tapır', () => {
+    expect(
+      detectBinaryFiles(
+        'diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ',
+      ),
+    ).toEqual(['logo.png'])
+  })
+
+  it('YARANMIŞ və SİLİNMİŞ ikili faylları da tapır — `/dev/null` tərəfi atılır', () => {
+    // Hər üç forma real `git` ilə ölçülüb; yalnız birini tutsaydıq, yeni əlavə
+    // edilmiş şəkil qapıdan səssizcə keçərdi.
+    const diff = [
+      'Binary files a/kohne.png and /dev/null differ',
+      'Binary files /dev/null and b/yeni.bin differ',
+    ].join('\n')
+    expect(detectBinaryFiles(diff)).toEqual(['kohne.png', 'yeni.bin'])
+  })
+
+  it('adi mətn diff-ində heç nə tapmır', () => {
+    const diff = ['diff --git a/a.txt b/a.txt', '@@ -1 +1,2 @@', ' salam', '+deyisdi'].join('\n')
+    expect(detectBinaryFiles(diff)).toEqual([])
+  })
+
+  it('MƏZMUN sətri marker sayılmır — axtarış sətir başındadır', () => {
+    // Qayda 9 prinsipi: `includes` işlətsəydik, bu sistemin ÖZ sənədini və ya
+    // testini dəyişən hər task "ikili fayl var" kimi oxunar və qəbul qapısı
+    // yanlış bağlanardı. Unified diff-də məzmun sətirləri həmişə `+`/`-`/` `
+    // ilə başlayır, yəni 0-cı sütun git-in özünə aiddir.
+    const diff = [
+      'diff --git a/doc.md b/doc.md',
+      '@@ -1 +1,2 @@',
+      ' Marker belədir:',
+      '+Binary files a/x.png and b/x.png differ',
+      '-Binary files a/y.png and b/y.png differ',
+    ].join('\n')
+    expect(detectBinaryFiles(diff)).toEqual([])
+  })
+
+  it('eyni fayl iki dəfə sayılmır', () => {
+    const diff = [
+      'Binary files a/x.png and b/x.png differ',
+      'Binary files a/x.png and b/x.png differ',
+    ].join('\n')
+    expect(detectBinaryFiles(diff)).toEqual(['x.png'])
+  })
+
+  it('CRLF sonluqlu diff-də ad təmiz qalır', () => {
+    // Windows-da `git` çıxışı CRLF daşıya bilər; `\r` adın sonuna yapışsaydı,
+    // xəbərdarlıqda "logo.png\r" görünərdi.
+    expect(detectBinaryFiles('Binary files a/logo.png and b/logo.png differ\r')).toEqual([
+      'logo.png',
+    ])
+  })
+
+  it('REAL git: ikili fayl patch-i BÜTÖV rədd edir — mətn hissəsi də', async () => {
+    // Bu testin bütün mənası budur: `detectBinaryFiles` uydurma bir qaydanı
+    // deyil, git-in ölçülmüş davranışını əks etdirir. Saxta diff mətni ilə
+    // yazsaydıq, git bir gün davranışını dəyişsə test bunu görməzdi.
+    const repo = await makeRepo()
+    await writeFile(join(repo, 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]))
+    git(['add', '.'], repo)
+    git(['commit', '-m', 'ikili fayl'], repo)
+
+    const root = await tempDir('orchestris-wt-')
+    const manager = new GitWorktrees(root)
+    const wt = await manager.create({ repo, taskId: 'ikili' })
+    // Həm MƏTN, həm İKİLİ fayl dəyişir — ən vacib hal məhz qarışıq patchdir.
+    await writeFile(join(wt?.path as string, 'a.txt'), 'birinci\nikinci\n', 'utf8')
+    await writeFile(
+      join(wt?.path as string, 'logo.png'),
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe]),
+    )
+
+    const collected = await manager.collect(wt as never)
+
+    expect(detectBinaryFiles(collected.diff)).toEqual(['logo.png'])
+    // Və git HƏQİQƏTƏN tətbiq edə bilmir — yəni qapının bağlanması doğrudur.
+    const applied = await manager.apply({ repo, diff: collected.diff })
+    expect(applied.ok).toBe(false)
+    // Mətn faylı da toxunulmamış qalır: patch bütövdür.
+    expect(await readText(join(repo, 'a.txt'))).toBe('birinci\n')
   })
 })

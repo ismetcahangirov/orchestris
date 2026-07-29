@@ -15,6 +15,7 @@ function artifact(over: Partial<ArtifactRow> = {}): ArtifactRow {
     content: 'diff --git a/a.ts b/a.ts\n+yeni sətir',
     files: 2,
     truncated: false,
+    binaryFiles: [],
     status: 'pending',
     createdAt: 0,
     resolvedAt: null,
@@ -62,6 +63,26 @@ describe('WorktreePanel', () => {
     // Rədd hər halda mümkündür: worktree-ni silmək üçün diff-in tam olması
     // lazım deyil.
     expect(screen.getByText(/Rədd et/).hasAttribute('disabled')).toBe(false)
+  })
+
+  it('İKİLİ fayllı diff QƏBUL EDİLƏ BİLMİR — fayllar adbaad sadalanır', () => {
+    // Ölçülmüş (issue #41): `git apply` patch-i BÜTÖV rədd edir, yəni mətn
+    // dəyişiklikləri də itir. İstifadəçi bunu və faylın hələ də worktree-də
+    // olduğunu BİLMƏLİDİR — xam git xətası bunların heç birini demir.
+    show(artifact({ binaryFiles: ['assets/logo.png', 'docs/diaqram.pdf'] }))
+
+    expect(screen.getByText(/mətn hissəsi də/)).toBeTruthy()
+    expect(screen.getByText('assets/logo.png')).toBeTruthy()
+    expect(screen.getByText('docs/diaqram.pdf')).toBeTruthy()
+    expect(screen.getByText(/Qəbul et/).hasAttribute('disabled')).toBe(true)
+    // Rədd yenə mümkündür: worktree-ni silmək üçün diff-in tətbiq oluna bilməsi
+    // lazım deyil.
+    expect(screen.getByText(/Rədd et/).hasAttribute('disabled')).toBe(false)
+  })
+
+  it('worktree yolu ikili fayl halında da görünür — nüsxə yalnız oradadır', () => {
+    show(artifact({ binaryFiles: ['x.png'] }))
+    expect(screen.getByText(/worktrees\/task1/)).toBeTruthy()
   })
 
   it('həll olunmuş diff-də düymələr göstərilmir', () => {

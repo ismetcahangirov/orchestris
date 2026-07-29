@@ -63,6 +63,60 @@ export interface WorktreeManager {
  */
 export const DIFF_CHAR_LIMIT = 400_000
 
+/**
+ * Diff-dəki İKİLİ (binary) faylların adları. **Saf funksiya, 0 token.**
+ *
+ * NİYƏ LAZIMDIR — ÖLÇÜLMÜŞ DAVRANIŞ (issue #41, real `git`): diff `--binary`
+ * OLMADAN toplanır (səbəb aşağıda), ona görə ikili fayl patch-ə yalnız
+ * `Binary files … differ` sətri kimi düşür. `git apply` belə patch-i tətbiq EDƏ
+ * BİLMİR:
+ *
+ * ```
+ * error: cannot apply binary patch to 'logo.png' without full index line
+ * error: logo.png: patch does not apply
+ * ```
+ *
+ * Ən vacib hissə: `git apply` patch-i BÜTÖV qəbul edir və ya BÜTÖV rədd edir —
+ * yəni bir PNG on mətn faylının dəyişikliyini də tətbiq olunmaz edir. Repo
+ * toxunulmaz qalır (qayda 42 doğru işləyir), amma istifadəçiyə deyilən söz
+ * yanlışdır: "Qəbul et" düyməsi aktiv görünür, nəticə isə zəmanətlə sıfırdır.
+ *
+ * NİYƏ `--binary` ƏLAVƏ EDİLMİR: base64 blob UI-da oxunmaz olar və SQLite
+ * sətrini şişirdərdi. Bu, ayrıca ölçmə tələb edən başqa qərardır; burada
+ * yalnız DÜRÜST XƏBƏRDARLIQ verilir (`truncated` ilə eyni müqavilə: tətbiq
+ * oluna bilməyən diff baxış üçün qalır, mənbə isə worktree qovluğudur).
+ *
+ * NİYƏ SAXLANILMIR, HESABLANIR: `truncated` sütundur, çünki kəsmə `collect()`
+ * anında baş verir və məzmundan geri oxuna bilmir. Marker isə saxlanılan
+ * mətnin İÇİNDƏDİR — sütun əlavə etsəydik, mövcud sətirlərə yanlış `false`
+ * yazılardı (eyni mühakimə: issue #38-dəki `pendingDiffs`).
+ *
+ * YANLIŞ-MÜSBƏT MÜMKÜN DEYİL: marker sətrin ƏVVƏLİNDƏ axtarılır, `includes`
+ * ilə yox (qayda 9 prinsipi). Unified diff-də faylın MƏZMUN sətirləri həmişə
+ * `+`, `-` və ya boşluqla başlayır — yəni bu mətni daşıyan test fixture-i belə
+ * 0-cı sütunda görünə bilməz.
+ *
+ * `GIT binary patch` markeri QƏSDƏN axtarılmır: o, yalnız `--binary` ilə yaranır
+ * və həmin halda patch TƏTBİQ OLUNA BİLİR. Onu da "ikili" saysaydıq, işləyən
+ * diff-i səhvən bloklayardıq.
+ */
+export function detectBinaryFiles(diff: string): string[] {
+  const found: string[] = []
+  for (const line of diff.split('\n')) {
+    // `\r` Windows-da `git` çıxışından gələ bilər — sonda kəsilir.
+    const m = /^Binary files (.+) and (.+) differ\r?$/.exec(line)
+    if (m === null) continue
+    // Üç forma ölçülüb: dəyişib (`a/X` … `b/X`), silinib (`a/X` … `/dev/null`),
+    // yaranıb (`/dev/null` … `b/X`). `/dev/null` OLMAYAN tərəf faylın adıdır.
+    const left = m[1] ?? ''
+    const right = m[2] ?? ''
+    const path = right === '/dev/null' ? left : right
+    const name = path.replace(/^[ab]\//, '')
+    if (name !== '' && !found.includes(name)) found.push(name)
+  }
+  return found
+}
+
 /** `git` çıxışı üçün bufer — böyük diff-lər üçün Node-un 1 MB default-u azdır. */
 const GIT_MAX_BUFFER = 64 * 1024 * 1024
 

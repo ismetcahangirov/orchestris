@@ -19,7 +19,11 @@ import type { Decomposer } from '../exec/decomposer.js'
 import { activeRungs, type Ladder } from '../exec/ladder.js'
 import type { TaskPool } from '../exec/pool.js'
 import type { RunSupervisor } from '../exec/supervisor.js'
-import { resolveMaxParallel, type WorktreeManager } from '../exec/worktree.js'
+import {
+  detectBinaryFiles,
+  resolveMaxParallel,
+  type WorktreeManager,
+} from '../exec/worktree.js'
 import type { RunnerReadiness } from '../routing/readiness.js'
 import { BUILTIN_RULES } from '../routing/rules.js'
 
@@ -200,7 +204,14 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
       // İzolyasiya edilmiş worktree-dəki dəyişiklik. `pending` sətir = diskdə
       // gözləyən iş; istifadəçi onu qəbul edənə qədər əsas repoya HEÇ NƏ
       // yazılmır.
-      artifacts: listArtifacts(db, task.id),
+      // `binaryFiles` CANLI hesablanır, sütunda saxlanılmır (issue #41): marker
+      // saxlanılan diff mətninin İÇİNDƏDİR, yəni məzmun həqiqətin yeganə
+      // mənbəyidir. Sütun əlavə etsəydik, mövcud sətirlərə yanlış "boş" dəyər
+      // yazılardı və qəbul qapısı köhnə diff-lərdə səssizcə işləməzdi.
+      artifacts: listArtifacts(db, task.id).map((a) => ({
+        ...a,
+        binaryFiles: detectBinaryFiles(a.content),
+      })),
       // Dekompozisiya (Faza 4) — alt-task ağacı. Bölünməmiş taskda boş massiv.
       // Ayrıca endpoint kimi YOX: task səhifəsi onsuz da bu cavabı çəkir və
       // ikinci sorğu eyni məlumatın iki mənbəyini yaradardı.
@@ -237,6 +248,23 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
     if (artifact.truncated) {
       return reply.code(409).send({
         error: 'Diff həddi aşdığı üçün kəsilib — tam dəyişikliyi worktree-dən götürün',
+        worktreePath: artifact.worktreePath,
+      })
+    }
+    // İkili fayl (issue #41): `git apply` `Binary files … differ` sətrini tətbiq
+    // edə bilmir və patch-i BÜTÖV rədd edir — yəni bir PNG yanındakı on mətn
+    // faylını da tətbiq olunmaz edir. Cəhd etmək ölçülmüş şəkildə zəmanətlə
+    // uğursuzdur, ona görə burada dayanırıq: xam git xətası ("cannot apply
+    // binary patch … without full index line") istifadəçiyə dəyişikliyin HƏLƏ DƏ
+    // worktree qovluğunda olduğunu demir.
+    const binaryFiles = detectBinaryFiles(artifact.content)
+    if (binaryFiles.length > 0) {
+      return reply.code(409).send({
+        error:
+          'Diff ikili (binary) fayl daşıyır — `git apply` belə patch-i tətbiq edə ' +
+          'bilmir və patch-in MƏTN hissəsi də tətbiq olunmazdı. Faylları worktree ' +
+          'qovluğundan əl ilə götürün.',
+        binaryFiles,
         worktreePath: artifact.worktreePath,
       })
     }
