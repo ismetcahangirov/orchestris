@@ -454,6 +454,36 @@ Ona görə uzunluq başçıdan promptla istənilir ("10–30%, 15 sətirdən ço
 və mətn işçiyə verilməzdən əvvəl `HINT_CHAR_LIMIT` ilə kəsilir — bu kəsmə
 büdcəni yox, işçinin kontekstini qoruyur.
 
+Eyni qayda Pillə 5-ə də şamil olunur: plan "3–7 addım, 25 sətirdən çox yazma"
+ilə istənilir və `PLAN_CHAR_LIMIT` ilə kəsilir.
+
+### 36. Pillə 4 və 5 EYNİ yerdə dayanır — ardıcıl yox, biri-birini istisna edir
+
+Hər ikisi eyni axındır: başçıdan qısa mətn al → işçini onunla BİR dəfə qaçır →
+pulsuz siqnalla yoxla. Yəni hər biri 1 başçı + 1 işçi icrası ödəyir. Ardıcıl
+qaçsaydılar `quality` zənciri `2 → 4 → 4 → 5 → 5 → 7` = altı icra olardı və
+pillələrin qənaəti kaskad riskinə (issue #9) qurban gedərdi. Bir slot ilə ən
+pis hal 4 icradır — Pillə 4-ün tək olduğu vəziyyətlə eyni.
+
+Seçim SIFIR token xərcləyir (`plan.ts` → `detectMultiStep`, saf funksiya) və
+taskın şəklinə görədir, təsadüfi deyil:
+
+- **çoxaddımlı task → PLAN (5).** İpucu həllin ilk 10–30%-idir; beş addımlı
+  taskda o, sadəcə 1-ci addımdır və qalan dördü barədə işçiyə HEÇ NƏ demir.
+  Zəif modelin burada problemi "başlaya bilmirəm" deyil, ipi ortada itirməkdir.
+- **təkaddımlı task → İPUCU (4).** Orada "plan" bir sətrə yığılıb elə ipucunun
+  özünə çevrilir; plan promptunun əlavə tələbləri isə başçıya boş yerə token
+  yazdırardı.
+
+Siqnal QƏSDƏN dardır (≥3 sətir-başı siyahı bəndi, VƏ YA ≥2 FƏRQLİ sıra sözü
+qrupu). Yalan-müsbət burada bahadır: təkaddımlı taskda plan istəmək başçının
+icrasını boş yerə ödəməkdir. Zəif siqnalda köhnə davranış (Pillə 4) qalır.
+`\b` işlədilmir — qayda 20.
+
+Qalan hər şey Pillə 4 ilə eynidir: razılaşmama halında heç biri işə düşmür
+(qayda 34), cəhd BİRDİR, nəticə keşlənmir (qayda 33), qəbul yalnız pulsuz
+siqnalla ölçülür.
+
 ## Amplification Ladder
 
 Pillələr ucuzdan bahaya:
@@ -464,7 +494,7 @@ Pillələr ucuzdan bahaya:
 2. Zəif model + ALƏT yoxlaması tsc/eslint/test dövrəsi        0 token  ⭐ ✅
 3. Best-of-N + razılaşma      N adaptiv (1→3→5)                        ✅
 4. İpucu (Shepherding)        başçıdan 10-30% prefiks       `quality`   ✅
-5. Plan güclü / icra zəif     boss plan yazır, işçi tikir              Faza 2
+5. Plan güclü / icra zəif     boss plan yazır, işçi tikir  `quality`   ✅
 6. Self-escalation            işçi "əmin deyiləm" deyir                ✅
 7. Tam güclü model            son çarə, hədəf: <20%                    ✅
 ```
@@ -476,19 +506,20 @@ UI onu `GET /api/routing/rules` cavabındakı `profileRungs`-dan alır):
 |---|---|
 | `cheap` | 0, 1, 2 |
 | `balanced` (default) | 0, 1, 2, 3, 6, 7 |
-| `quality` | 0, 1, 2, 3, 4, 6, 7 (5 hələ yoxdur) |
+| `quality` | 0, 1, 2, 3, 4, 5, 6, 7 (4 və 5 eyni slotdadır — qayda 36) |
 | `boss-only` | 7 |
 
 Eskalasiya axını (`exec/ladder.ts`):
 
 ```
-işçi imtina etdi (Pillə 6)          → ipucu*/başçı  ~40 token müqavilə
-yoxlama 3 cəhddən sonra sındı        → ipucu*/başçı  0 token siqnal
-nüsxələr razılaşmadı (Pillə 3)      → başçı         N×işçi (ipucu YOX, qayda 34)
+işçi imtina etdi (Pillə 6)          → kömək*/başçı  ~40 token müqavilə
+yoxlama 3 cəhddən sonra sındı        → kömək*/başçı  0 token siqnal
+nüsxələr razılaşmadı (Pillə 3)      → başçı         N×işçi (kömək YOX, qayda 34)
 başçı əlçatmazdır                    → əvvəlki nəticə saxlanılır
 
-* Pillə 4 aktivdirsə (yalnız `quality`) əvvəlcə ipucu sınanır:
-  başçının qısa ipucusu → işçinin bir ipuculu cəhdi → tutmasa başçının tam icrası
+* `quality` profilində əvvəlcə başçının QISA köməyi sınanır (qayda 36):
+    çoxaddımlı task → PLAN (5),  təkaddımlı task → İPUCU (4)   ← biri, ikisi yox
+    başçının qısa mətni → işçinin bir köməkli cəhdi → tutmasa başçının tam icrası
 ```
 
 Pillə 1 axını (`routing/decide.ts`):
@@ -520,26 +551,30 @@ həqiqət mənbəyi yoxdur.
 - **1C** (bitdi) — Pillə 0–2 amplifikasiya: keş, qayda routing + Auto, alət
   yoxlaması, `savings_ledger` (qənaətin dürüst ölçülməsi)
 - **2** (davam edir) — Pillə 3 (best-of-N + razılaşma), 4 (ipucu/shepherding),
-  6 (self-escalation) və 7-yə eskalasiya bitdi. Qalır: Pillə 5 (plan/icra
-  bölgüsü), prompt distilləsi (`task_templates`), paralellik və git worktree
-  izolyasiyası (issue #10)
+  5 (plan/icra bölgüsü), 6 (self-escalation) və 7-yə eskalasiya bitdi. Qalır:
+  prompt distilləsi (`task_templates`), paralellik və git worktree izolyasiyası
+  (issue #10)
 - **3** — memory (claude-mem adapter arxasında)
 - **4** — task dekompozisiyası, workflow zəncirləri
 
 ## Bilinən boşluqlar
 
-- Pillə 3, 4 və 6 **real modellə** yoxlanılmayıb: `FakeRunner` ilə hər yol
+- Pillə 3, 4, 5 və 6 **real modellə** yoxlanılmayıb: `FakeRunner` ilə hər yol
   örtülüb, amma zəif modelin müqaviləyə NƏ QƏDƏR əməl etdiyi (imtina nisbəti,
   yanlış-müsbət) ölçülməyib. Real işçi modeli təyin olunandan sonra bir neçə
   qəsdən çətin task verilib `routing_decisions` + `runs.ladder_rung` üzərindən
   "taskların neçə faizi 7-yə çatdı" ölçülməlidir (hədəf <20%).
-- Pillə 4-ün İQTİSADİ faydası ölçülməyib: qayda 34-dəki hesab ("başçının qısa
-  çıxışı + işçinin tam çıxışı < başçının tam çıxışı") çıxış/giriş qiymət
+- Pillə 4 və 5-in İQTİSADİ faydası ölçülməyib: qayda 34-dəki hesab ("başçının
+  qısa çıxışı + işçinin tam çıxışı < başçının tam çıxışı") çıxış/giriş qiymət
   nisbətinə əsaslanır, real ölçməyə yox. `quality` profili ilə eyni task dəsti
   qaçırılıb `savings_ledger`-dəki `byRung` bölgüsü `balanced` ilə tutuşdurulmalı
-  və başçının ipuculara nə qədər token yazdığı (`HintSummary.hintChars`)
-  yoxlanılmalıdır — başçı müqaviləyə əməl etməyib tam həll yazırsa pillə zərərə
-  işləyir.
+  və başçının nə qədər token yazdığı (`HintSummary.hintChars` /
+  `PlanSummary.planChars`) yoxlanılmalıdır — başçı müqaviləyə əməl etməyib tam
+  həll yazırsa pillə zərərə işləyir.
+- `detectMultiStep`-in dəqiqliyi real task korpusunda ölçülməyib: siqnal dar
+  seçilib (yalan-müsbət bahadır), amma neçə çoxaddımlı taskın SƏHVƏN Pillə 4-ə
+  düşdüyü bilinmir. `runs.ladder_rung` üzərindən 4 və 5-in payı və qəbul
+  nisbətləri tutuşdurulmalıdır.
 - Pillə 3 nüsxələri **ardıcıl** qaçır, paralel yox — 3 nüsxə divar saatı üzrə
   3x uzun çəkir. Paralellik issue #10-dadır (`contexts.max_parallel`).
 - `codex` bu maşında login olunmayıb (`codex login status` → `Not logged in`).

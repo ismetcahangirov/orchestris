@@ -40,9 +40,15 @@ describe('RunHeader — pillə nişanı', () => {
     expect(screen.getByText(/Pillə 4 — ipucu/)).toBeTruthy()
   })
 
-  it('naməlum pilləni nömrəsi ilə göstərir', () => {
+  it('Pillə 5-i plan kimi adlandırır', () => {
     render(<RunHeader run={run({ ladderRung: 5 })} />)
 
-    expect(screen.getByText('Pillə 5')).toBeTruthy()
+    expect(screen.getByText(/Pillə 5 — plan/)).toBeTruthy()
+  })
+
+  it('naməlum pilləni nömrəsi ilə göstərir', () => {
+    render(<RunHeader run={run({ ladderRung: 9 })} />)
+
+    expect(screen.getByText('Pillə 9')).toBeTruthy()
   })
 })

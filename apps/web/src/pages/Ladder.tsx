@@ -19,7 +19,12 @@ const RUNGS: { rung: number; name: string; cost: string; status: string }[] = [
     cost: 'başçının qısa ipucusu + 1 işçi icrası',
     status: 'işləyir',
   },
-  { rung: 5, name: 'Plan güclü / icra zəif', cost: '—', status: 'Faza 2' },
+  {
+    rung: 5,
+    name: 'Plan güclü / icra zəif',
+    cost: 'başçının planı + 1 işçi icrası',
+    status: 'işləyir',
+  },
   { rung: 6, name: 'Self-escalation', cost: '~40 token müqavilə', status: 'işləyir' },
   { rung: 7, name: 'Tam güclü model', cost: '$$$', status: 'işləyir' },
 ]
@@ -29,7 +34,7 @@ const PROFILE_HINT: Record<string, string> = {
   balanced:
     'Gündəlik iş üçün default. İşçi imtina edərsə və ya nüsxələr razılaşmazsa başçıya qalxır.',
   quality:
-    'Bütün mövcud pillələr. İşçi ilişəndə əvvəlcə başçıdan İPUCU alınır (Pillə 4) — tutmasa başçının tam icrası. (5 hələ tətbiq olunmayıb.)',
+    'Bütün pillələr. İşçi ilişəndə əvvəlcə başçıdan qısa kömək alınır — çoxaddımlı taskda PLAN (Pillə 5), təkaddımlıda İPUCU (Pillə 4). Tutmasa başçının tam icrası.',
   'boss-only': 'Baseline ölçməsi: keş və yoxlama söndürülür, hər task başçıya gedir.',
 }
 
