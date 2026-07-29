@@ -59,6 +59,22 @@ export default function WorkflowRunPanel({
             <p className="mb-3 rounded bg-bad/10 p-2 text-xs text-bad">{data.run.error}</p>
           )}
 
+          {/* Zəncirin bütün addımları BİR ağacda işləyir və dəyişiklik valideyn
+              taskın `pending` diff-inə yazılır (issue #36). Keçid olmasaydı,
+              istifadəçi baxılası dəyişikliyi yalnız `/history` səhifəsində
+              təsadüfən tapardı. */}
+          {data.run.rootTaskId !== null && (
+            <p className="mb-3 text-xs text-ink-dim">
+              Zəncir taskı:{' '}
+              <Link
+                to={`/tasks/${data.run.rootTaskId}`}
+                className="underline hover:text-ink"
+              >
+                nəticə və dəyişiklik →
+              </Link>
+            </p>
+          )}
+
           <ol className="space-y-2">
             {data.steps.map((s) => (
               <li key={s.id} className="text-xs">

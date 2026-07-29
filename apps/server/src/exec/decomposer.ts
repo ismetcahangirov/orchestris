@@ -63,6 +63,17 @@ export interface DecomposeInput {
   runner?: Runner
   model?: string
   limits?: BudgetLimits
+  /**
+   * ÇAĞIRAN TƏRƏFİN AÇDIĞI worktree (workflow zənciri, issue #36).
+   *
+   * Verilibsə `Decomposer` öz ağacını AÇMIR və verilən ağacı BAĞLAMIR — sahibi
+   * çağırandır (`LadderInput.worktree` ilə eyni müqavilə, sadəcə bir səviyyə
+   * yuxarıda). Zəncirin bir addımı `decompose: true` ilə bölünəndə parçalar
+   * zəncirin ORTAQ ağacında işləməlidir: burada ayrıca ağac açsaydıq, həmin
+   * addımın işi öz `pending` diff-ində qalar və NÖVBƏTİ addım onu görməzdi —
+   * yəni düzəltdiyimiz səhv bir səviyyə aşağıda təkrarlanardı.
+   */
+  worktree?: Worktree
 }
 
 export interface SubtaskOutcome {
@@ -130,7 +141,11 @@ export class Decomposer {
     // Ağac VALİDEYN taskındır: bütün alt-tasklar orada işləyir və diff sonda
     // BİR sətir kimi yazılır. Alt-task başına ağac açsaydıq, 2-ci alt-task
     // 1-cinin yazdığı faylı görməzdi (qayda 40).
-    const worktree = await this.openWorktree(input)
+    //
+    // Çağıran ağac veribsə (zəncir addımı — issue #36) ONU işlədirik və sonda
+    // BAĞLAMIRIQ: diff-i zəncirin sintetik valideyn taskı yazacaq.
+    const external = input.worktree !== undefined
+    const worktree = input.worktree ?? (await this.openWorktree(input))
 
     try {
       const outcomes = await this.runSubtasks(input, rows, worktree, budget)
@@ -149,7 +164,7 @@ export class Decomposer {
       // Ledger `finally`-dədir: bölgü icrası ödənilib və atılan xəta onu
       // ölçmədən çıxarmamalıdır.
       recordSavings(this.db, computeTaskSavings(this.db, input.task.id))
-      if (this.worktrees !== undefined && worktree !== undefined) {
+      if (!external && this.worktrees !== undefined && worktree !== undefined) {
         await finalizeWorktree({
           db: this.db,
           worktrees: this.worktrees,

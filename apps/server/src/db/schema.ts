@@ -514,6 +514,23 @@ export const workflowRuns = sqliteTable(
      * görünərdi.
      */
     stepsJson: text('steps_json').notNull(),
+    /**
+     * Zəncir icrasının SİNTETİK valideyn taskı (issue #36).
+     *
+     * NİYƏ LAZIMDIR: `artifacts` cədvəli TASKA bağlıdır, yəni ortaq worktree-nin
+     * diff-ini yazacaq sahib olmadan zəncirin `code` addımları istifadəçinin
+     * repo-suna BİRBAŞA yazırdı — qayda 42-dəki baxış qapısı zəncirdə işə
+     * düşmürdü. Sintetik task o sahibi verir və eyni zamanda addımların
+     * task-larını alt-task ağacına yığır.
+     *
+     * NULL ola bilər: yalnız `http` addımlarından ibarət zəncirin taska ehtiyacı
+     * yoxdur — yaradılsaydı `/history` səhifəsi heç bir icrası olmayan boş
+     * tasklarla dolardı.
+     *
+     * XARİCİ AÇAR YOXDUR — `workflow_step_runs.task_id` ilə eyni səbəb: kontekst
+     * silinəndə tasklar kaskadla gedir, zəncirin tarixçəsi isə QALMALIDIR.
+     */
+    rootTaskId: text('root_task_id'),
     startedAt: integer('started_at').notNull(),
     endedAt: integer('ended_at'),
     error: text('error'),

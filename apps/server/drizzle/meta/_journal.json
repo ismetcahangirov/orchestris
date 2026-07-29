@@ -50,6 +50,13 @@
       "when": 1785337885083,
       "tag": "0006_happy_vermin",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1785345799429,
+      "tag": "0007_windy_nova",
+      "breakpoints": true
     }
   ]
 }

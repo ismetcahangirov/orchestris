@@ -868,12 +868,12 @@ alar və dövrə `max`-a qədər boş fırlanardı. Öz çıxışını geri verm
 "düzəlişlə yenidən cəhd et"ə çevirir. `{{previous}}`-a toxunmayan prompt yenə
 keşə düşür — yəni mənasız təkrar bahalı yox, sadəcə faydasız olur.
 
-**Zəncir addımlarında izolyasiya SÖNDÜRÜLÜR** (`LadderInput.isolate: false`).
+**Zəncirdə izolyasiya ADDIM BAŞINA DEYİL, ZƏNCİR BAŞINADIR** (qayda 58).
 Addımlar alt-tasklar kimi ASILIDIR (qayda 53): 2-ci addım 1-cinin yazdığı faylı
 görməlidir. Hər addıma ayrıca worktree açılsaydı, hər addımın işi öz `pending`
-diff-ində qalar və növbəti addım köhnə kod görərdi. Dekompozisiyadan fərqli
-olaraq ORTAQ ağac da açılmır: diff `artifacts`-da TASKA bağlıdır, zəncir
-icrasının isə öz taskı yoxdur (bax "Bilinən boşluqlar").
+diff-ində qalar və növbəti addım köhnə kod görərdi. Ona görə ağac BİR dəfə —
+zəncirin sintetik valideyn taskı üçün — açılır və hər addımın `Ladder.run`
+çağırışına ötürülür.
 
 ### 55. `contains` müqayisəsi Azərbaycan `i` cütünü nəzərə almalıdır
 
@@ -953,6 +953,47 @@ bilərdi. Məntiq taymerdən asılı deyil: `Scheduler.tick(now)` saatı paramet
 alır, ona görə aylıq davranış testdə saniyələrdə yoxlanılır. Taymer yalnız
 `main.ts`-dədir və `unref` edilir — əks halda `SIGINT`-dən sonra proses
 bağlanmazdı.
+
+### 58. Zəncirin ağacının SAHİBİ sintetik valideyn taskdır
+
+Issue #36. Əvvəl zəncirin `code` addımları istifadəçinin repo-suna BİRBAŞA
+yazırdı: qayda 42-dəki baxış qapısı (*"diff `pending` yazılır, istifadəçi qəbul
+edənə qədər repoya heç nə düşmür"*) zəncirdə işə düşmürdü. Bu, səssiz fərq idi —
+eyni task tək göndəriləndə izolyasiya olunurdu, zəncirin addımı kimi göndəriləndə
+isə yox.
+
+Səbəb unudulmuş iş deyil, SXEM məhdudiyyəti idi: `artifacts.task_id` `NOT NULL`-dur
+və zəncir icrasının öz taskı yox idi. İki alternativin hər ikisi daha pisdir:
+
+- **addım başına ağac** — 2-ci addım 1-cinin yazdığı faylı GÖRMƏZDİ (qayda 40-ın
+  qarşısını aldığı səhv, bir səviyyə yuxarıda)
+- **sahibsiz ortaq ağac** — diff-i yazacaq yer yoxdur, yəni iş yalnız diskdə qalar
+
+Ona görə `WorkflowEngine.start()` zəncir icrası üçün BİR sintetik task yaradır
+(`workflow_runs.root_task_id`) və dekompozisiyanın hazır maşınları olduğu kimi
+işləyir: ağac valideynin adına açılır, hər addımın `Ladder.run` çağırışına ORTAQ
+ağac kimi ötürülür, addımların taskları `parent_task_id` ilə onun altına düşür və
+diff sonda `finalizeWorktree` ilə valideynin adına `pending` yazılır.
+
+Dörd incəlik, hər biri ayrıca bir səhvi bağlayır:
+
+- **`http`-only zəncirdə task YARADILMIR.** Belə zəncir nə task qaçırır, nə fayla
+  toxunur — boş task yalnız `/history` səhifəsini zibilləyərdi.
+- **Ledger sətri YAZILMIR.** Valideynin öz icrası yoxdur, yəni ölçüləcək xərc də
+  (qayda 24). Xərc addımların ÖZ ledger sətirlərindədir.
+- **Statusu zəncirin yekununa uyğunlaşdırılır** (`settleRoot`, `Decomposer.settle`
+  ilə eyni səbəb): bu taskın öz icrası yoxdur, yəni `RunSupervisor` onun statusunu
+  HEÇ VAXT yazmır və `GET /api/tasks/:id` (diff-in baxıldığı səhifə) bitmiş işi
+  əbədi "pending" göstərərdi. Addım icrası XƏTA atsa da bu yazılır, yoxsa bir
+  tutulmamış xəta həm `workflow_runs`-u "running", həm taskı "pending"
+  vəziyyətində dondurardı.
+- **İzolyasiya şərti `shouldIsolate`-dir** — tək task və dekompozisiya ilə TAM
+  eyni üç şərt (paralellik, `fileAccess`, kod/test tipi). Zəncirə xas daha sərt
+  qayda YAZILMADI: baxış qapısının nə vaxt işə düşdüyü bütün yollarda eyni
+  olmalıdır, yoxsa "eyni task tək göndəriləndə niyə başqa cür davranır?" sualı
+  qayıdardı. Addımlar ayrıca təsnif olunur və ilk kod/test addımı ağacı açır:
+  birləşdirilmiş mətni bir dəfə təsnif etsəydik, dörd mətn addımının yanındakı
+  tək kod addımı siqnalda itərdi.
 
 ## Amplification Ladder
 
@@ -1056,10 +1097,14 @@ addım çıxışı → növbətinin `{{previous}}` girişi              0 token
 `continueOnError` yoxdursa → sınıq addım zənciri DAYANDIRIR
 `kind: 'http'` → xarici sorğu, YALNIZ ağ siyahıdakı hosta    (fail-closed)
 büdcə          → addımlar ARASINDA paylaşılır
+task addımı var → sintetik VALİDEYN task (`workflow_runs.root_task_id`)
+paralel KOD zənciri → BİR ortaq worktree, sonda diff valideynin adına `pending`
 ```
 
 Zəncirin öz məntiqi **sıfır token** xərcləyir (qayda 54) — hər addım isə tam
-nərdivandan keçir. İzolyasiya söndürülür: addımlar asılıdır.
+nərdivandan keçir. İzolyasiya addım başına deyil, ZƏNCİR başınadır (qayda 58):
+addımlar asılıdır, ona görə hamısı eyni ağacda işləyir və nəticə `git apply` baxış
+qapısından keçir.
 
 Altıncı kəsişən mexanizm — **cədvəl üzrə icra** (`exec/scheduler.ts`, Faza 4):
 
@@ -1111,7 +1156,9 @@ həqiqət mənbəyi yoxdur.
 - **4** (bitdi) — task dekompozisiyası (`tasks.parent_task_id`, `Decomposer`,
   alt-task ağacı), workflow zəncirləri (`workflows` / `workflow_runs` /
   `workflow_step_runs`, şərtli budaqlanma + təkrar + xarici HTTP addımı),
-  cədvəl üzrə icra (`schedules`, üç məcburi tavan) və `/workflows` səhifəsi
+  cədvəl üzrə icra (`schedules`, üç məcburi tavan) və `/workflows` səhifəsi;
+  zəncir icrasının sintetik valideyn taskı (`workflow_runs.root_task_id`) —
+  ortaq worktree və `git apply` baxış qapısı (issue #36)
 
 ## Bilinən boşluqlar
 
@@ -1137,13 +1184,15 @@ həqiqət mənbəyi yoxdur.
   səhv təxminlə yanlış parçanı yenidən qaçırmaq pulu boşa yandırardı. Zəncirlə
   bu, ƏL İLƏ qurula bilər (`continueOnError` + `test: 'failed'` budağı), amma
   dekompozisiyanın içində avtomatik deyil.
-- **Zəncirin nəticəsi izolyasiya edilmir.** Addımlar asılı olduğu üçün hər
-  addıma ayrıca worktree açmaq mümkün deyil (qayda 54), ORTAQ ağac isə diff-i
-  yazacaq sahib tələb edir — `artifacts` cədvəli TASKA bağlıdır, zəncir
-  icrasının isə öz taskı yoxdur. Yəni `code` addımları istifadəçinin repo-suna
-  BİRBAŞA yazır və `git apply` baxış qapısı (qayda 42) işə düşmür. Həll yolu
-  bəllidir: zəncir icrasına dekompozisiyadakı kimi sintetik valideyn task vermək
-  — o zaman ağac, diff və alt-task ağacı maşınları olduğu kimi işləyər.
+- **Cədvəl üzrə icra ilə zəncir izolyasiyası birlikdə DİSK YIĞIR** (issue #36-nın
+  qalan hissəsi). Hər avtomatik icra YENİ `pending` diff yaradır və yetim
+  təmizləyicisi onlara TOXUNMUR (qayda 44) — yəni gecə boyu qaçan cədvəl
+  səhərə onlarla baxılmamış worktree qoya bilər. `max_runs` tavanı sayı
+  məhdudlaşdırır (qayda 57), amma bu, təsadüfi bir hədddir. Ölçmədən sonra
+  ehtimal olunan həll: eyni zəncirin əvvəlki `pending` diff-ini yenisi ilə əvəz
+  etmək (`artifacts` onsuz da task+növ başına BİR sətirdir) və ya cədvəl
+  icralarında izolyasiyanı ayrıca ayarla söndürmək. İndi seçilməyib, çünki
+  "neçə diff yığılır" real işlətmədən başqa heç nə ilə bilinmir.
 - Zəncirlərin FAYDASI ölçülməyib: `FakeRunner` ilə hər yol örtülüb, amma
   "çoxaddımlı işi zəncirə bölmək tək taskdan yaxşıdırmı?" sualı real modellə
   sınanmayıb. Xüsusən `{{previous}}` ilə ötürülən mətnin uzunluğu hər addımda
