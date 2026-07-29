@@ -6,6 +6,8 @@ import {
   googleAdapter,
   mergeWithCatalog,
   openAiAdapter,
+  openAiCompatibleAdapter,
+  providerSupport,
 } from './discovery.js'
 import type { CatalogProvider } from './models-dev.js'
 
@@ -205,5 +207,142 @@ describe('adapterFor', () => {
 
   it('naməlum provayder üçün undefined', () => {
     expect(adapterFor('yoxdur')).toBeUndefined()
+  })
+})
+
+describe('providerSupport (issue #44)', () => {
+  const base = { id: 'x', name: 'X', envVars: [], models: [] }
+
+  it('öz adapteri olan provayder `native`-dir', () => {
+    // Bu üçü OpenAI protokolunu danışmır (`anthropic` → `x-api-key` +
+    // `anthropic-version`, `google` → tamam başqa format), ona görə
+    // `openai-compatible` yolu onlara TƏTBİQ EDİLMƏMƏLİDİR.
+    expect(providerSupport({ ...base, id: 'anthropic' })).toBe('native')
+    expect(providerSupport({ ...base, id: 'openai' })).toBe('native')
+  })
+
+  it('`npm` + `baseUrl` varsa `openai-compatible`', () => {
+    expect(
+      providerSupport({
+        ...base,
+        id: 'deepseek',
+        npm: '@ai-sdk/openai-compatible',
+        baseUrl: 'https://api.deepseek.com',
+      }),
+    ).toBe('openai-compatible')
+  })
+
+  it('ÜNVAN yoxdursa dəstəklənmir — runner qurula bilməz', () => {
+    expect(
+      providerSupport({ ...base, id: 'x', npm: '@ai-sdk/openai-compatible' }),
+    ).toBeNull()
+  })
+
+  it('başqa SDK paketi dəstəklənmir', () => {
+    // `@ai-sdk/groq` və s. öz paketini tələb edir; onu `openai-compatible`
+    // saysaydıq, işləməyən provayderi seçilə bilən göstərərdik.
+    expect(
+      providerSupport({ ...base, npm: '@ai-sdk/groq', baseUrl: 'https://api.groq.com' }),
+    ).toBeNull()
+  })
+
+  it('`npm` ümumiyyətlə yoxdursa dəstəklənmir', () => {
+    expect(providerSupport({ ...base, baseUrl: 'https://x.com' })).toBeNull()
+  })
+})
+
+describe('openAiCompatibleAdapter (issue #44)', () => {
+  it('`{baseUrl}/models` ünvanına AÇARI BAŞLIQDA göndərir', async () => {
+    // Qayda 14: açar URL-ə qoyulmur — URL server log-larına, proxy
+    // jurnallarına və `fetch failed` xəta mətnlərinə düşür.
+    let seenUrl = ''
+    let seenAuth: string | undefined
+    const fake = (async (url: string, init?: RequestInit) => {
+      seenUrl = url
+      seenAuth = (init?.headers as Record<string, string> | undefined)?.['Authorization']
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [{ id: 'deepseek-chat' }] }),
+        text: async () => '',
+      } as Response
+    }) as unknown as typeof fetch
+
+    const adapter = openAiCompatibleAdapter('deepseek', 'https://api.deepseek.com')
+    const out = await adapter.listModels(KEY, fake)
+
+    expect(seenUrl).toBe('https://api.deepseek.com/models')
+    expect(seenUrl).not.toContain(KEY)
+    expect(seenAuth).toBe(`Bearer ${KEY}`)
+    expect(out).toEqual([{ modelId: 'deepseek-chat' }])
+  })
+
+  it('sondakı `/` kəsilir — `//models` bəzi serverlərdə 404 verir', async () => {
+    let seenUrl = ''
+    const fake = (async (url: string) => {
+      seenUrl = url
+      return { ok: true, status: 200, json: async () => ({ data: [] }), text: async () => '' } as Response
+    }) as unknown as typeof fetch
+
+    await openAiCompatibleAdapter('x', 'http://127.0.0.1:1234/v1/').listModels(KEY, fake)
+    expect(seenUrl).toBe('http://127.0.0.1:1234/v1/models')
+  })
+
+  it('xəta mətnindən AÇAR KƏSİLİR', async () => {
+    // Provayder cavabları göndərilən açarı əks etdirə bilir; o mətn DB-yə
+    // (`providers.last_discovery_error`) və oradan UI-a gedir (qayda 18).
+    const fake = (async () =>
+      ({
+        ok: false,
+        status: 401,
+        json: async () => ({}),
+        text: async () => `Incorrect API key provided: ${KEY}`,
+      }) as Response) as unknown as typeof fetch
+
+    await expect(
+      openAiCompatibleAdapter('deepseek', 'https://api.deepseek.com').listModels(KEY, fake),
+    ).rejects.toThrow(/deepseek: HTTP 401/)
+
+    const err = await openAiCompatibleAdapter('deepseek', 'https://api.deepseek.com')
+      .listModels(KEY, fake)
+      .catch((e: Error) => e.message)
+    expect(err).not.toContain(KEY)
+  })
+})
+
+describe('discoverModels — openai-compatible yolu (issue #44)', () => {
+  const deepseek: CatalogProvider = {
+    id: 'deepseek',
+    name: 'DeepSeek',
+    envVars: [],
+    npm: '@ai-sdk/openai-compatible',
+    baseUrl: 'https://api.deepseek.com',
+    models: [],
+  }
+
+  it('öz adapteri olmayan provayder üçün kataloqdan ünvan götürür', async () => {
+    const fake = (async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [{ id: 'deepseek-chat' }] }),
+        text: async () => '',
+      }) as Response) as unknown as typeof fetch
+
+    const out = await discoverModels({
+      providerId: 'deepseek',
+      apiKey: KEY,
+      catalogProvider: deepseek,
+      fetchImpl: fake,
+    })
+    expect(out.map((m) => m.modelId)).toEqual(['deepseek-chat'])
+  })
+
+  it('kataloq məlumatı yoxdursa kəşf DƏSTƏKLƏNMİR', async () => {
+    // Ünvanı haradan götürəcəyimiz bilinmir — təxmin etmək yanlış hosta açar
+    // göndərmək olardı.
+    await expect(
+      discoverModels({ providerId: 'deepseek', apiKey: KEY, catalogProvider: undefined }),
+    ).rejects.toThrow(/dəstəklənmir/)
   })
 })

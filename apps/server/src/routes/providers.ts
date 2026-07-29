@@ -1,4 +1,5 @@
 import {
+  AddProviderBody,
   SetCredentialBody,
   SetModelEnabledBody,
   SetModelRoleBody,
@@ -22,14 +23,26 @@ import {
   upsertModels,
   upsertProvider,
 } from '../db/registry-repo.js'
-import { adapterFor, discoverModels } from '../registry/discovery.js'
+import { adapterFor, discoverModels, providerSupport } from '../registry/discovery.js'
 import { loadCatalog, refreshCatalog, type Catalog } from '../registry/models-dev.js'
+import { buildApiRunner } from '../runners/api-factory.js'
 import { credentialRef, type CredentialStore } from '../secrets/keychain.js'
 import { redactAll } from '../secrets/redact.js'
 
 export interface ProviderRouteDeps {
   db: Db
-  runners: ReadonlyMap<string, Runner>
+  /**
+   * DƏYİŞDİRİLƏ BİLƏN xəritə — `POST /api/providers` yeni runner-i BURA yazır
+   * (issue #44).
+   *
+   * `ReadonlyMap` deyil, çünki provayder əlavə olunanda runner dərhal
+   * qeydiyyata düşməlidir. Xəritə `main.ts`-də bir dəfə yaradılıb bütün
+   * istehlakçılara (router, readiness, `/api/health`) EYNİ istinad kimi
+   * ötürülür — yəni `set` çağırışı prosesi yenidən başlatmadan hər yerdə
+   * görünür. Nüsxə saxlasaydıq, yeni provayder yalnız növbəti startdan sonra
+   * işləyərdi və istifadəçi səbəbini heç yerdə tapa bilməzdi.
+   */
+  runners: Map<string, Runner>
   credentials: CredentialStore
   /** Server startında yüklənən kataloq; `POST /api/registry/refresh` onu əvəz edir. */
   catalog: Catalog
@@ -42,9 +55,11 @@ export interface ProviderRouteDeps {
 /**
  * Kataloqdan provayder cədvəlini doldurur.
  *
- * Yalnız model kəşfi ADAPTERİ OLAN provayderlər yazılır: models.dev 172
- * provayder bilir, biz isə üçünü işlədə bilirik. Qalanını siyahıya salmaq
- * istifadəçiyə işləməyən düymələr göstərmək olardı.
+ * YALNIZ öz kəşf adapteri olan üç provayder AVTOMATİK yazılır. Qalan ~135
+ * OpenAI-uyğun provayder (issue #44) AVTOMATİK YAZILMIR: hamısını yazsaydıq,
+ * `/providers` səhifəsi istifadəçinin heç vaxt işlətməyəcəyi 170 sətirlə
+ * dolar və "hansı biri mənimdir?" sualı yaranardı. Onlar `POST /api/providers`
+ * ilə AÇIQ şəkildə əlavə olunur — seçim istifadəçinindir.
  */
 export function seedProviders(db: Db, catalog: Catalog): void {
   for (const p of catalog.providers) {
@@ -145,6 +160,94 @@ export function registerProviderRoutes(app: FastifyInstance, deps: ProviderRoute
         providerCount: catalog.providers.length,
       },
     }
+  })
+
+  /**
+   * Kataloqda mövcud, amma hələ əlavə edilməmiş provayderlər (issue #44).
+   *
+   * Siyahı models.dev-dən gəlir və `providerSupport` ilə süzülür: öz adapteri
+   * olanlar + `openai-compatible` protokolu göstərənlər. Dəstəklənməyəni
+   * göstərmək istifadəçiyə işləməyən düymə vermək olardı.
+   */
+  app.get('/api/providers/available', async () => ({
+    providers: catalog.providers
+      .filter((p) => providerSupport(p) !== null && getProvider(db, p.id) === undefined)
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        support: providerSupport(p),
+        modelCount: p.models.length,
+        envVars: p.envVars,
+        ...(p.doc !== undefined ? { doc: p.doc } : {}),
+      })),
+    catalogSource: catalog.source,
+  }))
+
+  /**
+   * Kataloqdan provayder əlavə edir.
+   *
+   * Runner DƏRHAL qeydiyyata düşür — prosesin yenidən başladılmasını tələb
+   * etsəydik, istifadəçi açarı yazandan sonra "runner yoxdur" görər və səbəbini
+   * heç yerdə tapa bilməzdi.
+   *
+   * Açar OPSİONALDIR: lokal provayderlər (Ollama, LM Studio) onu tələb etmir.
+   * Verilibsə OS anbarına yazılır (qayda 13 — fayla ASLA) və model kəşfi qaçır.
+   */
+  app.post('/api/providers', async (req, reply) => {
+    const parsed = AddProviderBody.safeParse(req.body)
+    // Gövdədə açar ola bilər — zod `issues` girişin ÖZÜNÜ əks etdirə bilir,
+    // ona görə burada yalnız sabit mətn qaytarılır (qayda 13).
+    if (!parsed.success) return reply.code(400).send({ error: 'id və ya apiKey yararsızdır' })
+
+    const meta = catalogProvider(parsed.data.id)
+    if (meta === undefined) {
+      return reply.code(404).send({ error: 'Provayder kataloqda tapılmadı' })
+    }
+    const support = providerSupport(meta)
+    if (support === null) {
+      return reply.code(400).send({
+        error: 'Bu provayderin protokolu dəstəklənmir (yalnız OpenAI-uyğun olanlar)',
+      })
+    }
+    if (getProvider(db, meta.id) !== undefined) {
+      return reply.code(409).send({ error: 'Provayder artıq əlavə edilib' })
+    }
+
+    upsertProvider(db, {
+      id: meta.id,
+      displayName: meta.name,
+      // Öz SDK-sı olanda ünvan paketin içindədir — sütun NULL qalır.
+      ...(support === 'openai-compatible' ? { baseUrl: meta.baseUrl as string } : {}),
+    })
+
+    // Runner ƏVVƏLCƏ qurulur: açar yazılışı sınsa belə provayder siyahıda
+    // görünməli və "açar əlavə et" formu işləməlidir.
+    const { runner } = buildApiRunner({ db, credentials, providerId: meta.id })
+    runners.set(runner.id, runner)
+
+    if (parsed.data.apiKey === undefined) {
+      // Açarsız əlavə: modellər kataloqdan yazılır ki, seçicidə görünsün.
+      // Kəşf açar tələb edir, kataloq isə etmir.
+      upsertModels(
+        db,
+        meta.id,
+        meta.models.map((m) => ({ ...m, source: 'models.dev' as const })),
+      )
+      return reply.code(201).send({ ok: true, modelCount: meta.models.length })
+    }
+
+    const health = await credentials.health()
+    if (!health.ok) {
+      // Açar HEÇ VAXT fayla yazılmır (qayda 13) — provayder əlavə olundu, açar
+      // yox; istifadəçi onu sonra əlavə edə bilər.
+      return reply.code(503).send({ error: health.detail })
+    }
+    const ref = credentialRef(meta.id)
+    await credentials.set(ref, parsed.data.apiKey)
+    setProviderCredentialRef(db, meta.id, ref)
+
+    const result = await runDiscovery(meta.id, parsed.data.apiKey)
+    return reply.code(result.ok ? 201 : 502).send(result)
   })
 
   app.post<{ Params: { id: string } }>(

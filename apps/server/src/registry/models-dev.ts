@@ -54,6 +54,8 @@ const RawProvider = z.object({
   env: z.array(z.string()).optional(),
   npm: z.string().optional(),
   doc: z.string().optional(),
+  /** Provayderin API kök ünvanı — `openai-compatible` runner-i buna bağlanır. */
+  api: z.string().optional(),
   models: z.record(z.string(), z.unknown()),
 })
 
@@ -83,7 +85,24 @@ export interface CatalogProvider {
   name: string
   /** Bu provayderin açarını daşıyan env dəyişənləri (models.dev bildirir). */
   envVars: string[]
+  /**
+   * Provayderin SDK paketi — hansı protokolu danışdığını bu bildirir.
+   *
+   * ÖLÇÜLMÜŞ (models.dev, 2026-07-29, 174 provayder): 138-i
+   * `@ai-sdk/openai-compatible` işlədir, yəni əksəriyyət EYNİ protokoldadır.
+   * Məhz bu sahə "bu provayderi əlavə edə bilərikmi?" sualına cavab verir —
+   * ad üzrə ağ siyahı saxlasaydıq, models.dev hər yeni provayder əlavə edəndə
+   * bizim kodumuz köhnələrdi.
+   */
   npm?: string
+  /**
+   * Provayderin API kök ünvanı (models.dev `api` sahəsi).
+   *
+   * ÖLÇÜLMÜŞ: `openai-compatible` olan 138 provayderin HAMISININ bu sahəsi var
+   * — yəni istifadəçi ünvan yazmır. Ümumi say isə 150/174, çünki öz SDK-sı olan
+   * provayderlərdə ünvan paketin içindədir.
+   */
+  baseUrl?: string
   doc?: string
   models: CatalogModel[]
 }
@@ -141,6 +160,7 @@ function normalizeProvider(key: string, raw: unknown): CatalogProvider | null {
     name: p.name ?? key,
     envVars: p.env ?? [],
     ...(p.npm !== undefined ? { npm: p.npm } : {}),
+    ...(p.api !== undefined ? { baseUrl: p.api } : {}),
     ...(p.doc !== undefined ? { doc: p.doc } : {}),
     models,
   }

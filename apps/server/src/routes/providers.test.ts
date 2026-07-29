@@ -37,6 +37,36 @@ const CATALOG: Catalog = {
     },
     // Adapteri olmayan provayder — `seedProviders` onu ATMALIDIR.
     { id: 'adaptersiz', name: 'Adaptersiz', envVars: [], models: [] },
+    // OpenAI-uyğun provayder (issue #44): öz adapteri YOXDUR, amma models.dev
+    // həm protokolu (`npm`), həm ünvanı (`baseUrl`) bildirir.
+    {
+      id: 'deepseek',
+      name: 'DeepSeek',
+      envVars: ['DEEPSEEK_API_KEY'],
+      npm: '@ai-sdk/openai-compatible',
+      baseUrl: 'https://api.deepseek.com',
+      models: [
+        {
+          providerId: 'deepseek',
+          modelId: 'deepseek-chat',
+          displayName: 'DeepSeek Chat',
+          price: { input: 0.27, output: 1.1 },
+          contextLimit: 64000,
+          toolCall: true,
+          structuredOutput: true,
+          reasoning: false,
+          inputModalities: ['text'],
+        },
+      ],
+    },
+    // `npm` OpenAI-uyğun, amma ÜNVAN yoxdur — əlavə edilə BİLMƏZ.
+    {
+      id: 'unvansiz',
+      name: 'Ünvansız',
+      envVars: [],
+      npm: '@ai-sdk/openai-compatible',
+      models: [],
+    },
   ],
 }
 
@@ -87,7 +117,7 @@ function makeApp(
     fetchImpl: opts.fetchImpl ?? fetchReturning(TWO_MODELS),
     catalogCacheFile: join(mkdtempSync(join(tmpdir(), 'orch-routes-')), 'cache.json'),
   })
-  return { app, credentials }
+  return { app, credentials, db, runners }
 }
 
 function setKey(app: ReturnType<typeof makeApp>['app'], id = 'anthropic', apiKey = KEY) {
@@ -103,6 +133,156 @@ describe('seedProviders', () => {
     const { app } = makeApp()
     const body = (await app.inject({ method: 'GET', url: '/api/providers' })).json()
     expect(body.api.map((p: { id: string }) => p.id)).toEqual(['anthropic'])
+  })
+})
+
+describe('Provayder əlavə etmək (issue #44)', () => {
+  it('mövcud siyahı yalnız DƏSTƏKLƏNƏN və hələ əlavə edilməmişləri verir', async () => {
+    const { app } = makeApp()
+    const body = (await app.inject({ method: 'GET', url: '/api/providers/available' })).json()
+
+    // `anthropic` ARTIQ əlavə edilib (`seedProviders`), `adaptersiz`
+    // ümumiyyətlə dəstəklənmir, `unvansiz` isə `npm` düzgün olsa da ünvansızdır
+    // — dəstəklənməyəni göstərmək işləməyən düymə vermək olardı.
+    expect(body.providers.map((p: { id: string }) => p.id)).toEqual(['deepseek'])
+    expect(body.providers[0].support).toBe('openai-compatible')
+    expect(body.providers[0].modelCount).toBe(1)
+  })
+
+  it('OpenAI-uyğun provayderi əlavə edir və runner-i DƏRHAL qeydiyyata salır', async () => {
+    // Runner prosesin yenidən başladılmasını gözləsəydi, istifadəçi açarı
+    // yazandan sonra "runner yoxdur" görər və səbəbini heç yerdə tapmazdı.
+    const { app, runners, db } = makeApp({
+      fetchImpl: fetchReturning({ data: [{ id: 'deepseek-chat' }, { id: 'deepseek-reasoner' }] }),
+    })
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/providers',
+      payload: { id: 'deepseek', apiKey: 'sk-deepseek-0123456789' },
+    })
+
+    expect(res.statusCode).toBe(201)
+    expect(res.json().modelCount).toBe(2)
+    expect(runners.has('api:deepseek')).toBe(true)
+
+    // Ünvan DB-də SAXLANILIR: models.dev bizim nəzarətimizdə deyil və provayder
+    // oradan silinsə istifadəçinin işləyən quraşdırması sınmamalıdır.
+    const { getProvider } = await import('../db/registry-repo.js')
+    expect(getProvider(db, 'deepseek')?.baseUrl).toBe('https://api.deepseek.com')
+  })
+
+  it('kəşf models.dev qiymətini SAXLAYIR — naməlum model qiymətsiz qalır', async () => {
+    // Qayda 4: kataloqda olmayan model üçün `0` yazmaq onu "pulsuz" göstərərdi.
+    const { app } = makeApp({
+      fetchImpl: fetchReturning({ data: [{ id: 'deepseek-chat' }, { id: 'tanınmayan' }] }),
+    })
+    await app.inject({
+      method: 'POST',
+      url: '/api/providers',
+      payload: { id: 'deepseek', apiKey: 'sk-deepseek-0123456789' },
+    })
+
+    const models = (
+      await app.inject({ method: 'GET', url: '/api/models?provider=deepseek' })
+    ).json()
+    const known = models.find((m: { modelId: string }) => m.modelId === 'deepseek-chat')
+    const unknown = models.find((m: { modelId: string }) => m.modelId === 'tanınmayan')
+
+    expect(known.priceIn).toBe(0.27)
+    expect(known.priceKnown).toBe(true)
+    expect(unknown.priceKnown).toBe(false)
+    expect(unknown.priceIn).toBeNull()
+  })
+
+  it('AÇARSIZ əlavə mümkündür — modellər kataloqdan yazılır', async () => {
+    // Lokal provayderlər (Ollama, LM Studio) açar tələb etmir. Kəşf açarsız
+    // qaça bilməz, ona görə model siyahısı kataloqdan gəlir.
+    const { app, db } = makeApp()
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/providers',
+      payload: { id: 'deepseek' },
+    })
+
+    expect(res.statusCode).toBe(201)
+    expect(res.json().modelCount).toBe(1)
+    const { getProvider } = await import('../db/registry-repo.js')
+    expect(getProvider(db, 'deepseek')?.credentialRef).toBeNull()
+  })
+
+  it('dəstəklənməyən provayder 400 verir', async () => {
+    const { app } = makeApp()
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/providers',
+      payload: { id: 'adaptersiz' },
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('ÜNVANSIZ openai-compatible provayder 400 verir', async () => {
+    // `npm` düzgün olsa da ünvan olmadan runner qurula bilməz.
+    const { app } = makeApp()
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/providers',
+      payload: { id: 'unvansiz' },
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('kataloqda olmayan provayder 404 verir', async () => {
+    const { app } = makeApp()
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/providers',
+      payload: { id: 'yoxdur' },
+    })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it('təkrar əlavə 409 verir — mövcud açar üstündən yazılmır', async () => {
+    const { app } = makeApp()
+    await app.inject({ method: 'POST', url: '/api/providers', payload: { id: 'deepseek' } })
+
+    const again = await app.inject({
+      method: 'POST',
+      url: '/api/providers',
+      payload: { id: 'deepseek' },
+    })
+    expect(again.statusCode).toBe(409)
+  })
+
+  it('yararsız gövdədə cavab açarı ƏKS ETDİRMİR', async () => {
+    // zod `issues` girişin ÖZÜNÜ daşıya bilər (qayda 13).
+    const { app } = makeApp()
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/providers',
+      payload: { id: 'deepseek', apiKey: 'qisa' },
+    })
+
+    expect(res.statusCode).toBe(400)
+    expect(res.payload).not.toContain('qisa')
+  })
+
+  it('əlavə edilmiş provayder `/api/providers` siyahısında runner id-si ilə görünür', async () => {
+    const { app } = makeApp()
+    await app.inject({
+      method: 'POST',
+      url: '/api/providers',
+      payload: { id: 'deepseek', apiKey: 'sk-deepseek-0123456789' },
+    })
+
+    const body = (await app.inject({ method: 'GET', url: '/api/providers' })).json()
+    const row = body.api.find((p: { id: string }) => p.id === 'deepseek')
+    expect(row.runnerId).toBe('api:deepseek')
+    expect(row.authenticated).toBe(true)
+    // Artıq əlavə edilib — "mövcud" siyahısından çıxmalıdır.
+    const avail = (await app.inject({ method: 'GET', url: '/api/providers/available' })).json()
+    expect(avail.providers.map((p: { id: string }) => p.id)).not.toContain('deepseek')
   })
 })
 

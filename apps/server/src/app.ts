@@ -31,7 +31,13 @@ import { WsHub } from './ws/hub.js'
 
 export interface BuildAppInput {
   db: Db
-  runners: ReadonlyMap<string, Runner>
+  /**
+   * DƏYİŞDİRİLƏ BİLƏN — `POST /api/providers` yeni runner-i bura yazır
+   * (issue #44). Bütün istehlakçılar (router, readiness, `/api/health`) EYNİ
+   * istinadı görür, ona görə əlavə olunan provayder prosesi yenidən
+   * başlatmadan işləyir.
+   */
+  runners: Map<string, Runner>
   logger?: boolean
   /**
    * Testlər `MemoryStore` ötürməlidir. Default `KeyringStore` istifadəçinin

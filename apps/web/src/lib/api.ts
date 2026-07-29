@@ -133,6 +133,22 @@ export interface CliProviderRow {
   detail: string
 }
 
+/** Kataloqda mövcud, amma hələ əlavə edilməmiş provayder (issue #44). */
+export interface AvailableProviderRow {
+  id: string
+  name: string
+  /**
+   * `native` = öz kəşf adapteri var (anthropic/openai/google),
+   * `openai-compatible` = models.dev-in bildirdiyi ünvana OpenAI protokolu ilə
+   * bağlanılır (DeepSeek, Groq, OpenRouter, Ollama…).
+   */
+  support: 'native' | 'openai-compatible'
+  modelCount: number
+  /** Açarı daşıyan env dəyişənləri — istifadəçi açarı harada tapacağını bilsin. */
+  envVars: string[]
+  doc?: string
+}
+
 /**
  * API provayderi. DİQQƏT: burada açarın ÖZÜ yoxdur və olmamalıdır — yalnız
  * `hasCredential` (CLAUDE.md qayda 13).
@@ -463,6 +479,24 @@ export const api = {
   refreshCatalog: () =>
     request<{ ok: boolean; providerCount: number }>('/api/registry/refresh', {
       method: 'POST',
+    }),
+
+  /** Kataloqda olan, amma hələ əlavə edilməmiş provayderlər (issue #44). */
+  availableProviders: () =>
+    request<{ providers: AvailableProviderRow[]; catalogSource: string }>(
+      '/api/providers/available',
+    ),
+
+  /**
+   * Kataloqdan provayder əlavə edir.
+   *
+   * `apiKey` OPSİONALDIR — lokal provayderlər (Ollama, LM Studio) onu tələb
+   * etmir. Açar cavabda QAYTARILMIR və yalnız bu istiqamətdə hərəkət edir.
+   */
+  addProvider: (id: string, apiKey?: string) =>
+    request<DiscoveryResult>('/api/providers', {
+      method: 'POST',
+      body: JSON.stringify({ id, ...(apiKey !== undefined && apiKey !== '' ? { apiKey } : {}) }),
     }),
   getSavings: (period: StatsPeriod = 'month') =>
     request<{ period: StatsPeriod; since?: number; summary: SavingsSummary; tasks: SavingsTaskRow[] }>(

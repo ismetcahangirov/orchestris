@@ -136,6 +136,66 @@ export function adapterFor(providerId: string): DiscoveryAdapter | undefined {
   return DISCOVERY_ADAPTERS.find((a) => a.providerId === providerId)
 }
 
+/**
+ * models.dev-in "bu provayder OpenAI protokolunu danışır" işarəsi (issue #44).
+ *
+ * ÖLÇÜLMÜŞ (models.dev, 2026-07-29, 174 provayder): 138-i məhz bu paketi
+ * göstərir və HAMISININ `api` (baseURL) sahəsi var. Yəni provayderin əlavə
+ * edilib-edilməyəcəyi sualına models.dev-in ÖZÜ cavab verir.
+ *
+ * NİYƏ AD ÜZRƏ AĞ SİYAHI DEYİL: `['deepseek', 'groq', …]` yazsaydıq, siyahı
+ * models.dev hər yeni provayder əlavə edəndə köhnələrdi və istifadəçi bunu
+ * "niyə yoxdur?" sualı ilə bizdən soruşardı. Paket adı isə provayderin
+ * PROTOKOLUNU bildirir — bizə lazım olan da elə budur.
+ */
+export const OPENAI_COMPATIBLE_NPM = '@ai-sdk/openai-compatible'
+
+/**
+ * Provayder əlavə edilə bilərmi — və hansı yolla.
+ *
+ * İki yol var və qarışdırılmamalıdır: `native` = öz kəşf adapteri olan üç
+ * provayder (auth başlıqları fərqlidir), `openai-compatible` = qalan hamısı.
+ */
+export function providerSupport(
+  provider: CatalogProvider,
+): 'native' | 'openai-compatible' | null {
+  if (adapterFor(provider.id) !== undefined) return 'native'
+  if (provider.npm === OPENAI_COMPATIBLE_NPM && provider.baseUrl !== undefined) {
+    return 'openai-compatible'
+  }
+  return null
+}
+
+/**
+ * OpenAI-uyğun provayder üçün kəşf adapteri (issue #44).
+ *
+ * `openAiAdapter`-dən yeganə fərqi ÜNVANDIR — protokol eynidir (`GET
+ * {baseUrl}/models` → `{ data: [{ id }] }`). Ona görə adapter FABRİKDİR:
+ * provayderin öz `baseUrl`-i ilə qurulur.
+ *
+ * SONDAKI `/` KƏSİLİR: models.dev bəzi provayderlərdə ünvanı `…/v1`, bəzisində
+ * `…/v1/` şəklində verir; birləşdirəndə `//models` alınardı və bəzi serverlər
+ * (xüsusən lokal olanlar) onu 404 qaytarır.
+ */
+export function openAiCompatibleAdapter(
+  providerId: string,
+  baseUrl: string,
+): DiscoveryAdapter {
+  return {
+    providerId,
+    async listModels(apiKey, doFetch) {
+      const root = baseUrl.replace(/\/+$/, '')
+      const res = await doFetch(`${root}/models`, {
+        // Açar BAŞLIQDA gedir, URL-də yox (qayda 14): URL server log-larına,
+        // proxy jurnallarına və `fetch failed` xəta mətnlərinə düşür.
+        headers: { Authorization: `Bearer ${apiKey}` },
+      })
+      const body = await readOk(res, apiKey, providerId)
+      return OpenAiModels.parse(body).data.map((m) => ({ modelId: m.id }))
+    },
+  }
+}
+
 /** Kəşf edilmiş modelləri models.dev metadatası ilə birləşdirir. */
 export function mergeWithCatalog(
   providerId: string,
@@ -183,7 +243,19 @@ export interface DiscoverInput {
  * Uğursuzluqda AÇARI KƏSİLMİŞ xəta atır.
  */
 export async function discoverModels(input: DiscoverInput): Promise<ModelUpsert[]> {
-  const adapter = adapterFor(input.providerId)
+  // Öz adapteri VARSA o qazanır: `anthropic` OpenAI protokolunu danışmır
+  // (`x-api-key` + `anthropic-version` başlıqları), `google` isə ümumiyyətlə
+  // başqa formatdadır. `openai-compatible` yalnız qalanlar üçündür.
+  const adapter =
+    adapterFor(input.providerId) ??
+    (input.catalogProvider !== undefined &&
+    providerSupport(input.catalogProvider) === 'openai-compatible'
+      ? openAiCompatibleAdapter(
+          input.providerId,
+          input.catalogProvider.baseUrl as string,
+        )
+      : undefined)
+
   if (adapter === undefined) {
     throw new Error(`Model kəşfi dəstəklənmir: ${input.providerId}`)
   }
