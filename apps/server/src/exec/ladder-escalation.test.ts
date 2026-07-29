@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { RunEvent, Runner } from '@orchestris/shared'
 import { describe, expect, it, vi } from 'vitest'
 import { openDb, type Db } from '../db/client.js'
@@ -27,6 +30,31 @@ import { RunSupervisor } from './supervisor.js'
 const NODE = process.execPath
 const failCmd = `"${NODE}" -e "console.error('TS2345 xeta');process.exit(1)"`
 const okCmd = `"${NODE}" -e "process.exit(0)"`
+
+/**
+ * İlk 3 çağırışda sınan, 4-cüdə keçən yoxlama əmri.
+ *
+ * Pillə 4-ün QƏBUL yolunu yoxlamaq üçün lazımdır: 3 işçi cəhdi sınmalı, sonra
+ * ipuculu cəhd keçməlidir. Sabit əmr ilə bu yol test edilə bilməz — sayğac
+ * fayldadır, çünki əmr hər dəfə YENİ prosesdə qaçır.
+ */
+function failsUntilFourthCall(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'orchestris-verify-'))
+  const script = join(dir, 'verify.cjs')
+  const counter = join(dir, 'count')
+  writeFileSync(
+    script,
+    [
+      "const fs = require('node:fs')",
+      `const f = ${JSON.stringify(counter)}`,
+      "const n = (fs.existsSync(f) ? Number(fs.readFileSync(f, 'utf8')) : 0) + 1",
+      'fs.writeFileSync(f, String(n))',
+      "if (n <= 3) { console.error('TS2345 xeta'); process.exit(1) }",
+      'process.exit(0)',
+    ].join('\n'),
+  )
+  return `"${NODE}" "${script}"`
+}
 
 /** Mətn taskı — routing onu API işçisinə yönləndirir və keş açarı hesablana bilir. */
 const TEXT_TASK = 'Bu cümləni tərcümə et: salam'
@@ -504,6 +532,171 @@ describe('Ladder — Pillə 2 → 7 yoxlama eskalasiyası', () => {
     expect(result.verificationPassed).toBe(false)
     expect(listRunsForTask(db, task.id)).toHaveLength(3)
     expect(getTask(db, task.id)?.status).toBe('failed')
+  })
+})
+
+describe('Ladder — Pillə 4 ipucu (shepherding)', () => {
+  it('işçi imtina edəndə əvvəlcə İPUCU alınır, Pillə 7 yox', async () => {
+    const { db, ladder, ctx, newTask } = setup({
+      profile: 'quality',
+      worker: [ESCALATE, answer('İPUCU İLƏ HƏLL ETDİM')],
+    })
+    const task = newTask()
+
+    const result = await ladder.run({ task, context: ctx })
+
+    expect(result.status).toBe('succeeded')
+    expect(result.finalRung).toBe(4)
+    expect(result.hint).toMatchObject({ trigger: 'self', accepted: true })
+    // İşçinin imtinası, başçının ipucusu, işçinin ipuculu cəhdi — başçının
+    // TAM icrası (7) YOXDUR: pillənin bütün qənaəti budur.
+    expect(listRunsForTask(db, task.id).map((r) => r.ladderRung)).toEqual([2, 4, 4])
+    expect(getTask(db, task.id)?.status).toBe('succeeded')
+  })
+
+  it('başçıdan TAM həll deyil, yalnız başlanğıc istənir', async () => {
+    const { ladder, ctx, boss, newTask } = setup({
+      profile: 'quality',
+      worker: [ESCALATE, answer('HƏLL')],
+    })
+    const spy = vi.spyOn(boss, 'run')
+
+    await ladder.run({ task: newTask(), context: ctx })
+
+    const prompt = spy.mock.calls[0]?.[0].prompt ?? ''
+    expect(prompt).toContain('TAM həll YAZMA')
+    expect(prompt).toContain('kontekst çatmır')
+    expect(prompt).toContain(TEXT_TASK)
+  })
+
+  it('başçının ipucusu işçinin növbəti promptuna qoyulur', async () => {
+    const { ladder, ctx, worker, newTask } = setup({
+      profile: 'quality',
+      worker: [ESCALATE, answer('HƏLL')],
+    })
+    const spy = vi.spyOn(worker, 'run')
+
+    await ladder.run({ task: newTask(), context: ctx })
+
+    const prompt = spy.mock.calls[1]?.[0].prompt ?? ''
+    expect(prompt).toContain('BAŞÇI CAVABI')
+    expect(prompt).toContain('İPUCU')
+    expect(prompt).toContain(TEXT_TASK)
+  })
+
+  it('ipuculu işçi yenə imtina edərsə Pillə 7 işə düşür', async () => {
+    const { db, ladder, ctx, newTask } = setup({
+      profile: 'quality',
+      worker: [ESCALATE],
+    })
+    const task = newTask()
+
+    const result = await ladder.run({ task, context: ctx })
+
+    expect(result.finalRung).toBe(7)
+    expect(result.status).toBe('succeeded')
+    // İpucu boşa getdi, amma ödənildi — nəticədə GİZLƏDİLMİR.
+    expect(result.hint).toMatchObject({ accepted: false })
+    expect(result.escalation).toMatchObject({ trigger: 'self', reached: true })
+    expect(listRunsForTask(db, task.id).map((r) => r.ladderRung)).toEqual([2, 4, 4, 7])
+  })
+
+  it('`balanced` profilində ipucu YOXDUR — birbaşa başçıya qalxılır', async () => {
+    const { db, ladder, ctx, newTask } = setup({ worker: [ESCALATE] })
+    const task = newTask()
+
+    const result = await ladder.run({ task, context: ctx })
+
+    expect(result.hint).toBeUndefined()
+    expect(listRunsForTask(db, task.id).map((r) => r.ladderRung)).toEqual([2, 7])
+  })
+
+  it('razılaşmama halında ipucu istənmir — nüsxələr onsuz da ödənilib', async () => {
+    const { db, ladder, ctx, newTask } = setup({
+      profile: 'quality',
+      worker: [answer('A'), answer('B'), answer('C'), answer('D'), answer('E')],
+    })
+    const task = newTask()
+
+    const result = await ladder.run({ task, context: ctx })
+
+    expect(result.hint).toBeUndefined()
+    expect(result.finalRung).toBe(7)
+    expect(listRunsForTask(db, task.id).map((r) => r.ladderRung)).toEqual([2, 3, 3, 3, 3, 7])
+  })
+
+  it('yoxlama sınıqlarından sonra ipuculu cəhd keçirsə nəticə onundur', async () => {
+    // Əmr ilk 3 çağırışda sınır, 4-cüdə keçir: yəni yalnız İPUCULU cəhd
+    // yoxlamadan keçir. Determinist siqnal ipucunun işlədiyini SIFIR token ilə
+    // təsdiqləyir.
+    const { db, ladder, ctx, newTask } = setup({
+      profile: 'quality',
+      verifyCommands: [failsUntilFourthCall()],
+    })
+    const task = newTask()
+
+    const result = await ladder.run({ task, context: ctx })
+
+    expect(result.status).toBe('succeeded')
+    expect(result.verificationPassed).toBe(true)
+    expect(result.finalRung).toBe(4)
+    expect(result.hint).toMatchObject({ trigger: 'verification', accepted: true })
+    expect(listRunsForTask(db, task.id).map((r) => r.ladderRung)).toEqual([2, 2, 2, 4, 4])
+    expect(getTask(db, task.id)?.status).toBe('succeeded')
+  })
+
+  it('ipuculu cavab KEŞƏ YAZILMIR — başçının köməyi işçinin açarı altında gizlənməməlidir', async () => {
+    // Keş açarı model + runner id-sidir. Ora başçı köməyi ilə alınmış cavabı
+    // yazsaq, sonrakı `cheap` profilli icra (Pillə 4 və 7-ni QƏSDƏN söndürən)
+    // səssizcə həmin cavabı alardı (eyni səbəb: qayda 33).
+    const { db, ladder, ctx, newTask } = setup({
+      profile: 'quality',
+      worker: [ESCALATE, answer('İPUCU İLƏ HƏLL')],
+    })
+
+    const result = await ladder.run({ task: newTask(), context: ctx })
+
+    expect(result.cacheKey).not.toBeNull()
+    expect(getCacheEntry(db, result.cacheKey as string)).toBeUndefined()
+  })
+
+  it('başçı təyin olunmayıbsa ipucu da istənmir', async () => {
+    const { db, ladder, ctx, newTask } = setup({
+      profile: 'quality',
+      worker: [ESCALATE],
+      withBoss: false,
+    })
+    const task = newTask()
+
+    const result = await ladder.run({ task, context: ctx })
+
+    expect(result.status).toBe('escalation_unavailable')
+    expect(result.hint).toBeUndefined()
+    expect(listRunsForTask(db, task.id)).toHaveLength(1)
+  })
+
+  it('büdcə bitibsə ipucu istənmir — yeni icra başlatmaq limitin mənasını pozardı', async () => {
+    const { db, ladder, ctx, newTask } = setup({
+      profile: 'quality',
+      worker: [
+        [
+          { t: 'text', delta: '{"escalate": true, "reason": "bilmirəm"}' },
+          { t: 'usage', inputTokens: 10, outputTokens: 100, billed: 'real' },
+          { t: 'done', stopReason: 'end_turn' },
+        ],
+      ],
+    })
+    const task = newTask()
+
+    const result = await ladder.run({
+      task,
+      context: ctx,
+      limits: { maxOutputTokens: 100 },
+    })
+
+    expect(result.hint).toBeUndefined()
+    expect(result.status).toBe('escalation_unavailable')
+    expect(listRunsForTask(db, task.id)).toHaveLength(1)
   })
 })
 

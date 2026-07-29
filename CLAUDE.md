@@ -390,9 +390,14 @@ layihənin əsas hədəfini ("taskların <20%-i 7-yə çatsın") ölçülməz ed
 metrik işçi icralarını başçı icraları kimi sayardı.
 
 İndi hər işçi icrası 2-dir (yoxlama əmri olsun-olmasın), best-of-N nüsxələri
-3-dür, 7 YALNIZ başçının icrasıdır. `boss-only` profilində işçi rolunu başçı
+3-dür, 7 YALNIZ başçının TAM icrasıdır. `boss-only` profilində işçi rolunu başçı
 oynayır — orada tək icra yenə 7-dir, yoxsa baseline ölçməsi (qayda 25) yalan
 olardı.
+
+Pillə 4-ün İKİ icrası da (başçının qısa ipucusu + işçinin ipuculu cəhdi) 4 kimi
+qeyd olunur — başçı icra etsə də. Səbəb eynidir: ipucu MƏHZ tam başçı
+icrasından qaçmaq üçündür; onu 7 saysaq, pillənin uğuru metrikada uğursuzluq
+kimi görünərdi (bax qayda 34).
 
 ### 32. Kaskad monotondur — yuxarı pillə əvvəlkini ATA BİLMƏZ
 
@@ -414,6 +419,41 @@ cavabını ora yazmaq girişi yalançı edərdi — və sonrakı `cheap` profill
 (Pillə 7-ni QƏSDƏN söndürən) səssizcə başçı cavabı alardı. Eyni səbəbdən
 işçinin eskalasiya JSON-u da keşlənmir: imtina cavab deyil.
 
+Eyni qayda Pillə 4-ə də şamil olunur: ipucu ilə alınmış işçi cavabı da
+keşlənmir — açar başçının köməyini əks etdirmir.
+
+### 34. İpucu (Pillə 4) yalnız işçi İLİŞƏNDƏ istənilir, razılaşmamada yox
+
+Pillə 4 iki icra ödəyir: başçının qısa ipucusu + işçinin ipuculu cəhdi. Uğurlu
+halda bu, başçının TAM icrasından ucuzdur (çıxış tokeni girişdən 3–5x bahadır və
+başçı çıxışın yalnız kiçik hissəsini yazır), UĞURSUZ halda isə ondan bahadır —
+üstündən 7 onsuz da gəlir.
+
+Bu asimmetriya iki qərar doğurur:
+
+- Pillə 4 YALNIZ `quality` profilindədir. `balanced` gündəlik işdir; orada bu
+  risk götürülmür.
+- Razılaşmama (Pillə 3) halında ipucu İSTƏNMİR. Orada işçi ilişməyib — cavab
+  verib, sadəcə nüsxələr uyğun gəlməyib; onların hər biri (3–5 icra) onsuz da
+  ödənilib. Üstünə daha bir işçi icrası + başçı icrası qoymaq birbaşa 7-yə
+  qalxmaqdan bahadır. İpucu yalnız `self` (Pillə 6) və `verification`
+  siqnallarında işə düşür.
+
+Cəhd BİRDİR (kaskad riski, issue #9). İpuculu cəhdin qəbulu PULSUZ siqnalla
+ölçülür: yoxlama əmri varsa `tsc`/testlər, yoxdursa müqavilənin özü (işçi yenə
+`escalate` qaytarırsa ipucu tutmayıb). Heç bir halda "yəqin yaxşıdır" deyilmir.
+
+### 35. İpucunun uzunluğu büdcə ilə DEYİL, promptla məhdudlaşdırılır
+
+`BudgetGuard` `usage` hadisəsinə baxır, CLI runner-ləri isə `usage`-i yalnız
+SONDA verir (qayda 3). Yəni ipucu icrasına sərt `maxOutputTokens` qoysaq, uzun
+ipucu KƏSİLMƏZDİ — sadəcə icra sonradan `budget_exceeded` işarələnər və biz
+ödədiyimiz mətni atardıq. Limit qənaət etməz, pulu boşa çıxarardı.
+
+Ona görə uzunluq başçıdan promptla istənilir ("10–30%, 15 sətirdən çox yazma")
+və mətn işçiyə verilməzdən əvvəl `HINT_CHAR_LIMIT` ilə kəsilir — bu kəsmə
+büdcəni yox, işçinin kontekstini qoruyur.
+
 ## Amplification Ladder
 
 Pillələr ucuzdan bahaya:
@@ -423,7 +463,7 @@ Pillələr ucuzdan bahaya:
 1. Qayda routing              regex/heuristika               0 token   ✅
 2. Zəif model + ALƏT yoxlaması tsc/eslint/test dövrəsi        0 token  ⭐ ✅
 3. Best-of-N + razılaşma      N adaptiv (1→3→5)                        ✅
-4. İpucu (Shepherding)        başçıdan 10-30% prefiks                  Faza 2
+4. İpucu (Shepherding)        başçıdan 10-30% prefiks       `quality`   ✅
 5. Plan güclü / icra zəif     boss plan yazır, işçi tikir              Faza 2
 6. Self-escalation            işçi "əmin deyiləm" deyir                ✅
 7. Tam güclü model            son çarə, hədəf: <20%                    ✅
@@ -436,16 +476,19 @@ UI onu `GET /api/routing/rules` cavabındakı `profileRungs`-dan alır):
 |---|---|
 | `cheap` | 0, 1, 2 |
 | `balanced` (default) | 0, 1, 2, 3, 6, 7 |
-| `quality` | 0, 1, 2, 3, 6, 7 (4 və 5 hələ yoxdur) |
+| `quality` | 0, 1, 2, 3, 4, 6, 7 (5 hələ yoxdur) |
 | `boss-only` | 7 |
 
 Eskalasiya axını (`exec/ladder.ts`):
 
 ```
-işçi imtina etdi (Pillə 6)          → başçı    ~40 token müqavilə
-yoxlama 3 cəhddən sonra sındı        → başçı    0 token siqnal
-nüsxələr razılaşmadı (Pillə 3)      → başçı    N×işçi
+işçi imtina etdi (Pillə 6)          → ipucu*/başçı  ~40 token müqavilə
+yoxlama 3 cəhddən sonra sındı        → ipucu*/başçı  0 token siqnal
+nüsxələr razılaşmadı (Pillə 3)      → başçı         N×işçi (ipucu YOX, qayda 34)
 başçı əlçatmazdır                    → əvvəlki nəticə saxlanılır
+
+* Pillə 4 aktivdirsə (yalnız `quality`) əvvəlcə ipucu sınanır:
+  başçının qısa ipucusu → işçinin bir ipuculu cəhdi → tutmasa başçının tam icrası
 ```
 
 Pillə 1 axını (`routing/decide.ts`):
@@ -476,20 +519,27 @@ həqiqət mənbəyi yoxdur.
   (öz fixture-ləri ilə)
 - **1C** (bitdi) — Pillə 0–2 amplifikasiya: keş, qayda routing + Auto, alət
   yoxlaması, `savings_ledger` (qənaətin dürüst ölçülməsi)
-- **2** (davam edir) — Pillə 3 (best-of-N + razılaşma), 6 (self-escalation) və
-  7-yə eskalasiya bitdi. Qalır: Pillə 4 (ipucu), 5 (plan/icra bölgüsü), prompt
-  distilləsi (`task_templates`), paralellik və git worktree izolyasiyası
-  (issue #10)
+- **2** (davam edir) — Pillə 3 (best-of-N + razılaşma), 4 (ipucu/shepherding),
+  6 (self-escalation) və 7-yə eskalasiya bitdi. Qalır: Pillə 5 (plan/icra
+  bölgüsü), prompt distilləsi (`task_templates`), paralellik və git worktree
+  izolyasiyası (issue #10)
 - **3** — memory (claude-mem adapter arxasında)
 - **4** — task dekompozisiyası, workflow zəncirləri
 
 ## Bilinən boşluqlar
 
-- Pillə 3 və 6 **real modellə** yoxlanılmayıb: `FakeRunner` ilə hər yol
+- Pillə 3, 4 və 6 **real modellə** yoxlanılmayıb: `FakeRunner` ilə hər yol
   örtülüb, amma zəif modelin müqaviləyə NƏ QƏDƏR əməl etdiyi (imtina nisbəti,
   yanlış-müsbət) ölçülməyib. Real işçi modeli təyin olunandan sonra bir neçə
   qəsdən çətin task verilib `routing_decisions` + `runs.ladder_rung` üzərindən
   "taskların neçə faizi 7-yə çatdı" ölçülməlidir (hədəf <20%).
+- Pillə 4-ün İQTİSADİ faydası ölçülməyib: qayda 34-dəki hesab ("başçının qısa
+  çıxışı + işçinin tam çıxışı < başçının tam çıxışı") çıxış/giriş qiymət
+  nisbətinə əsaslanır, real ölçməyə yox. `quality` profili ilə eyni task dəsti
+  qaçırılıb `savings_ledger`-dəki `byRung` bölgüsü `balanced` ilə tutuşdurulmalı
+  və başçının ipuculara nə qədər token yazdığı (`HintSummary.hintChars`)
+  yoxlanılmalıdır — başçı müqaviləyə əməl etməyib tam həll yazırsa pillə zərərə
+  işləyir.
 - Pillə 3 nüsxələri **ardıcıl** qaçır, paralel yox — 3 nüsxə divar saatı üzrə
   3x uzun çəkir. Paralellik issue #10-dadır (`contexts.max_parallel`).
 - `codex` bu maşında login olunmayıb (`codex login status` → `Not logged in`).

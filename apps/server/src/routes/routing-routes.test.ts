@@ -167,6 +167,8 @@ describe('GET /api/routing/rules', () => {
 
     expect(body.profileRungs.cheap).toEqual([0, 1, 2])
     expect(body.profileRungs.balanced).toEqual([0, 1, 2, 3, 6, 7])
+    // Pillə 4 (ipucu) YALNIZ `quality`-dədir: uğursuz halda 7-dən bahadır.
+    expect(body.profileRungs.quality).toEqual([0, 1, 2, 3, 4, 6, 7])
     expect(body.profileRungs['boss-only']).toEqual([7])
   })
 })
