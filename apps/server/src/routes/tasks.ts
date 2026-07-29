@@ -2,6 +2,7 @@ import { AMPLIFICATION_PROFILES, CreateTaskBody, type Runner } from '@orchestris
 import type { FastifyInstance } from 'fastify'
 import { getDiffArtifact, listArtifacts, resolveArtifact } from '../db/artifact-repo.js'
 import type { Db } from '../db/client.js'
+import { listMemoryOps } from '../db/memory-repo.js'
 import {
   createTask,
   getContext,
@@ -130,6 +131,8 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
           amplificationProfile: ctx.amplificationProfile,
           defaultWorkerModelId: ctx.defaultWorkerModelId,
           maxParallel: ctx.maxParallel,
+          memoryScope: ctx.memoryScope,
+          memoryEnabled: ctx.memoryEnabled,
         },
         // Hər ikisi birlikdə verilir və ya heç biri — Ladder bunu "əl ilə
         // seçim" və ya "Auto" kimi oxuyur.
@@ -171,6 +174,10 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
       // gözləyən iş; istifadəçi onu qəbul edənə qədər əsas repoya HEÇ NƏ
       // yazılmır.
       artifacts: listArtifacts(db, task.id),
+      // Yaddaş əməliyyatları (Faza 3). `runs` ilə yanaşı verilir, ayrıca
+      // endpoint kimi YOX: task səhifəsi onsuz da bu cavabı çəkir və ikinci
+      // sorğu eyni məlumatın iki mənbəyini yaradardı.
+      memory: listMemoryOps(db, task.id),
       runs: listRunsForTask(db, task.id).map((r) => ({
         ...r,
         events: listEvents(db, r.id),

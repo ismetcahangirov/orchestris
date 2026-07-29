@@ -3,6 +3,7 @@ import { buildApp } from './app.js'
 import { listPendingArtifacts } from './db/artifact-repo.js'
 import { openDb } from './db/client.js'
 import { cleanupOrphanWorktrees, GitWorktrees } from './exec/worktree.js'
+import { memoryFromEnv } from './memory/config.js'
 import { createApiRunners } from './runners/api-factory.js'
 import { ClaudeCliRunner } from './runners/claude.js'
 import { CodexCliRunner } from './runners/codex.js'
@@ -32,7 +33,18 @@ const orphanWorktrees = await cleanupOrphanWorktrees(worktrees, {
   keep: listPendingArtifacts(db).map((a) => a.worktreePath),
 })
 
-const app = buildApp({ db, runners, credentials, worktrees, logger: true })
+// Yaddaş YALNIZ açıq env ilə qoşulur (`ORCHESTRIS_MEMORY=claude-mem`).
+// Verilməsə sistem Faza 2-dəki kimi yaddaşsız işləyir.
+const memory = memoryFromEnv()
+
+const app = buildApp({
+  db,
+  runners,
+  credentials,
+  worktrees,
+  logger: true,
+  ...(memory !== undefined ? { memory } : {}),
+})
 if (orphanWorktrees.removed.length > 0) {
   app.log.warn(`${orphanWorktrees.removed.length} yetim worktree silindi`)
 }

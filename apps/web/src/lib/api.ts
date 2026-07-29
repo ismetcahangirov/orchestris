@@ -25,7 +25,24 @@ export interface ContextRow {
   autoSubmode: string
   verifyCommandsJson: string
   maxParallel: number
+  /** `null` = avtomatik (kontekstin öz `id`-si). */
+  memoryScope: string | null
+  memoryEnabled: boolean
   createdAt: number
+}
+
+/**
+ * Yaddaşın vəziyyəti (Faza 3).
+ *
+ * `active` "nərdivana qoşulub" deməkdir; `health.ok` isə "işləyir". İkisi
+ * FƏRQLİDİR: provayder qoşula, amma worker əlçatmaz ola bilər — istifadəçi
+ * bunu görməlidir, yoxsa yaddaşın sınıq olduğunu heç vaxt bilməz.
+ */
+export interface MemoryStatus {
+  provider: string
+  active: boolean
+  tokenBudget: number
+  health: { ok: boolean; detail?: string }
 }
 
 /** PATH-dan aşkarlanan lokal CLI — açar tələb etmir, abunəlikdən işləyir. */
@@ -269,7 +286,24 @@ export interface TaskDetail {
   routing: RoutingDecisionRow | null
   routingHistory: RoutingDecisionRow[]
   artifacts: ArtifactRow[]
+  /** Faza 3 — bu taskda yaddaşın etdiyi işlər (boş massiv = yaddaş işə düşməyib). */
+  memory: MemoryOpRow[]
   runs: RunRow[]
+}
+
+export interface MemoryOpRow {
+  id: number
+  provider: string
+  /** `recall` | `remember` */
+  kind: string
+  scope: string
+  items: number
+  tokens: number
+  /** `null` = xərc BİLİNMİR (qayda 4). */
+  costUsd: number | null
+  ok: boolean
+  detail: string | null
+  at: number
 }
 
 export const api = {
@@ -332,6 +366,8 @@ export const api = {
     }>('/api/routing/rules'),
 
   listTemplates: () => request<{ templates: TaskTemplateRow[] }>('/api/templates'),
+
+  getMemoryStatus: () => request<MemoryStatus>('/api/memory'),
 
   updateContext: (id: string, body: UpdateContextBody) =>
     request<ContextRow>(`/api/contexts/${id}`, {

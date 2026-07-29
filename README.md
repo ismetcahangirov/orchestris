@@ -27,8 +27,24 @@ Brauzerdə `http://localhost:5319` aç:
 
 `cli:codex` istifadə etmək üçün bir dəfə `codex login` lazımdır.
 
+## Yaddaş (opsional, Faza 3)
+
+Yaddaş **default olaraq söndürülüdür** — taskların mətnini xarici anbara yazmaq
+istifadəçinin açıq qərarıdır. Açmaq üçün:
+
+```bash
+ORCHESTRIS_MEMORY=claude-mem                 # provayder (yeganə seçim)
+ORCHESTRIS_CLAUDE_MEM_MIN_VERSION=<versiya>  # MƏCBURİ — bax CLAUDE.md qayda 50
+ORCHESTRIS_CLAUDE_MEM_URL=http://127.0.0.1:37777   # opsional
+ORCHESTRIS_MEMORY_WRITE_COST_USD=0           # opsional: pulsuz model bəyanı
+```
+
+Minimum versiya verilməsə yaddaş qoşulmur (fail-closed) və səbəb `/ladder`
+səhifəsində göstərilir. Hər kontekst yaddaşı ayrıca söndürə bilər.
+
 ## Vəziyyət
 
-Faza 1A tamamlandı: icra qatı, CLI parser-ləri, SQLite hadisə jurnalı,
-REST + WebSocket, 4 səhifəli UI. Bütün testlər (233) real CLI fixture-ləri
-üzərində işləyir və heç bir token xərcləmir.
+Faza 1A–3 tamamlandı: icra qatı və CLI parser-ləri, API açarları + model
+kəşfi, amplifikasiya nərdivanının bütün pillələri (0–7), prompt distilləsi,
+paralel icra + worktree izolyasiyası, yaddaş adapteri. Bütün testlər real CLI
+fixture-ləri və `FakeRunner` üzərində işləyir, heç bir token xərcləmir.

@@ -1,5 +1,6 @@
 import { eq } from 'drizzle-orm'
 import type { Db } from '../db/client.js'
+import { memoryCostForTask } from '../db/memory-repo.js'
 import { modelPrice, type ModelRecord } from '../db/registry-repo.js'
 import { getTask, listEvents, listRunsForTask } from '../db/repo.js'
 import { listRoutingDecisions } from '../db/routing-repo.js'
@@ -48,8 +49,13 @@ export interface TaskSavings {
   baselineSubscription: boolean
   /** Routing/klassifikator qərarlarının ÖZ xərci. */
   orchestrationCostUsd: number | null
-  /** Faza 3 (claude-mem). İndi həmişə 0. */
-  memoryCostUsd: number
+  /**
+   * Yaddaşın öz xərci (Faza 3) — `memory_ops` sətirlərindən.
+   *
+   * `null` = ən azı bir yaddaş əməliyyatının xərci BİLİNMİR. Yaddaş işə
+   * düşməyibsə `0` və bu, DOĞRUDUR (bilinməzlik deyil).
+   */
+  memoryCostUsd: number | null
   /** `baseline − (actual + orchestration + memory)`. Komponent naməlumdursa `null`. */
   netSavingUsd: number | null
   /** Nəticə keşdən gəldi — icra xərci sıfırdır, qənaət tamdır. */
@@ -194,10 +200,17 @@ export function computeTaskSavings(db: Db, taskId: string): TaskSavings {
 
   const actualCostUsd = actualKnown ? actualReal : null
   const orchestrationCostUsd = orchestrationKnown ? orchestration : null
-  const memoryCostUsd = 0
+  // Yaddaş xərci ORKESTRASİYA xərcinə qatılmır, AYRICA sütundadır (spesifikasiya
+  // §10): ikisi fərqli qərarların nəticəsidir və "yaddaş özünü ödəyirmi?"
+  // sualına yalnız ayrı sütun cavab verə bilər. Net qənaətdən isə hər ikisi
+  // çıxılır — pul hər iki halda REAL yanıb.
+  const { costUsd: memoryCostUsd } = memoryCostForTask(db, taskId)
 
   const netSavingUsd =
-    baselineCostUsd === null || actualCostUsd === null || orchestrationCostUsd === null
+    baselineCostUsd === null ||
+    actualCostUsd === null ||
+    orchestrationCostUsd === null ||
+    memoryCostUsd === null
       ? null
       : baselineCostUsd - (actualCostUsd + orchestrationCostUsd + memoryCostUsd)
 

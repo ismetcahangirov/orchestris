@@ -35,9 +35,18 @@ const CONTEXTS = [
     autoSubmode: 'cheap',
     verifyCommandsJson: '["pnpm test"]',
     maxParallel: 1,
+    memoryScope: null,
+    memoryEnabled: true,
     createdAt: 0,
   },
 ]
+
+const MEMORY = {
+  provider: 'claude-mem',
+  active: true,
+  tokenBudget: 600,
+  health: { ok: false, detail: 'worker əlçatmazdır' },
+}
 
 const TEMPLATES = {
   templates: [
@@ -70,11 +79,13 @@ function mockFetch(templates: unknown = TEMPLATES): Call[] {
         ? RULES
         : url === '/api/templates'
           ? templates
-          : url === '/api/contexts'
-            ? CONTEXTS
-            : url.startsWith('/api/models')
-              ? []
-              : { ...CONTEXTS[0], amplificationProfile: 'boss-only' }
+          : url === '/api/memory'
+            ? MEMORY
+            : url === '/api/contexts'
+              ? CONTEXTS
+              : url.startsWith('/api/models')
+                ? []
+                : { ...CONTEXTS[0], amplificationProfile: 'boss-only' }
     return { ok: true, status: 200, json: async () => body, text: async () => '' } as Response
   }) as unknown as typeof fetch
   return calls
@@ -185,5 +196,44 @@ describe('Ladder səhifəsi — profillər', () => {
     // səhifə isə yalan danışardı.
     renderPage()
     await waitFor(() => expect(screen.getAllByText('aktiv')).toHaveLength(6))
+  })
+})
+
+describe('Ladder səhifəsi — yaddaş', () => {
+  const originalFetch = globalThis.fetch
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    vi.restoreAllMocks()
+  })
+
+  it('provayderi və SINIQ vəziyyəti səbəbi ilə göstərir', async () => {
+    // "Qoşulub" ilə "işləyir" fərqlidir: worker əlçatmazdırsa istifadəçi bunu
+    // görməlidir, yoxsa yaddaşın sınıq olduğunu heç vaxt bilməz.
+    renderPage()
+
+    expect(await screen.findByText('claude-mem')).toBeTruthy()
+    expect(screen.getByText('sınıq')).toBeTruthy()
+    expect(screen.getByText(/əlçatmazdır/)).toBeTruthy()
+  })
+
+  it('token büdcəsini SERVERDƏN göstərir — səhifə öz rəqəmini uydurmur', async () => {
+    renderPage()
+    expect(await screen.findByText('600')).toBeTruthy()
+  })
+
+  it('sahə verilməyibsə "avtomatik" olduğunu açıq deyir', async () => {
+    renderPage()
+    expect(await screen.findByText(/ctx1 \(avtomatik\)/)).toBeTruthy()
+  })
+
+  it('kontekst səviyyəsindəki opt-out PATCH ilə göndərilir', async () => {
+    const calls = renderPage()
+    const box = await screen.findByLabelText(/yaddaş işə düşsün/i)
+    fireEvent.click(box)
+
+    await waitFor(() => {
+      const patch = calls.find((c) => c.init?.method === 'PATCH')
+      expect(JSON.parse(String(patch?.init?.body))).toEqual({ memoryEnabled: false })
+    })
   })
 })

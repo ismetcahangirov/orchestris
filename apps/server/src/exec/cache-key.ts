@@ -47,6 +47,17 @@ export interface CacheKeyInput {
    * Verilməyəndə açar HEÇ DƏYİŞMİR — şablonsuz bazaların mövcud keşi qalır.
    */
   templateId?: string
+  /**
+   * Prompta qoşulan yaddaşın məzmun barmaq izi (`memory/prompt.ts`).
+   *
+   * `templateId` ilə EYNİ SƏBƏBDƏN açardadır: yaddaş işçinin promptunu
+   * dəyişir. Girməsəydi, yaddaşsız alınmış cavab yaddaşlı icraya (və əksinə)
+   * səssizcə qaytarılardı — və istifadəçi fərqi HEÇ VAXT görməzdi.
+   *
+   * Verilməyəndə açar HEÇ DƏYİŞMİR — yaddaşsız (default) quraşdırmaların
+   * mövcud keşi sınmır.
+   */
+  memoryDigest?: string
 }
 
 /**
@@ -74,6 +85,12 @@ export function computeCacheKey(input: CacheKeyInput): string | null {
   if (input.templateId !== undefined) {
     h.update('template\0')
     h.update(input.templateId)
+    h.update('\0')
+  }
+
+  if (input.memoryDigest !== undefined) {
+    h.update('memory\0')
+    h.update(input.memoryDigest)
     h.update('\0')
   }
 

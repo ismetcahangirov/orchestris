@@ -25,6 +25,7 @@ import {
   saveTemplate,
   type TaskTemplate,
 } from '../db/template-repo.js'
+import type { MemorySession } from '../memory/session.js'
 import { classifyTask } from '../routing/classify.js'
 import type { WorkerRouter } from '../routing/decide.js'
 import type { RoutingDecision } from '../routing/router.js'
@@ -187,6 +188,10 @@ export interface LadderContext {
    * bilərmi?" Cavab yoxdursa ayrıca worktree açmaq boş xərcdir (`shouldIsolate`).
    */
   maxParallel?: number
+  /** Yaddaş sahəsi (Faza 3). `null`/boş = kontekstin öz `id`-si. */
+  memoryScope?: string | null
+  /** Kontekst səviyyəsində yaddaş opt-out-u. Default `true`. */
+  memoryEnabled?: boolean
 }
 
 export interface LadderInput {
@@ -247,6 +252,14 @@ export interface PlanSummary {
   accepted: boolean
 }
 
+/** Faza 3 — bu taskda yaddaşın nə etdiyi. */
+export interface MemorySummary {
+  /** Prompta qoşulan qeyd sayı. `0` = yaddaş boş idi və ya söndürülüb. */
+  recalled: number
+  /** Həmin qeydlərin təxmini token dəyəri — büdcənin nə qədəri işlədildi. */
+  tokens: number
+}
+
 export interface LadderResult {
   runId: string
   status: LadderStatus
@@ -273,6 +286,8 @@ export interface LadderResult {
   escalation?: EscalationSummary
   /** Pillə 1-in qərarı — UI-da "niyə bu model?" sualına cavab verir. */
   decision?: RoutingDecision
+  /** Yaddaş qoşulubsa nə qədəri. Pillə DEYİL — kəsişən mexanizm. */
+  memory?: MemorySummary
   errorClass?: string
   errorMessage?: string
 }
@@ -364,6 +379,16 @@ interface Phase {
   taskType: string
   /** Bu tip üçün hazır şablon (Prompt distilləsi). Yoxdursa `undefined`. */
   template: TaskTemplate | undefined
+  /**
+   * İŞÇİ promptuna qoşulan yaddaş suffiksi (Faza 3). Boş sətir = yaddaş yoxdur.
+   *
+   * YALNIZ işçi promptuna gedir — başçının (Pillə 4, 5, 7) promptuna YOX.
+   * Səbəb: yaddaş mətni ETİBARSIZDIR (`memory/prompt.ts`), başçı icrası isə ən
+   * bahalı və ən çox etibar edilən addımdır; ona etibarsız mətn qatmaq ən pis
+   * yerdə ən böyük hücum səthini açardı. Faydası isə ölçülməyib — ölçülənə
+   * qədər dar qapı saxlanılır.
+   */
+  memorySuffix: string
 }
 
 type WorkerOutcome =
@@ -434,12 +459,14 @@ export class Ladder {
   private readonly supervisor: RunSupervisor
   private readonly router: WorkerRouter | undefined
   private readonly worktrees: WorktreeManager | undefined
+  private readonly memory: MemorySession | undefined
 
   constructor(
     db: Db,
     supervisor: RunSupervisor,
     router?: WorkerRouter,
     worktrees?: WorktreeManager,
+    memory?: MemorySession,
   ) {
     this.db = db
     this.supervisor = supervisor
@@ -447,6 +474,10 @@ export class Ladder {
     // Verilməsə izolyasiya TAMAMİLƏ söndürülür — nərdivan Faza 1C-dəki kimi
     // birbaşa kontekstin `cwd`-sində işləyir.
     this.worktrees = worktrees
+    // Verilməsə yaddaş TAMAMİLƏ söndürülür (Faza 1–2 davranışı). Default
+    // QƏSDƏN yoxdur: `NullProvider` belə hər taska iki cərgə jurnal yazardı və
+    // `buildApp` səviyyəsində qərar verilməli olan şeyi nərdivan qərarlaşdırardı.
+    this.memory = memory
   }
 
   /**
@@ -464,6 +495,11 @@ export class Ladder {
     const session: { worktree: Worktree | undefined } = { worktree: undefined }
     try {
       const result = await this.execute(input, session)
+      // Yaddaş yazılışı ledger-dən ƏVVƏLDİR: sıxmanın xərci `memory_ops`-a
+      // düşür və `computeTaskSavings` onu oradan oxuyur. Sonra yazsaydıq, hər
+      // taskın yaddaş xərci BİR TASK GECİKMƏ ilə görünərdi — yəni heç vaxt
+      // düzgün görünməzdi.
+      await this.remember(input, result)
       this.recordLedger(input.task.id)
       return result
     } finally {
@@ -514,6 +550,40 @@ export class Ladder {
    * yoxdur: pul yanmayıb. Belə taskı ledger-ə yazsaq, "task sayı" şişər və
    * orta qənaət olduğundan kiçik görünərdi.
    */
+  /**
+   * Nəticəni yaddaşa yazır — YALNIZ uğurlu VƏ keşdən GƏLMƏYƏN nəticəni.
+   *
+   * Uğursuz cavabı yazmaq həmin sahədəki bütün gələcək taskları zəhərləyərdi
+   * (`memory/session.ts`). Keş təkrarını yazmaq isə eyni qeydi dönə-dönə
+   * çoxaldardı: keş cavabı ARTIQ bir dəfə yadda saxlanılıb, yeni məlumat
+   * yaranmayıb — üstəlik hər təkrar sıxma xərci ödəyərdi.
+   */
+  private async remember(input: LadderInput, result: LadderResult): Promise<void> {
+    if (this.memory === undefined) return
+    if (result.status !== 'succeeded' || result.cached) return
+    if (result.runId === '') return
+
+    await this.memory.remember({
+      taskId: input.task.id,
+      ctx: this.memoryContext(input),
+      prompt: input.task.prompt,
+      answer: this.answerOf(result.runId),
+    })
+  }
+
+  private memoryContext(input: LadderInput): {
+    id: string
+    memoryScope?: string | null
+    memoryEnabled?: boolean
+  } {
+    const { id, memoryScope, memoryEnabled } = input.context
+    return {
+      id,
+      ...(memoryScope !== undefined ? { memoryScope } : {}),
+      ...(memoryEnabled !== undefined ? { memoryEnabled } : {}),
+    }
+  }
+
   private recordLedger(taskId: string): void {
     if (listRunsForTask(this.db, taskId).length === 0) return
     recordSavings(this.db, computeTaskSavings(this.db, taskId))
@@ -556,6 +626,24 @@ export class Ladder {
     // mətndir; `cheap` profilində də tətbiq olunmalıdır.
     const template = getTemplate(this.db, taskType)
 
+    // Yaddaşın oxunması (Faza 3) — keş AÇARINDAN ƏVVƏL olmalıdır.
+    //
+    // Worktree-dən (Pillə 0-dan SONRA açılır) fərqli olaraq burada sıra tərsdir:
+    // yaddaş işçinin promptunu dəyişir, yəni açarın özü ondan asılıdır. Sonra
+    // oxusaydıq, açar yaddaşsız hesablanar və yaddaşlı cavab yaddaşsız açar
+    // altında saxlanılardı — sonrakı icra səssizcə səhv cavab alardı.
+    //
+    // Oxuma LOKAL axtarışdır (`memory/claude-mem.ts`), ona görə keşdən cavab
+    // alan taskda da ödənilən şey praktiki olaraq sıfırdır.
+    const recalled =
+      this.memory === undefined
+        ? null
+        : await this.memory.recall({
+            taskId: input.task.id,
+            ctx: this.memoryContext(input),
+            query: input.task.prompt,
+          })
+
     const cacheKey = rungs.has(RUNG_CACHE)
       ? computeCacheKey({
           prompt: input.task.prompt,
@@ -565,13 +653,28 @@ export class Ladder {
           ...(cwd !== undefined ? { cwd } : {}),
           // Şablon promptu dəyişir → köhnə cavab artıq eyni sualın cavabı deyil.
           ...(template !== undefined ? { templateId: template.id } : {}),
+          // Yaddaş da promptu dəyişir — eyni səbəb.
+          ...(recalled?.digest !== null && recalled?.digest !== undefined
+            ? { memoryDigest: recalled.digest }
+            : {}),
         })
       : null
+
+    const memorySummary: MemorySummary | undefined =
+      recalled === null || recalled.items === 0
+        ? undefined
+        : { recalled: recalled.items, tokens: recalled.tokens }
 
     // ── Pillə 0 — cache ────────────────────────────────────────────────
     if (cacheKey !== null) {
       const hit = this.replayFromCache(input, runner, model, cacheKey)
-      if (hit !== null) return { ...hit, decision }
+      if (hit !== null) {
+        return {
+          ...hit,
+          decision,
+          ...(memorySummary !== undefined ? { memory: memorySummary } : {}),
+        }
+      }
     }
 
     // ── İzolyasiya — paralel kod taskları üçün ayrıca git worktree ─────
@@ -600,11 +703,16 @@ export class Ladder {
       profile,
       taskType,
       template,
+      memorySuffix: recalled?.suffix ?? '',
     }
 
     const outcome = await this.workerPhase(phase)
-    if (outcome.kind === 'result') return outcome.result
-    return this.escalate(phase, outcome)
+    const result =
+      outcome.kind === 'result' ? outcome.result : await this.escalate(phase, outcome)
+    // Yaddaş NƏTİCƏYƏ toxunmur, ona görə xülasə sonda yapışdırılır: hansı
+    // pillənin qazandığından asılı olmayaraq "bu taska nə qədər yaddaş
+    // qoşuldu?" sualının cavabı eynidir və gizlədilməməlidir (qayda 22).
+    return memorySummary === undefined ? result : { ...result, memory: memorySummary }
   }
 
   /**
@@ -904,10 +1012,17 @@ export class Ladder {
 
     // Prompt distilləsi — başçının bir dəfə yazdığı təlimat. Onu tətbiq etmək
     // SIFIR əlavə başçı tokeni xərcləyir; ödəniş çoxdan olub.
-    const workerPrompt =
+    // SIRA VACİBDİR: task → şablon → yaddaş → müqavilə.
+    //  - şablon TƏLİMATDIR (etibarlı, başçı yazıb) → yaddaşdan əvvəl
+    //  - yaddaş MƏLUMATDIR (etibarsız) → çərçivəsi ilə birlikdə ortada
+    //  - müqavilə ƏN SONDA qalmalıdır: model son göstərişə daha çox əhəmiyyət
+    //    verir və "bacarmırsansa `escalate` qaytar" məhz həmin göstərişdir.
+    const templated =
       phase.template === undefined
         ? input.task.prompt
         : buildTemplatedPrompt(input.task.prompt, phase.template)
+    const workerPrompt =
+      phase.memorySuffix === '' ? templated : `${templated}\n\n${phase.memorySuffix}`
     if (phase.template !== undefined) {
       // Task başına BİR dəfə: `workerPhase` bir taskda bir dəfə çağırılır.
       // Cəhd/nüsxə başına saysaydıq, "şablon N taskda işlədildi" rəqəmi yoxlama

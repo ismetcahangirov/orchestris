@@ -54,6 +54,9 @@ export interface ContextUpdate {
   verifyCommands?: readonly string[] | undefined
   /** `0` = avtomatik (`resolveMaxParallel`). */
   maxParallel?: number | undefined
+  /** `null` = avtomatik (kontekstin öz `id`-si — `memory/session.ts`). */
+  memoryScope?: string | null | undefined
+  memoryEnabled?: boolean | undefined
   budgetTokens?: number | null | undefined
   budgetUsd?: number | null | undefined
   budgetSeconds?: number | null | undefined
@@ -79,6 +82,8 @@ export function updateContext(db: Db, id: string, input: ContextUpdate): Context
       ? { verifyCommandsJson: JSON.stringify(input.verifyCommands) }
       : {}),
     ...(input.maxParallel !== undefined ? { maxParallel: input.maxParallel } : {}),
+    ...(input.memoryScope !== undefined ? { memoryScope: input.memoryScope } : {}),
+    ...(input.memoryEnabled !== undefined ? { memoryEnabled: input.memoryEnabled } : {}),
     ...(input.budgetTokens !== undefined ? { budgetTokens: input.budgetTokens } : {}),
     ...(input.budgetUsd !== undefined ? { budgetUsd: input.budgetUsd } : {}),
     ...(input.budgetSeconds !== undefined ? { budgetSeconds: input.budgetSeconds } : {}),
