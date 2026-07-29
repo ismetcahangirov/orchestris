@@ -347,6 +347,14 @@ export interface ArtifactRow {
   files: number
   /** `true` = diff hədd aşıb kəsilib və TƏTBİQ EDİLƏ BİLMƏZ, yalnız baxış üçündür. */
   truncated: boolean
+  /**
+   * Diff-dəki ikili (binary) fayllar — boş massiv = yoxdur (issue #41).
+   *
+   * `truncated` kimi TƏTBİQİ BLOKLAYIR: `git apply` `Binary files … differ`
+   * sətrini tətbiq edə bilmir və patch-i BÜTÖV rədd edir, yəni bir PNG yanındakı
+   * mətn dəyişikliklərini də itirər. Sütunda saxlanılmır, cavabda hesablanır.
+   */
+  binaryFiles: string[]
   status: string
   createdAt: number
   resolvedAt: number | null

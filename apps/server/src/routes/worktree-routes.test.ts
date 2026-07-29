@@ -38,7 +38,9 @@ class FakeWorktrees implements WorktreeManager {
   }
 }
 
-function setup(over: { truncated?: boolean; withWorktrees?: boolean } = {}) {
+function setup(
+  over: { truncated?: boolean; withWorktrees?: boolean; content?: string } = {},
+) {
   const db = openDb(':memory:')
   const ctx = createContext(db, { name: 'C' })
   const task = createTask(db, { contextId: ctx.id, prompt: 'p' })
@@ -57,7 +59,7 @@ function setup(over: { truncated?: boolean; withWorktrees?: boolean } = {}) {
     worktreePath: 'C:/wt/1',
     branch: 'orchestris/1',
     repoPath: 'C:/repo',
-    content: 'diff --git a/a b/a',
+    content: over.content ?? 'diff --git a/a b/a',
     files: 2,
     truncated: over.truncated ?? false,
   })
@@ -95,6 +97,61 @@ describe('diff qəbulu / rəddi', () => {
     expect(res.statusCode).toBe(409)
     expect(res.json().worktreePath).toBe('C:/wt/1')
     expect(worktrees.applied).toEqual([])
+  })
+
+  it('İKİLİ fayllı diff qəbul edilmir — mətn hissəsi də tətbiq olunmazdı', async () => {
+    // ÖLÇÜLMÜŞ (issue #41, real `git`): `git apply` patch-i BÜTÖV rədd edir.
+    // Yəni bir PNG yanındakı mətn dəyişikliyi də itir. Cəhd etmək zəmanətlə
+    // uğursuzdur, ona görə `apply` ÜMUMİYYƏTLƏ çağırılmır.
+    const { app, task, worktrees } = setup({
+      content: [
+        'diff --git a/a.txt b/a.txt',
+        '@@ -1 +1,2 @@',
+        ' salam',
+        '+deyisdi',
+        'diff --git a/logo.png b/logo.png',
+        'index 9956a96..cc7b237 100644',
+        'Binary files a/logo.png and b/logo.png differ',
+      ].join('\n'),
+    })
+
+    const res = await app.inject({ method: 'POST', url: `/api/tasks/${task.id}/diff/accept` })
+
+    expect(res.statusCode).toBe(409)
+    expect(res.json().binaryFiles).toEqual(['logo.png'])
+    // Worktree yolu MÜTLƏQ verilir: dəyişikliyin yeganə nüsxəsi oradadır.
+    expect(res.json().worktreePath).toBe('C:/wt/1')
+    expect(worktrees.applied).toEqual([])
+  })
+
+  it('ikili fayl RƏDDƏ mane olmur — rədd onsuz da heç nə tətbiq etmir', async () => {
+    const { db, app, task, worktrees } = setup({
+      content: 'diff --git a/x.png b/x.png\nBinary files a/x.png and b/x.png differ',
+    })
+
+    const res = await app.inject({ method: 'POST', url: `/api/tasks/${task.id}/diff/reject` })
+
+    expect(res.statusCode).toBe(200)
+    expect(worktrees.removed).toEqual(['C:/wt/1'])
+    expect(getDiffArtifact(db, task.id)?.status).toBe('rejected')
+  })
+
+  it('task cavabında `binaryFiles` CANLI hesablanır', async () => {
+    // Sütunda saxlanılsaydı, mövcud sətirlərə yanlış "boş" dəyər yazılardı və
+    // qəbul qapısı köhnə diff-lərdə səssizcə işləməzdi.
+    const { app, task } = setup({
+      content: 'diff --git a/x.png b/x.png\nBinary files a/x.png and b/x.png differ',
+    })
+
+    const res = await app.inject({ method: 'GET', url: `/api/tasks/${task.id}` })
+
+    expect(res.json().artifacts[0].binaryFiles).toEqual(['x.png'])
+  })
+
+  it('adi mətn diff-i ikili sayılmır', async () => {
+    const { app, task } = setup()
+    const res = await app.inject({ method: 'GET', url: `/api/tasks/${task.id}` })
+    expect(res.json().artifacts[0].binaryFiles).toEqual([])
   })
 
   it('rədd əsas repoya heç nə yazmır, worktree-ni silir', async () => {

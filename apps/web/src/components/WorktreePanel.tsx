@@ -41,6 +41,11 @@ export default function WorktreePanel({
 
   const busy = accept.isPending || reject.isPending
   const error = accept.error ?? reject.error
+  // İki ayrı səbəb, EYNİ nəticə: diff baxış üçün qalır, tətbiq isə mümkün deyil.
+  // Hər ikisi qəbul yolunda serverdə də yoxlanılır — UI yalnız düyməni boş yerə
+  // basmağın qarşısını alır, təminatı yox (təminat qaydası: server sondur).
+  const binary = artifact.binaryFiles ?? []
+  const applicable = !artifact.truncated && binary.length === 0
 
   return (
     <section className="mb-5 rounded-lg border border-white/10 bg-surface-2 p-4">
@@ -73,6 +78,25 @@ export default function WorktreePanel({
         </p>
       )}
 
+      {binary.length > 0 && (
+        // İkili fayl (issue #41). Ölçülmüş: `git apply` patch-i BÜTÖV rədd edir,
+        // yəni mətn dəyişiklikləri də tətbiq olunmur. Bunu yazmasaq istifadəçi
+        // xam git xətasını görər və dəyişikliyin hələ də worktree qovluğunda
+        // olduğunu bilməzdi.
+        <div className="mb-3 rounded bg-warn/10 p-2 text-xs text-warn">
+          <p>
+            Diff ikili (binary) fayl daşıyır — <code>git apply</code> belə patch-i
+            tətbiq edə bilmir və <strong>patch-in mətn hissəsi də</strong> tətbiq
+            olunmazdı. Faylları yuxarıdaki worktree qovluğundan əl ilə götürün.
+          </p>
+          <ul className="mt-1 list-inside list-disc font-mono break-all">
+            {binary.map((f) => (
+              <li key={f}>{f}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <pre className="mb-3 max-h-96 overflow-auto rounded bg-surface p-3 font-mono text-xs text-ink-dim">
         {artifact.content}
       </pre>
@@ -81,7 +105,7 @@ export default function WorktreePanel({
         <div className="flex items-center gap-2">
           <button
             onClick={() => accept.mutate()}
-            disabled={busy || artifact.truncated}
+            disabled={busy || !applicable}
             className="rounded bg-good/15 px-3 py-1.5 text-xs text-good disabled:opacity-40"
           >
             {accept.isPending ? 'Tətbiq olunur…' : 'Qəbul et (repoya tətbiq et)'}
