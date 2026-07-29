@@ -1184,15 +1184,15 @@ həqiqət mənbəyi yoxdur.
   səhv təxminlə yanlış parçanı yenidən qaçırmaq pulu boşa yandırardı. Zəncirlə
   bu, ƏL İLƏ qurula bilər (`continueOnError` + `test: 'failed'` budağı), amma
   dekompozisiyanın içində avtomatik deyil.
-- **Cədvəl üzrə icra ilə zəncir izolyasiyası birlikdə DİSK YIĞIR** (issue #36-nın
-  qalan hissəsi). Hər avtomatik icra YENİ `pending` diff yaradır və yetim
+- **Cədvəl üzrə icra ilə zəncir izolyasiyası birlikdə DİSK YIĞIR** (issue #38 —
+  #36-dan qalan hissə). Hər avtomatik icra YENİ `pending` diff yaradır və yetim
   təmizləyicisi onlara TOXUNMUR (qayda 44) — yəni gecə boyu qaçan cədvəl
   səhərə onlarla baxılmamış worktree qoya bilər. `max_runs` tavanı sayı
-  məhdudlaşdırır (qayda 57), amma bu, təsadüfi bir hədddir. Ölçmədən sonra
-  ehtimal olunan həll: eyni zəncirin əvvəlki `pending` diff-ini yenisi ilə əvəz
-  etmək (`artifacts` onsuz da task+növ başına BİR sətirdir) və ya cədvəl
-  icralarında izolyasiyanı ayrıca ayarla söndürmək. İndi seçilməyib, çünki
-  "neçə diff yığılır" real işlətmədən başqa heç nə ilə bilinmir.
+  məhdudlaşdırır (qayda 57), amma o hədd disk üçün deyil, XƏRC üçün seçilib.
+  Ehtimal olunan həllər issue #38-dədir (əvvəlki diff-i əvəz etmək, cədvəl
+  səviyyəsində ayar, və ya baxılmamış diff tavanı → cədvəl SÖNDÜRÜLÜR).
+  Heç biri seçilməyib, çünki "neçə diff yığılır" real işlətmədən başqa heç nə
+  ilə bilinmir.
 - Zəncirlərin FAYDASI ölçülməyib: `FakeRunner` ilə hər yol örtülüb, amma
   "çoxaddımlı işi zəncirə bölmək tək taskdan yaxşıdırmı?" sualı real modellə
   sınanmayıb. Xüsusən `{{previous}}` ilə ötürülən mətnin uzunluğu hər addımda
