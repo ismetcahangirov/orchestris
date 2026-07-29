@@ -10,7 +10,7 @@ import type {
   UpdateWorkflowBody,
 } from '@orchestris/shared'
 
-/** Faza 4 — cədvəl. Hər üç limit MƏCBURİDİR (issue #12). */
+/** Faza 4 — cədvəl. Hər dörd limit MƏCBURİDİR (issue #12, #38). */
 export interface ScheduleRow {
   id: string
   workflowId: string
@@ -19,8 +19,15 @@ export interface ScheduleRow {
   budgetUsdPerRun: number
   budgetUsdTotal: number
   maxRuns: number
+  /** Disk tavanı: cədvəlin yığa biləcəyi ən çox baxılmamış diff (issue #38). */
+  maxPendingDiffs: number
   spentUsd: number
   runs: number
+  /**
+   * Hazırda baxılmamış diff sayı — sütunda SAXLANILMIR, cavabda CANLI hesablanır.
+   * Diff qəbul/rədd ediləndə dərhal azalır, yəni tavan geri açıla bilir.
+   */
+  pendingDiffs: number
   nextRunAt: number
   lastRunAt: number | null
   /** Cədvəl NİYƏ söndürüldü — səssiz dayanma ən pis haldır. */

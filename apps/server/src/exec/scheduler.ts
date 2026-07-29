@@ -3,8 +3,10 @@ import { getContext } from '../db/repo.js'
 import { getSavings } from '../db/savings-repo.js'
 import {
   addScheduleSpend,
+  countPendingDiffsForSchedule,
   disableSchedule,
   dueSchedules,
+  getSchedule,
   getWorkflow,
   listStepRuns,
   markScheduleRun,
@@ -20,7 +22,7 @@ import type { WorkflowEngine } from './workflow-engine.js'
  * `$0.50 testdə → $50,000/ay` ssenarisinin ən asan yoludur"*. Ona görə burada
  * hər qərar "necə DAYANDIRAQ?" sualına cavabdır, "necə İŞLƏDƏK?" sualına yox.
  *
- * DÖRD TAVAN, HƏR BİRİ AYRI SIZMA YOLUNU BAĞLAYIR:
+ * BEŞ TAVAN, HƏR BİRİ AYRI SIZMA YOLUNU BAĞLAYIR:
  *
  * 1. **`budget_usd_per_run`** → hər icraya `limits.maxCostUsd` kimi ötürülür.
  *    Bir uzun zəncirin qaçmasını `BudgetGuard` kəsir.
@@ -32,6 +34,12 @@ import type { WorkflowEngine } from './workflow-engine.js'
  *    bu, sadəcə ölçmənin boşluğudur; AVTOMATİK icrada isə "nə qədər xərclədiyimi
  *    bilmirəm, amma davam edirəm" deməkdir — yəni tavanın kor olması. Fail-closed
  *    seçilir (eyni prinsip: qayda 50).
+ * 5. **`max_pending_diffs`** (issue #38) → yuxarıdakı dördü PULU qoruyur, bu isə
+ *    DİSKİ. Repoya yazan zəncirin hər avtomatik icrası yeni `pending` diff, yəni
+ *    reponun yeni nüsxəsini yaradır; yetim təmizləyicisi onlara QƏSDƏN toxunmur
+ *    (qayda 44) — çünki onlar yetim deyil, istifadəçinin baxmadığı işdir. Yəni
+ *    disk heç bir avtomatik yolla geri qaytarılmır və `max_runs: 500` (tam
+ *    qanuni) gecə boyu qaçan cədvəldə onlarla repo nüsxəsi deməkdir.
  *
  * ÖLÇÜLMÜŞ İNCƏLİK — KEŞ USD TAVANINI DAYANDIRIR: cədvəlin addım mətnləri
  * tərifdə SABİTDİR, yəni hər icra eyni keş açarını verir (Pillə 0). İkinci
@@ -93,6 +101,11 @@ export class Scheduler {
         continue
       }
       if (started.workflowRunId !== undefined) result.started.push(started.workflowRunId)
+      // İcra UĞURLA getdi, amma tavan onun ÖZ nəticəsi ilə doldu — cədvəl
+      // söndürüldü. Hər ikisi eyni tikdə hesabatda görünür.
+      if (started.disabled !== undefined) {
+        result.disabled.push({ scheduleId: schedule.id, reason: started.disabled })
+      }
     }
 
     return result
@@ -111,13 +124,32 @@ export class Scheduler {
     if (schedule.spentUsd >= schedule.budgetUsdTotal) {
       return `ümumi büdcə doldu ($${schedule.budgetUsdTotal})`
     }
-    return null
+    return this.pendingDiffLimit(schedule)
+  }
+
+  /**
+   * Disk tavanı (issue #38) — baxılmamış diff sayı həddə çatıbmı.
+   *
+   * Say CANLI hesablanır, sayğac sütunundan oxunmur: istifadəçi diff-i qəbul və
+   * ya rədd edən kimi worktree silinir və yer boşalır. Sayğac saxlasaydıq, tavan
+   * dolan kimi ƏBƏDİ dolu qalar və "baxdım, davam et" mümkün olmazdı.
+   *
+   * Digər tavanlar kimi `>=` ilə: `maxPendingDiffs = 5` "ən çox beş baxılmamış
+   * diff" deməkdir, altıncısı yaranmamalıdır.
+   */
+  private pendingDiffLimit(schedule: ScheduleRow): string | null {
+    const pending = countPendingDiffsForSchedule(this.db, schedule.id)
+    if (pending < schedule.maxPendingDiffs) return null
+    return (
+      `baxılmamış diff həddi doldu (${pending}/${schedule.maxPendingDiffs}) — ` +
+      'hər biri diskdə reponun ayrıca nüsxəsidir; /tasks səhifəsində qəbul və ya rədd edin'
+    )
   }
 
   private async runOnce(
     schedule: ScheduleRow,
     now: number,
-  ): Promise<{ workflowRunId?: string; error?: string }> {
+  ): Promise<{ workflowRunId?: string; error?: string; disabled?: string }> {
     const workflow = getWorkflow(this.db, schedule.workflowId)
     if (workflow === undefined) return { error: 'zəncir tapılmadı' }
     if (workflow.archivedAt !== null) return { error: 'zəncir arxivləşdirilib' }
@@ -141,6 +173,9 @@ export class Scheduler {
       workflowId: workflow.id,
       steps,
       trigger: 'schedule',
+      // Diff tavanı CƏDVƏL BAŞINADIR — icranın hansı cədvəldən doğduğu
+      // jurnalda qalmalıdır (issue #38).
+      scheduleId: schedule.id,
       context: {
         id: ctx.id,
         cwd: ctx.cwd,
@@ -162,6 +197,19 @@ export class Scheduler {
     // söndürülmüş olardı.
     await done
     this.settleCost(schedule.id, workflowRunId)
+
+    // Disk tavanı İCRADAN SONRA da yoxlanılır — yalnız əvvəldə yoxlasaydıq,
+    // gündəlik cədvəldə söndürülmə bir GÜN gecikər və istifadəçi səbəbi yalnız
+    // sabah görərdi. Sətir yenidən oxunur, çünki `settleCost` cədvəli artıq
+    // söndürmüş ola bilər — o səbəb daha vacibdir və üstündən yazılmamalıdır.
+    const fresh = getSchedule(this.db, schedule.id)
+    if (fresh !== undefined && fresh.enabled) {
+      const reason = this.pendingDiffLimit(fresh)
+      if (reason !== null) {
+        disableSchedule(this.db, schedule.id, reason)
+        return { workflowRunId, disabled: reason }
+      }
+    }
 
     return { workflowRunId }
   }

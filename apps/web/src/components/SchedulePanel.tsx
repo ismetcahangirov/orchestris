@@ -1,4 +1,4 @@
-import { MIN_SCHEDULE_INTERVAL_SECONDS } from '@orchestris/shared'
+import { DEFAULT_MAX_PENDING_DIFFS, MIN_SCHEDULE_INTERVAL_SECONDS } from '@orchestris/shared'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { api, type ScheduleRow } from '../lib/api.js'
@@ -8,9 +8,14 @@ import { api, type ScheduleRow } from '../lib/api.js'
  *
  * UI-ın ƏSAS İŞİ LİMİTLƏRİ GÖRÜNƏN ETMƏKDİR. Issue #12 xəbərdarlığı belədir:
  * *"nəzarətsiz cədvəl `$0.50 testdə → $50,000/ay` ssenarisinin ən asan
- * yoludur"*. Ona görə burada hər üç limit AÇIQ sahədir (gizli default yoxdur)
+ * yoludur"*. Ona görə burada hər dörd limit AÇIQ sahədir (gizli default yoxdur)
  * və sərf olunmuş məbləğ tavanla YANAŞI göstərilir — istifadəçi "nə qədər
  * qaldı?" sualının cavabını hesablamamalıdır.
+ *
+ * Dördüncü sahə (`maxPendingDiffs`, issue #38) PULU deyil, DİSKİ qoruyur:
+ * repoya yazan zəncirin hər avtomatik icrası reponun yeni nüsxəsini yaradır və
+ * yetim təmizləyicisi ona toxunmur (qayda 44). Ona görə cari say tavanla yanaşı
+ * göstərilir — istifadəçi diskin nə vaxt dolacağını təxmin etməməlidir.
  */
 
 function fmtInterval(seconds: number): string {
@@ -36,6 +41,7 @@ export default function SchedulePanel({
   const [perRun, setPerRun] = useState(0.5)
   const [total, setTotal] = useState(10)
   const [maxRuns, setMaxRuns] = useState(20)
+  const [maxPendingDiffs, setMaxPendingDiffs] = useState(DEFAULT_MAX_PENDING_DIFFS)
 
   const create = useMutation({
     mutationFn: () =>
@@ -48,6 +54,7 @@ export default function SchedulePanel({
         budgetUsdPerRun: perRun,
         budgetUsdTotal: total,
         maxRuns,
+        maxPendingDiffs,
       }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['schedules'] }),
   })
@@ -90,6 +97,12 @@ export default function SchedulePanel({
             </dd>
             <dt>Bir icraya limit</dt>
             <dd>${s.budgetUsdPerRun}</dd>
+            {/* Disk tavanı (issue #38) — say CANLIDIR: diff qəbul/rədd ediləndə
+                dərhal azalır, yəni söndürülmüş cədvəl yenidən açıla bilər. */}
+            <dt>Baxılmamış diff</dt>
+            <dd className={s.pendingDiffs >= s.maxPendingDiffs ? 'text-warn' : ''}>
+              {s.pendingDiffs} / {s.maxPendingDiffs}
+            </dd>
             <dt>Növbəti icra</dt>
             <dd>{s.enabled ? fmtTime(s.nextRunAt) : '—'}</dd>
           </dl>
@@ -112,7 +125,9 @@ export default function SchedulePanel({
         >
           <p className="text-ink-dim">
             Avtomatik icra <span className="text-ink">sərt limit</span> tələb edir —
-            hər üçü məcburidir.
+            hər dördü məcburidir. Sonuncusu pulu deyil,{' '}
+            <span className="text-ink">diski</span> qoruyur: repoya yazan zəncirin
+            hər icrası baxılmamış diff yığır.
           </p>
           <div className="flex flex-wrap gap-3">
             <NumberField
@@ -142,6 +157,13 @@ export default function SchedulePanel({
               min={1}
               step={1}
               onChange={setMaxRuns}
+            />
+            <NumberField
+              label="Maks. baxılmamış diff"
+              value={maxPendingDiffs}
+              min={1}
+              step={1}
+              onChange={setMaxPendingDiffs}
             />
           </div>
           <button

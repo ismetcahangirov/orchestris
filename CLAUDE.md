@@ -918,17 +918,18 @@ alardı — və bunu yalnız məlumat kənara çıxandan sonra bilərdi.
 Cavab `redactAll`-dan keçir (qayda 18): endpoint göndərilən məzmunu əks etdirə
 bilir və o mətn `workflow_step_runs`-a yazılır.
 
-### 57. Cədvəldə ÜÇ tavan var və hər biri ayrı sızma yolunu bağlayır
+### 57. Cədvəldə DÖRD tavan var və hər biri ayrı sızma yolunu bağlayır
 
 Issue #12 xəbərdarlığı bu sxemin bütün formasını təyin edir: *"nəzarətsiz cədvəl
-`$0.50 testdə → $50,000/ay` ssenarisinin ən asan yoludur"*. Ona görə hər üç limit
-`NOT NULL`-dur (bazada, tətbiq qatında yox — qayda 26 prinsipi):
+`$0.50 testdə → $50,000/ay` ssenarisinin ən asan yoludur"*. Ona görə hər dörd
+limit `NOT NULL`-dur (bazada, tətbiq qatında yox — qayda 26 prinsipi):
 
 | Limit | Nəyin qarşısını alır |
 |---|---|
 | `budget_usd_per_run` | bir icranın qaçması — `BudgetGuard`-a ötürülür |
 | `budget_usd_total` | icraların YIĞILMASI: dəqiqədə $0.50 = aylıq $21,600 |
 | `max_runs` | abunəlik icraları: real xərc `0`-dır, USD tavanı ONLARI TUTMUR |
+| `max_pending_diffs` | DİSK (qayda 59) — yuxarıdakı üçü PULU qoruyur |
 
 **Ölçülmüş incəlik — keş USD tavanını dayandırır.** Cədvəlin addım mətnləri
 tərifdə SABİTDİR, yəni hər icra eyni keş açarını verir (Pillə 0). İkinci icradan
@@ -994,6 +995,53 @@ Dörd incəlik, hər biri ayrıca bir səhvi bağlayır:
   qayıdardı. Addımlar ayrıca təsnif olunur və ilk kod/test addımı ağacı açır:
   birləşdirilmiş mətni bir dəfə təsnif etsəydik, dörd mətn addımının yanındakı
   tək kod addımı siqnalda itərdi.
+
+### 59. Cədvəlin dördüncü tavanı PULU deyil, DİSKİ qoruyur
+
+Issue #38 (#36-dan qalan hissə). Qayda 58-dən sonra zəncirin `code` addımları
+ortaq worktree-də işləyir və nəticə `pending` diff kimi saxlanılır. ƏL İLƏ
+icrada bu doğrudur — istifadəçi baxıb qərar verir. AVTOMATİK icrada isə hər tik
+yeni sintetik task, yeni ağac və yeni `pending` diff yaradır; yetim təmizləyicisi
+onlara QƏSDƏN toxunmur (qayda 44), çünki onlar yetim deyil, baxılmamış işdir.
+Yəni disk heç bir avtomatik yolla geri qaytarılmır.
+
+Mövcud üç tavan buna KORDUR və bu, unudulmuş iş deyil — hər üçü XƏRC üçün
+seçilib: `max_runs: 500` tam qanunidir, `budget_usd_total` isə keş səbəbindən
+onsuz da praktiki olaraq dayanır (qayda 57). Ona görə dördüncü tavan LAZIMDIR,
+mövcud birini "bir az daha dar seç" tövsiyəsi yox: iki fərqli resurs bir rəqəmlə
+idarə olunmur.
+
+Üç ehtimal olunan həlldən (issue #38) TAVAN seçildi, çünki qalan ikisi qaydaları
+sındırır: "əvvəlkini əvəz et" baxılmamış işi SİLƏRDİ (qayda 44-ün əksi),
+"cədvəldə izolyasiyanı söndür" isə baxış qapısını (qayda 42) məhz avtomatik
+icrada — yəni istifadəçinin ən az baxdığı yerdə — bağlayardı.
+
+Dörd qərar davranışı izah edir:
+
+- **Say SAXLANILMIR, hər dəfə hesablanır** (`countPendingDiffsForSchedule`).
+  Sayğac sütunu olsaydı, istifadəçi diff-i qəbul/rədd edəndə azalmazdı və tavan
+  dolan kimi ƏBƏDİ dolu qalardı — "baxdım, davam et" mümkün olmazdı.
+- **Say CƏDVƏL başınadır**, zəncir başına yox. Eyni zəncirə iki cədvəl qurmaq
+  qanunidir və biri digərinin diskinə görə söndürülməməlidir. `trigger:
+  'schedule'` bunu ayırd edə bilmir, ona görə `workflow_runs.schedule_id` sütunu
+  əlavə edildi (xarici açar YOX — `root_task_id` ilə eyni səbəb: cədvəl
+  silinəndə tarixçə qalmalıdır).
+- **Yoxlama icradan ƏVVƏL də, SONRA da.** Yalnız əvvəldə yoxlasaydıq, gündəlik
+  cədvəldə söndürülmə bir GÜN gecikər və istifadəçi səbəbi yalnız sabah görərdi.
+  Sonrakı yoxlama sətri yenidən oxuyur: `settleCost` cədvəli artıq söndürmüş ola
+  bilər (naməlum xərc) və o səbəb üstündən yazılmamalıdır.
+- **Hədd rəqəmi hələ ÖLÇÜLMƏYİB** və bu, açıq etiraf olunur. Sahə API-də
+  MƏCBURİDİR (qalan üçü kimi); `DEFAULT_MAX_PENDING_DIFFS = 5` isə YALNIZ sxem
+  miqrasiyasının tələbidir — SQLite `ADD COLUMN … NOT NULL` əmrini DEFAULT
+  olmadan qəbul etmir. Rəqəm KİÇİK seçilib, çünki səhvin iki istiqaməti eyni
+  qiymətə başa gəlmir: çox kiçik → cədvəl tez dayanır, istifadəçi bir kliklə
+  açır; çox böyük → disk heç nə ilə geri qaytarılmır (eyni mühakimə: qayda 46).
+
+Sabit `schema.ts`-də LİTERALDIR, `@orchestris/shared` importu deyil:
+`drizzle-kit generate` sxemi CJS kimi yükləyir və shared paketin ESM `.js`
+spesifikatorlarını həll edə bilmir (`MODULE_NOT_FOUND`) — import migrasiya
+generasiyasını tamamilə sındırardı. İki mənbənin ayrılmasını
+`scheduler-diff.test.ts` bağlayır.
 
 ## Amplification Ladder
 
@@ -1112,11 +1160,13 @@ Altıncı kəsişən mexanizm — **cədvəl üzrə icra** (`exec/scheduler.ts`,
 `schedules` sətri → hər `interval_seconds`-də bir zəncir icrası
 hər icraya      → `budget_usd_per_run` sərt limit kimi ötürülür
 hər icradan sonra → REAL xərc `savings_ledger`-dən yığılır
-tavan doldu (USD / icra sayı / naməlum xərc) → cədvəl SÖNDÜRÜLÜR + səbəb yazılır
+                    + baxılmamış diff sayı (CANLI hesablanır)
+tavan doldu (USD / icra sayı / naməlum xərc / baxılmamış diff) → SÖNDÜR + səbəb
 ```
 
-Üç tavanın hər biri ayrı sızma yolunu bağlayır (qayda 57) və hamısı MƏCBURİDİR.
-Taymer yalnız `main.ts`-də qurulur; `Scheduler.tick(now)` saatı parametr alır.
+Dörd tavanın hər biri ayrı sızma yolunu bağlayır (qayda 57) və hamısı
+MƏCBURİDİR; sonuncusu pulu deyil, DİSKİ qoruyur (qayda 59). Taymer yalnız
+`main.ts`-də qurulur; `Scheduler.tick(now)` saatı parametr alır.
 
 Pillə 1 axını (`routing/decide.ts`):
 
@@ -1156,9 +1206,10 @@ həqiqət mənbəyi yoxdur.
 - **4** (bitdi) — task dekompozisiyası (`tasks.parent_task_id`, `Decomposer`,
   alt-task ağacı), workflow zəncirləri (`workflows` / `workflow_runs` /
   `workflow_step_runs`, şərtli budaqlanma + təkrar + xarici HTTP addımı),
-  cədvəl üzrə icra (`schedules`, üç məcburi tavan) və `/workflows` səhifəsi;
+  cədvəl üzrə icra (`schedules`, dörd məcburi tavan) və `/workflows` səhifəsi;
   zəncir icrasının sintetik valideyn taskı (`workflow_runs.root_task_id`) —
-  ortaq worktree və `git apply` baxış qapısı (issue #36)
+  ortaq worktree və `git apply` baxış qapısı (issue #36); cədvəlin disk tavanı
+  (`schedules.max_pending_diffs`, `workflow_runs.schedule_id`, issue #38)
 
 ## Bilinən boşluqlar
 
@@ -1184,15 +1235,18 @@ həqiqət mənbəyi yoxdur.
   səhv təxminlə yanlış parçanı yenidən qaçırmaq pulu boşa yandırardı. Zəncirlə
   bu, ƏL İLƏ qurula bilər (`continueOnError` + `test: 'failed'` budağı), amma
   dekompozisiyanın içində avtomatik deyil.
-- **Cədvəl üzrə icra ilə zəncir izolyasiyası birlikdə DİSK YIĞIR** (issue #38 —
-  #36-dan qalan hissə). Hər avtomatik icra YENİ `pending` diff yaradır və yetim
-  təmizləyicisi onlara TOXUNMUR (qayda 44) — yəni gecə boyu qaçan cədvəl
-  səhərə onlarla baxılmamış worktree qoya bilər. `max_runs` tavanı sayı
-  məhdudlaşdırır (qayda 57), amma o hədd disk üçün deyil, XƏRC üçün seçilib.
-  Ehtimal olunan həllər issue #38-dədir (əvvəlki diff-i əvəz etmək, cədvəl
-  səviyyəsində ayar, və ya baxılmamış diff tavanı → cədvəl SÖNDÜRÜLÜR).
-  Heç biri seçilməyib, çünki "neçə diff yığılır" real işlətmədən başqa heç nə
-  ilə bilinmir.
+- **Baxılmamış diff tavanının RƏQƏMİ ölçülməyib** (qayda 59, issue #38).
+  Mexanizm işləkdir və `FakeRunner` + saxta `WorktreeManager` ilə tam örtülüdür
+  (`scheduler-diff.test.ts`), amma `DEFAULT_MAX_PENDING_DIFFS = 5` mühakimə ilə
+  seçilib. İki rəqəm real işlətmə ilə ölçülməlidir: (1) cədvəllə qaçan `code`
+  zəncirinin icralarının neçə faizi HƏQİQƏTƏN diff yaradır — Pillə 0 keşi
+  səbəbindən ikinci icradan sonra cavab dəyişməyə bilər (qayda 57-dəki eyni
+  mexanizm), (2) orta worktree ölçüsü. Birinci rəqəm kiçikdirsə tavan praktiki
+  olaraq heç vaxt işə düşməyəcək və hədd genişləndirilə bilər; böyükdürsə
+  cədvəl hər neçə icradan bir dayanacaq və istifadəçi bunu darıxdırıcı sayacaq.
+  Ölçmə üsulu: `schedules.max_pending_diffs`-i geniş qoyub
+  `GET /api/schedules` cavabındakı `pendingDiffs` sayının `runs` ilə nisbətini
+  izləmək.
 - Zəncirlərin FAYDASI ölçülməyib: `FakeRunner` ilə hər yol örtülüb, amma
   "çoxaddımlı işi zəncirə bölmək tək taskdan yaxşıdırmı?" sualı real modellə
   sınanmayıb. Xüsusən `{{previous}}` ilə ötürülən mətnin uzunluğu hər addımda

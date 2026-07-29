@@ -531,6 +531,18 @@ export const workflowRuns = sqliteTable(
      * silinəndə tasklar kaskadla gedir, zəncirin tarixçəsi isə QALMALIDIR.
      */
     rootTaskId: text('root_task_id'),
+    /**
+     * İcranı hansı cədvəl başlatdı (issue #38). `manual` icrada NULL.
+     *
+     * NİYƏ `trigger` KİFAYƏT ETMİR: `trigger: 'schedule'` yalnız "avtomatikdir"
+     * deyir. Baxılmamış diff tavanı isə CƏDVƏL BAŞINADIR — eyni zəncirə iki
+     * cədvəl qurulubsa, `workflow_id` üzrə saysaydıq biri digərinin diff-lərinə
+     * görə söndürülərdi.
+     *
+     * XARİCİ AÇAR YOXDUR: `rootTaskId` ilə eyni səbəb — cədvəl silinəndə
+     * zəncirin tarixçəsi QALMALIDIR ("bu cədvəl keçən ay nə etdi?").
+     */
+    scheduleId: text('schedule_id'),
     startedAt: integer('started_at').notNull(),
     endedAt: integer('ended_at'),
     error: text('error'),
@@ -586,11 +598,14 @@ export const workflowStepRuns = sqliteTable(
  * səviyyəsindəki `NOT NULL` bunu qeyri-mümkün edir (eyni prinsip: qayda 26 —
  * bazadakı təminat tətbiq qatındakından güclüdür).
  *
- * ÜÇ AYRI TAVAN, ÇÜNKİ HƏR BİRİ FƏRQLİ SIZMA YOLUNU BAĞLAYIR:
+ * DÖRD AYRI TAVAN, ÇÜNKİ HƏR BİRİ FƏRQLİ SIZMA YOLUNU BAĞLAYIR:
  *  - `budget_usd_per_run` — bir icranın qaçması
  *  - `budget_usd_total`   — icraların YIĞILMASI (dəqiqədə $0.50 = aylıq $21,600)
  *  - `max_runs`           — abunəlik icraları: real xərc `0`-dır və USD tavanı
  *    onları HEÇ VAXT tutmur; sayğac isə tutur
+ *  - `max_pending_diffs`  — DİSK (issue #38): yuxarıdakı üçü XƏRC üçün seçilir və
+ *    `max_runs: 500` tam qanunidir, amma repoya yazan zəncirin hər avtomatik
+ *    icrası YENİ `pending` diff = reponun yeni nüsxəsi yaradır
  */
 export const schedules = sqliteTable(
   'schedules',
@@ -604,6 +619,26 @@ export const schedules = sqliteTable(
     budgetUsdPerRun: real('budget_usd_per_run').notNull(),
     budgetUsdTotal: real('budget_usd_total').notNull(),
     maxRuns: integer('max_runs').notNull(),
+    /**
+     * Cədvəlin yığa biləcəyi ən çox baxılmamış (`pending`) diff sayı (issue #38).
+     *
+     * SAYĞAC DEYİL, TAVAN: cari say `artifacts`-dan CANLI hesablanır
+     * (`countPendingDiffsForSchedule`). Sütunda saxlasaydıq, istifadəçi diff-i
+     * qəbul/rədd edəndə sayğac köhnəlmiş qalar və cədvəl artıq mövcud olmayan
+     * qovluqlara görə söndürülərdi.
+     *
+     * DB DEFAULTU VAR — qalan üç tavandan fərqli olaraq. Səbəb sxem
+     * miqrasiyasıdır, mühakimə deyil: SQLite `ADD COLUMN … NOT NULL` əmrini
+     * DEFAULT olmadan qəbul etmir. Rəqəm KİÇİK seçilib ki, API-dən yan keçən
+     * sətir ən DAR tavanı alsın, ən genişini yox.
+     *
+     * RƏQƏM LİTERALDIR, `DEFAULT_MAX_PENDING_DIFFS` importu YOX: `drizzle-kit
+     * generate` bu faylı CJS kimi yükləyir və `@orchestris/shared`-in ESM `.js`
+     * spesifikatorlarını həll edə bilmir (`MODULE_NOT_FOUND`) — yəni import
+     * migrasiya generasiyasını tamamilə sındırardı. İki mənbənin ayrılmasını
+     * `schema.test.ts` bağlayır: default shared sabitinə BƏRABƏR olmalıdır.
+     */
+    maxPendingDiffs: integer('max_pending_diffs').notNull().default(5),
     /** İndiyə qədər ölçülmüş REAL xərc. Abunəlik icralarında `0` qalır. */
     spentUsd: real('spent_usd').notNull().default(0),
     runs: integer('runs').notNull().default(0),
