@@ -227,6 +227,17 @@ export const providers = sqliteTable('providers', {
   kind: text('kind').notNull().default('api'),
   /** models.dev-dən gələn insan üçün ad. */
   displayName: text('display_name').notNull(),
+  /**
+   * OpenAI-uyğun provayderin kök ünvanı (issue #44). NULL = öz SDK-sı var
+   * (`anthropic`, `openai`, `google`) və ya CLI-dır.
+   *
+   * NİYƏ SAXLANILIR, HƏR DƏFƏ KATALOQDAN OXUNMUR: models.dev bizim
+   * nəzarətimizdə deyil. Provayder oradan silinsə və ya ünvanı dəyişsə,
+   * istifadəçinin İŞLƏYƏN quraşdırması bir gecədə sınardı — halbuki açar hələ
+   * də həmin ünvana aiddir. Kataloq ilk əlavə anında OXUNUR, sonra sətir
+   * müstəqil yaşayır.
+   */
+  baseUrl: text('base_url'),
   /** OS keychain qeydinin adı. NULL = açar təyin olunmayıb. */
   credentialRef: text('credential_ref'),
   enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),

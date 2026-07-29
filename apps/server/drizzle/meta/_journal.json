@@ -64,6 +64,13 @@
       "when": 1785349627873,
       "tag": "0008_empty_silver_sable",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1785354416477,
+      "tag": "0009_complete_karen_page",
+      "breakpoints": true
     }
   ]
 }

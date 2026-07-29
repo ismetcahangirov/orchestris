@@ -1,6 +1,7 @@
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { createGoogleGenerativeAI } from '@ai-sdk/google'
 import { createOpenAI } from '@ai-sdk/openai'
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import {
   classifyErrorText,
   type Capabilities,
@@ -16,8 +17,10 @@ import { redactAll } from '../secrets/redact.js'
 import { ApiStreamParser, type ApiStreamPart } from './parse-api.js'
 
 /**
- * Model kəşfi adapteri OLAN provayderlər (bax `registry/discovery.ts`).
- * models.dev 172 provayder bilir — biz üçünü işlədə bilirik.
+ * ÖZ SDK-sı olan provayderlər — `createProviderModel` bunları birbaşa tanıyır.
+ *
+ * Qalan hamısı `openai-compatible` yolu ilə gedir (issue #44) və `baseUrl`
+ * TƏLƏB EDİR; ona görə onlar burada SADALANMIR — siyahı models.dev-dən gəlir.
  */
 export const API_PROVIDER_IDS = ['anthropic', 'openai', 'google'] as const
 export type ApiProviderId = (typeof API_PROVIDER_IDS)[number]
@@ -25,11 +28,17 @@ export type ApiProviderId = (typeof API_PROVIDER_IDS)[number]
 /**
  * Açardan model obyekti qurur. ŞƏBƏKƏYƏ ÇIXMIR — yalnız konfiqurasiya
  * obyekti yaradır, ilk sorğu `streamText` çağırışında gedir.
+ *
+ * `baseUrl` VERİLİBSƏ `openai-compatible` yolu seçilir (issue #44): models.dev-in
+ * 174 provayderindən 138-i məhz bu protokoldadır. Öz SDK-sı olan üç provayder
+ * ÜSTÜN tutulur — `anthropic` OpenAI protokolunu danışmır (`x-api-key` +
+ * `anthropic-version`), `google` isə ümumiyyətlə başqa formatdadır.
  */
 export function createProviderModel(
   providerId: string,
   apiKey: string,
   modelId: string,
+  baseUrl?: string,
 ): LanguageModel {
   switch (providerId) {
     case 'anthropic':
@@ -39,7 +48,16 @@ export function createProviderModel(
     case 'google':
       return createGoogleGenerativeAI({ apiKey })(modelId)
     default:
-      throw new Error(`API runner dəstəklənmir: ${providerId}`)
+      if (baseUrl === undefined) {
+        throw new Error(`API runner dəstəklənmir: ${providerId}`)
+      }
+      // `name` SDK-nın daxili etiketidir; provayder id-sini veririk ki, xəta
+      // mətnlərində hansı provayderdən danışıldığı görünsün.
+      return createOpenAICompatible({
+        name: providerId,
+        baseURL: baseUrl.replace(/\/+$/, ''),
+        apiKey,
+      })(modelId)
   }
 }
 
@@ -77,6 +95,16 @@ export interface ApiRunnerDeps {
    * `null` = açar yoxdur.
    */
   getApiKey: () => Promise<string | null>
+  /**
+   * OpenAI-uyğun provayderin kök ünvanı (issue #44). Öz SDK-sı olan üç
+   * provayderdə VERİLMİR.
+   *
+   * FUNKSİYADIR, sabit dəyər deyil: provayder DB-dən silinib yenidən başqa
+   * ünvanla əlavə oluna bilər və runner prosesin ömrü boyu yaşayır. Sabit
+   * saxlasaydıq, köhnə ünvan qalar və istifadəçi bunu yalnız sorğu sınanda
+   * görərdi (eyni mühakimə: `getApiKey` da hər icrada yenidən oxunur).
+   */
+  getBaseUrl?: () => string | undefined
   /** Faktiki modelin qiyməti. `undefined` = qiymət bilinmir (qayda 4). */
   resolvePrice?: (providerId: string, modelId: string) => ModelPrice | undefined
   /** Test üçün — real SDK provayderini əvəz edir. */
@@ -121,7 +149,8 @@ export class ApiRunner implements Runner {
     this.streamText = deps.streamText ?? defaultStreamText
     this.createModel =
       deps.createModel ??
-      ((apiKey, modelId) => createProviderModel(deps.providerId, apiKey, modelId))
+      ((apiKey, modelId) =>
+        createProviderModel(deps.providerId, apiKey, modelId, deps.getBaseUrl?.()))
   }
 
   /**

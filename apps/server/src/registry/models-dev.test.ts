@@ -199,3 +199,28 @@ describe('BUNDLED_PROVIDER_IDS', () => {
     expect([...BUNDLED_PROVIDER_IDS].sort()).toEqual(['anthropic', 'google', 'openai'])
   })
 })
+
+describe('normalizeCatalog — protokol sahələri (issue #44)', () => {
+  it('`api` sahəsi `baseUrl`-ə, `npm` isə olduğu kimi keçir', () => {
+    // Bu iki sahə "provayder əlavə edilə bilərmi?" sualının YEGANƏ mənbəyidir:
+    // `npm` protokolu, `api` isə ünvanı bildirir. Oxunmasaydı, hər provayder
+    // üçün ünvanı istifadəçidən istəmək lazım gələrdi.
+    const [p] = normalizeCatalog({
+      deepseek: {
+        id: 'deepseek',
+        name: 'DeepSeek',
+        npm: '@ai-sdk/openai-compatible',
+        api: 'https://api.deepseek.com',
+        models: {},
+      },
+    })
+    expect(p?.npm).toBe('@ai-sdk/openai-compatible')
+    expect(p?.baseUrl).toBe('https://api.deepseek.com')
+  })
+
+  it('sahələr yoxdursa `undefined` qalır — boş sətir yazılmır', () => {
+    const [p] = normalizeCatalog({ x: { id: 'x', name: 'X', models: {} } })
+    expect(p?.npm).toBeUndefined()
+    expect(p?.baseUrl).toBeUndefined()
+  })
+})

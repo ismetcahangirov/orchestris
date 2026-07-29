@@ -16,17 +16,32 @@ export function modelRowId(providerId: string, modelId: string): string {
 
 export function upsertProvider(
   db: Db,
-  input: { id: string; displayName: string; kind?: 'api' | 'cli' },
+  input: { id: string; displayName: string; kind?: 'api' | 'cli'; baseUrl?: string },
 ): ProviderRecord {
   const kind = input.kind ?? 'api'
   db.insert(providers)
-    .values({ id: input.id, kind, displayName: input.displayName, createdAt: now() })
+    .values({
+      id: input.id,
+      kind,
+      displayName: input.displayName,
+      ...(input.baseUrl !== undefined ? { baseUrl: input.baseUrl } : {}),
+      createdAt: now(),
+    })
     .onConflictDoUpdate({
       target: providers.id,
       // `createdAt` və `credentialRef` QƏSDƏN yenilənmir: provayder metadatası
       // hər server startında yenidən yazılır, amma istifadəçinin açarı və
       // provayderin nə vaxt əlavə olunduğu itməməlidir.
-      set: { displayName: input.displayName, kind },
+      //
+      // `baseUrl` yalnız VERİLƏNDƏ yenilənir: `seedProviders` hər startda
+      // qaçır və öz SDK-sı olan provayderlər üçün ünvan ötürmür — şərtsiz
+      // yazsaydıq, istifadəçinin əlavə etdiyi provayderin ünvanı `NULL`-a
+      // düşərdi və runner ilk sorğuda sınardı.
+      set: {
+        displayName: input.displayName,
+        kind,
+        ...(input.baseUrl !== undefined ? { baseUrl: input.baseUrl } : {}),
+      },
     })
     .run()
   return getProvider(db, input.id) as ProviderRecord

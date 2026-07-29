@@ -117,6 +117,23 @@ export const SetModelRoleBody = z.object({
 })
 export type SetModelRoleBody = z.infer<typeof SetModelRoleBody>
 
+/**
+ * Kataloqdan yeni provayder əlavə edir (issue #44).
+ *
+ * YALNIZ `id` — ünvan, ad və model metadatası models.dev-dən oxunur. Ünvanı
+ * istifadəçidən istəsəydik, hər provayder üçün onu doğru yazmaq onun işi
+ * olardı; ölçülüb ki, OpenAI-uyğun 138 provayderin HAMISININ ünvanı kataloqda
+ * var (2026-07-29).
+ *
+ * `apiKey` OPSİONALDIR: lokal provayderlər (Ollama, LM Studio) açar tələb
+ * etmir. Verilibsə dərhal OS anbarına yazılır və model kəşfi qaçır.
+ */
+export const AddProviderBody = z.object({
+  id: z.string().min(1).max(64),
+  apiKey: z.string().min(8).max(500).optional(),
+})
+export type AddProviderBody = z.infer<typeof AddProviderBody>
+
 export const SetModelEnabledBody = z.object({
   id: z.string().min(1),
   enabled: z.boolean(),

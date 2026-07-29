@@ -1086,6 +1086,62 @@ tutsaydıq, YENİ əlavə edilmiş şəkil qapıdan səssizcə keçərdi:
 həmin halda patch TƏTBİQ OLUNA BİLİR — onu da "ikili" saysaydıq, işləyən diff-i
 səhvən bloklayardıq.
 
+### 61. Provayderin dəstəklənməsinə models.dev-in ÖZÜ qərar verir
+
+Issue #44. Əvvəl `providers` cədvəlinə yalnız kəşf adapteri olan ÜÇ provayder
+düşürdü və başqasını (DeepSeek, Groq, OpenRouter…) əlavə etmək ÜMUMİYYƏTLƏ
+mümkün deyildi: `POST /api/providers` yox idi, `API_PROVIDER_IDS` sabit tuple
+idi, `createProviderModel` üç SDK üzərində hardcoded `switch` idi.
+
+Ölçmə həllin formasını təyin etdi (models.dev, 2026-07-29, 174 provayder):
+
+| npm paketi | Say |
+|---|---|
+| `@ai-sdk/openai-compatible` | **138** |
+| `@ai-sdk/anthropic` | 9 |
+| `@ai-sdk/openai` | 4 |
+| qalan (hər biri öz paketi) | 23 |
+
+Və həmin 138-in **hamısının** `api` (baseURL) sahəsi var. Yəni əksəriyyət EYNİ
+protokolu danışır və ünvanları onsuz da kataloqdadır.
+
+Buradan iki qərar çıxır:
+
+- **Ağ siyahı AD üzrə DEYİL, PROTOKOL üzrədir** (`providerSupport`). `['deepseek',
+  'groq', …]` yazsaydıq, siyahı models.dev hər yeni provayder əlavə edəndə
+  köhnələrdi və istifadəçi "niyə yoxdur?" sualını bizdən soruşardı. `npm` sahəsi
+  isə provayderin protokolunu bildirir — bizə lazım olan da elə budur.
+- **Ünvan istifadəçidən İSTƏNMİR.** Kataloqda olduğu üçün seçim + açar
+  kifayətdir. Qiymətlər də oradan gəlir, yəni qənaət hesabı ilk gündən düzgün
+  işləyir (qayda 4: kataloqda olmayan model üçün qiymət `undefined` qalır).
+
+Öz adapteri olan üç provayder ÜSTÜN tutulur: `anthropic` OpenAI protokolunu
+danışmır (`x-api-key` + `anthropic-version`), `google` isə ümumiyyətlə başqa
+formatdadır. `openai-compatible` yalnız qalanlar üçündür.
+
+**Ünvan DB-də saxlanılır, hər dəfə kataloqdan oxunmur.** models.dev bizim
+nəzarətimizdə deyil: provayder oradan silinsə və ya ünvanı dəyişsə,
+istifadəçinin İŞLƏYƏN quraşdırması bir gecədə sınardı — halbuki açar hələ də
+həmin ünvana aiddir. Kataloq ilk əlavə anında oxunur, sonra sətir müstəqil
+yaşayır.
+
+**Runner-lər DİNAMİK qeydiyyata düşür.** `runners` xəritəsi artıq `ReadonlyMap`
+deyil: `POST /api/providers` yeni runner-i ora yazır və bütün istehlakçılar
+(router, readiness, `/api/health`) EYNİ istinadı gördüyü üçün provayder prosesi
+yenidən başlatmadan işləyir. Nüsxə saxlasaydıq, istifadəçi açarı yazandan sonra
+"runner yoxdur" görər və səbəbini heç yerdə tapa bilməzdi. Startda siyahı
+`API_PROVIDER_IDS` DEYİL, DB-dən qurulur.
+
+**~135 provayder AVTOMATİK səpilmir.** Hamısını `providers` cədvəlinə yazsaydıq,
+`/providers` səhifəsi istifadəçinin heç vaxt işlətməyəcəyi sətirlərlə dolar və
+"hansı biri mənimdir?" sualı yaranardı. `seedProviders` yenə yalnız üç adapterli
+provayderi yazır; qalanı `GET /api/providers/available` siyahısından AÇIQ seçimlə
+əlavə olunur.
+
+Açar OPSİONALDIR — lokal provayderlər (Ollama, LM Studio) tələb etmir. Açarsız
+əlavədə kəşf qaça bilmir, ona görə modellər KATALOQDAN yazılır: seçicidə model
+görünməsə provayderi əlavə etməyin mənası qalmazdı.
+
 ## Amplification Ladder
 
 Pillələr ucuzdan bahaya:
@@ -1237,7 +1293,8 @@ həqiqət mənbəyi yoxdur.
 - **1A** (bitdi) — təməl: Runner interfeysi, CLI parser-lər, SQLite, REST/WS, UI
 - **1B** (bitdi) — API açarları + keychain, models.dev model kəşfi,
   ApiRunner (AI SDK 7), `--include-partial-messages` hərf-hərf axını
-  (öz fixture-ləri ilə)
+  (öz fixture-ləri ilə); sonradan: OpenAI-uyğun provayderlərin əlavə edilməsi
+  (`providers.base_url`, `POST /api/providers`, issue #44, qayda 61)
 - **1C** (bitdi) — Pillə 0–2 amplifikasiya: keş, qayda routing + Auto, alət
   yoxlaması, `savings_ledger` (qənaətin dürüst ölçülməsi)
 - **2** (bitdi) — Pillə 3 (best-of-N + razılaşma), 4 (ipucu/shepherding),
@@ -1382,6 +1439,16 @@ həqiqət mənbəyi yoxdur.
 - API provayderlərinin **uğur yolu** real açarla yoxlanılmayıb: model kəşfi
   saxta `fetch` ilə test olunur. Real açar əlavə edildikdə
   `/api/providers/:id/discover` bir dəfə əl ilə təsdiqlənməlidir.
+- **OpenAI-uyğun provayderlər real açarla sınanmayıb** (qayda 61, issue #44).
+  Protokolun EYNİ olduğu models.dev-in `npm` sahəsindən götürülür — bu, güclü
+  siqnaldır, amma ölçmə deyil: bəzi provayderlər `/models` endpoint-ini
+  ümumiyyətlə vermir və ya `Authorization` əvəzinə başqa başlıq gözləyir. Belə
+  halda kəşf sınır, `providers.last_discovery_error` səbəbi göstərir və
+  provayder əlavə edilmiş qalır — yəni səssiz zərər yoxdur, amma istifadəçi
+  modelləri əl ilə əlavə edə bilmir. İlk real DeepSeek/Groq/Ollama açarından
+  sonra `POST /api/providers` bir dəfə təsdiqlənməlidir; sınan provayder
+  aşkarlansa, kəşfsiz (yalnız kataloq modelləri ilə) əlavə yolu lazım olacaq —
+  hazırda o yol yalnız AÇARSIZ əlavədə var.
 - `ApiRunner` real API axını ilə yoxlanılmayıb — bu maşında API açarı yoxdur.
   Saxta axın `ai@7.0.37`-nin ÖZ `dist/index.d.ts` tipindən və
   `@ai-sdk/anthropic`-in usage çevirmə kodundan qurulub, uydurulmayıb. Açar

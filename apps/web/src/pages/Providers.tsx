@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
+import AddProvider from '../components/AddProvider.js'
 import ModelList from '../components/ModelList.js'
 import { api, type ApiProviderRow, type CliProviderRow } from '../lib/api.js'
 
@@ -220,9 +221,11 @@ export default function Providers(): React.JSX.Element {
           {refresh.isPending ? 'Yenilənir…' : 'Kataloqu yenilə'}
         </button>
       </div>
-      <div className="space-y-3">
+      <div className="mb-6 space-y-3">
         {data?.api.map((p) => <ApiProviderCard key={p.id} provider={p} />)}
       </div>
+
+      <AddProvider />
 
       {data !== undefined && (
         <p className="mt-4 text-xs text-ink-dim">
