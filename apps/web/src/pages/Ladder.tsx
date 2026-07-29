@@ -45,6 +45,7 @@ export default function LadderPage(): React.JSX.Element {
   const { data: rules } = useQuery({ queryKey: ['routing-rules'], queryFn: api.getRoutingRules })
   const { data: contexts } = useQuery({ queryKey: ['contexts'], queryFn: api.listContexts })
   const { data: templates } = useQuery({ queryKey: ['templates'], queryFn: api.listTemplates })
+  const { data: memory } = useQuery({ queryKey: ['memory'], queryFn: api.getMemoryStatus })
 
   const selected = contexts?.find((c) => c.id === contextId) ?? contexts?.[0]
 
@@ -61,6 +62,12 @@ export default function LadderPage(): React.JSX.Element {
       api.updateContext(selected?.id ?? '', {
         amplificationProfile: profile as 'cheap' | 'balanced' | 'quality' | 'boss-only',
       }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['contexts'] }),
+  })
+
+  const setMemoryEnabled = useMutation({
+    mutationFn: (enabled: boolean) =>
+      api.updateContext(selected?.id ?? '', { memoryEnabled: enabled }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['contexts'] }),
   })
 
@@ -211,6 +218,68 @@ export default function LadderPage(): React.JSX.Element {
             </tbody>
           </table>
         )}
+      </section>
+
+      <section className="mb-6 rounded-lg border border-white/10 bg-surface-2 p-5">
+        <h2 className="mb-1 text-sm font-semibold">Yaddaş (Faza 3)</h2>
+        <p className="mb-3 text-xs text-ink-dim">
+          Pillə DEYİL — kəsişən mexanizm. Keçmiş tasklardan gələn qeydlər işçinin promptuna
+          ETİBARSIZ məlumat kimi qoşulur (göstəriş kimi yox) və həcmi sərt token büdcəsi ilə
+          məhdudlaşır: yaddaş konteksti şişirdə bilsəydi, qənaətin özünü yeyərdi. Provayder
+          server səviyyəsində, açıq şəkildə qurulur (`ORCHESTRIS_MEMORY`).
+        </p>
+
+        <dl className="mb-3 space-y-1 text-xs">
+          <div className="flex gap-2">
+            <dt className="w-32 shrink-0 text-ink-dim">Provayder</dt>
+            <dd className="font-mono text-ink">{memory?.provider ?? '—'}</dd>
+          </div>
+          <div className="flex gap-2">
+            <dt className="w-32 shrink-0 text-ink-dim">Vəziyyət</dt>
+            <dd
+              className={
+                memory === undefined
+                  ? 'text-ink-dim'
+                  : memory.active && memory.health.ok
+                    ? 'text-good'
+                    : memory.active
+                      ? 'text-warn'
+                      : 'text-ink-dim'
+              }
+            >
+              {memory === undefined
+                ? '—'
+                : !memory.active
+                  ? 'söndürülüb'
+                  : memory.health.ok
+                    ? 'işləyir'
+                    : 'sınıq'}
+              {memory?.health.detail !== undefined && (
+                <span className="ml-2 text-ink-dim">{memory.health.detail}</span>
+              )}
+            </dd>
+          </div>
+          <div className="flex gap-2">
+            <dt className="w-32 shrink-0 text-ink-dim">Token büdcəsi</dt>
+            <dd className="font-mono text-ink">{memory?.tokenBudget ?? '—'}</dd>
+          </div>
+          <div className="flex gap-2">
+            <dt className="w-32 shrink-0 text-ink-dim">Sahə</dt>
+            <dd className="font-mono text-ink">
+              {selected?.memoryScope ?? `${selected?.id ?? '—'} (avtomatik)`}
+            </dd>
+          </div>
+        </dl>
+
+        <label className="flex items-center gap-2 text-xs text-ink-dim">
+          <input
+            type="checkbox"
+            checked={selected?.memoryEnabled ?? true}
+            disabled={selected === undefined}
+            onChange={(e) => setMemoryEnabled.mutate(e.target.checked)}
+          />
+          Bu kontekstdə yaddaş işə düşsün
+        </label>
       </section>
 
       <section className="rounded-lg border border-white/10 bg-surface-2 p-5">

@@ -4,6 +4,7 @@ import EventTimeline from '../components/EventTimeline.js'
 import RoutingBadge from '../components/RoutingBadge.js'
 import RunHeader from '../components/RunHeader.js'
 import UsageBadge from '../components/UsageBadge.js'
+import MemoryPanel from '../components/MemoryPanel.js'
 import WorktreePanel from '../components/WorktreePanel.js'
 import { api, type StoredEventRow, type TaskDetail } from '../lib/api.js'
 import { useRunStream } from '../lib/useRunStream.js'
@@ -77,6 +78,8 @@ export default function TaskView(): React.JSX.Element {
       {(data.artifacts ?? []).map((artifact) => (
         <WorktreePanel key={artifact.id} artifact={artifact} />
       ))}
+
+      <MemoryPanel ops={data.memory ?? []} />
 
       <div className="space-y-5">
         {data.runs.map((run) => {

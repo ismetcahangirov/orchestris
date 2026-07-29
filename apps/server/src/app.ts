@@ -7,8 +7,11 @@ import { Ladder } from './exec/ladder.js'
 import { TaskPool } from './exec/pool.js'
 import { RunSupervisor } from './exec/supervisor.js'
 import type { WorktreeManager } from './exec/worktree.js'
+import { NullProvider, type MemoryProvider } from './memory/provider.js'
+import { MemorySession } from './memory/session.js'
 import type { Catalog } from './registry/models-dev.js'
 import { registerContextRoutes } from './routes/contexts.js'
+import { registerMemoryRoutes } from './routes/memory.js'
 import {
   defaultCatalog,
   registerProviderRoutes,
@@ -46,6 +49,15 @@ export interface BuildAppInput {
    * `KeyringStore` — CLAUDE.md qayda 13).
    */
   worktrees?: WorktreeManager
+  /**
+   * Yaddaş provayderi (Faza 3).
+   *
+   * Verilməsə `NullProvider` işlədilir və nərdivana HEÇ NƏ qoşulmur — yəni
+   * davranış Faza 2 ilə eynidir. Default QƏSDƏN `ClaudeMemProvider` deyil:
+   * o, xarici prosesə qoşulur və istifadəçinin açıq razılığı olmadan
+   * taskların mətnini kənar anbara yazmaq olmaz.
+   */
+  memory?: MemoryProvider
 }
 
 export function buildApp(input: BuildAppInput): FastifyInstance {
@@ -67,7 +79,14 @@ export function buildApp(input: BuildAppInput): FastifyInstance {
   const router = new WorkerRouter(db, runners, {
     isRunnerReady: (id) => readiness.isReady(id),
   })
-  const ladder = new Ladder(db, supervisor, router, input.worktrees)
+  // Yaddaş (Faza 3). Provayder verilməyibsə sessiya YARADILMIR: `NullProvider`
+  // ilə də sessiya qursaydıq, hər task boş `recall` çağırışı edərdi — nəticəsi
+  // eyni, xərci sıfır, amma kod yolu fərqli olardı və "yaddaşsız" hal heç vaxt
+  // sınaqdan keçməzdi.
+  const memoryProvider = input.memory ?? new NullProvider()
+  const memory =
+    input.memory === undefined ? undefined : new MemorySession(db, memoryProvider)
+  const ladder = new Ladder(db, supervisor, router, input.worktrees, memory)
   // Kontekst başına paralellik. Limit hər task göndərişində oxunur, ona görə
   // istifadəçi ayarı dəyişəndə server yenidən başladılmır.
   const pool = new TaskPool()
@@ -102,6 +121,7 @@ export function buildApp(input: BuildAppInput): FastifyInstance {
 
   registerContextRoutes(app, db)
   registerStatsRoutes(app, db)
+  registerMemoryRoutes(app, { provider: memoryProvider, active: memory !== undefined })
   registerTaskRoutes(app, {
     db,
     supervisor,

@@ -142,7 +142,10 @@ export function summarizeSavings(db: Db, filter: SummaryFilter = {}): SavingsSum
     summary.actualSubscriptionUsd += row.actualSubscriptionUsd ?? 0
     summary.baselineCostUsd += row.baselineCostUsd ?? 0
     summary.orchestrationCostUsd += row.orchestrationCostUsd ?? 0
-    summary.memoryCostUsd += row.memoryCostUsd
+    // Naməlum yaddaş xərci sətri onsuz da yuxarıda `unknownCostTasks`-a
+    // düşür (`netSavingUsd` NULL olur), ona görə bura yalnız BİLİNƏN dəyər
+    // gəlir — `?? 0` sadəcə tip qapısıdır, gizlətmə deyil.
+    summary.memoryCostUsd += row.memoryCostUsd ?? 0
     summary.netSavingUsd += row.netSavingUsd
     if (row.cachedHit) summary.cacheSavingUsd += row.netSavingUsd
 

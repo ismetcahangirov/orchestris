@@ -120,4 +120,21 @@ describe('computeCacheKey', () => {
     const dir = gitRepo()
     expect(computeCacheKey({ ...base, cwd: dir })).toBe(computeCacheKey(base))
   })
+
+  it('yaddaş barmaq izi açarı DƏYİŞDİRİR', () => {
+    // Yaddaş işçinin promptunu dəyişir — girməsəydi yaddaşsız cavab yaddaşlı
+    // icraya səssizcə qaytarılardı (`templateId` ilə eyni səbəb).
+    expect(computeCacheKey({ ...base, memoryDigest: 'abc' })).not.toBe(
+      computeCacheKey(base),
+    )
+    expect(computeCacheKey({ ...base, memoryDigest: 'abc' })).not.toBe(
+      computeCacheKey({ ...base, memoryDigest: 'def' }),
+    )
+  })
+
+  it('yaddaşsız halda açar HEÇ DƏYİŞMİR — mövcud keşlər sınmır', () => {
+    // Sahə ÜMUMİYYƏTLƏ verilmir (`exactOptionalPropertyTypes`) — yaddaşsız
+    // quraşdırmada hash-in girişinə bir bayt belə əlavə olunmur.
+    expect(computeCacheKey({ ...base })).toBe(computeCacheKey(base))
+  })
 })

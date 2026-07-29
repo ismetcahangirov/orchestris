@@ -23,6 +23,24 @@ export const contexts = sqliteTable('contexts', {
    * paralellik heç vaxt öz-özünə işə düşməzdi.
    */
   maxParallel: integer('max_parallel').notNull().default(0),
+  /**
+   * Yaddaşın adlandırılmış sahəsi (Faza 3).
+   *
+   * NULL = **avtomatik**: kontekstin öz `id`-si işlədilir. Sabit default
+   * (məs. `'default'`) qoysaydıq, iki fərqli layihənin yaddaşı bir yerə
+   * qarışardı — "React komponenti belə yazılır" qeydi Python repo-suna
+   * yapışardı. Ayrıca ad isə istifadəçiyə İKİ kontekstin yaddaşını QƏSDƏN
+   * paylaşmaq imkanı verir (məs. eyni repo üzərində iki iş sahəsi).
+   */
+  memoryScope: text('memory_scope'),
+  /**
+   * Bu kontekstdə yaddaş işə düşürmü.
+   *
+   * Provayder SERVER səviyyəsindədir (env ilə), bu bayraq isə kontekst
+   * səviyyəsində opt-out-dur: istifadəçi yaddaşı ümumiyyətlə söndürmədən
+   * konkret iş sahəsində (məs. gizli repo) onu kənarda saxlaya bilməlidir.
+   */
+  memoryEnabled: integer('memory_enabled', { mode: 'boolean' }).notNull().default(true),
   createdAt: integer('created_at').notNull(),
   archivedAt: integer('archived_at'),
 })
@@ -334,7 +352,15 @@ export const savingsLedger = sqliteTable(
       .notNull()
       .default(false),
     orchestrationCostUsd: real('orchestration_cost_usd'),
-    memoryCostUsd: real('memory_cost_usd').notNull().default(0),
+    /**
+     * Yaddaşın öz xərci (Faza 3). **NULL = BİLİNMİR**, `0` yox (qayda 4).
+     *
+     * Əvvəl `NOT NULL DEFAULT 0` idi, çünki yaddaş yox idi və `0` DOĞRU idi.
+     * İndi provayder sıxma xərcini bildirməyə bilər — onu susaraq `0` saysaq,
+     * "bu ay $X qənaət" rəqəmi ödədiyimiz pulu gizlədərdi (qayda 23 ilə eyni
+     * səhv). Yaddaşsız tasklarda dəyər yenə `0`-dır və bu, DOĞRUDUR.
+     */
+    memoryCostUsd: real('memory_cost_usd'),
     netSavingUsd: real('net_saving_usd'),
     cachedHit: integer('cached_hit', { mode: 'boolean' }).notNull().default(false),
     tokensIn: integer('tokens_in').notNull().default(0),
@@ -383,6 +409,44 @@ export const artifacts = sqliteTable(
   // Task + növ başına BİR sətir: nərdivanın sonrakı icrası diff-i ƏVƏZ edir,
   // yeni sətir yaratmır (yoxsa "hansı diff sonuncudur?" sualı yaranardı).
   (t) => [uniqueIndex('artifacts_task_kind_idx').on(t.taskId, t.kind)],
+)
+
+/**
+ * Yaddaş əməliyyatları (Faza 3) — hər `recall` / `remember` bir sətir.
+ *
+ * NİYƏ `runs`-DA DEYİL: yaddaş çağırışı bizim runner-lərimizdən KEÇMİR (xarici
+ * lokal worker-ə gedir), ona görə orada nə `runner_id`, nə `model_id`, nə də
+ * hadisə jurnalı olardı — sətir yalanla dolardı.
+ *
+ * NİYƏ ÜMUMİYYƏTLƏ SAXLANILIR: `savings_ledger.memory_cost_usd` bu sətirlərdən
+ * hesablanır. Yaddaşın xərcini ölçmədən "qənaət etdik" demək uydurma olardı
+ * (issue #8, qayda 22 ilə eyni prinsip). `ok = false` sətirlər də QALIR: sınmış
+ * yaddaş taskı dayandırmır, amma "yaddaş işləyir" illüziyası da yaratmamalıdır.
+ */
+export const memoryOps = sqliteTable(
+  'memory_ops',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    taskId: text('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    /** `null` | `claude-mem` — hansı adapter işlədi. */
+    provider: text('provider').notNull(),
+    /** `recall` | `remember` */
+    kind: text('kind').notNull(),
+    scope: text('scope').notNull(),
+    /** Neçə qeyd oxundu/yazıldı. */
+    items: integer('items').notNull().default(0),
+    /** Prompta HƏQİQƏTƏN qoşulan (və ya yazılan) təxmini token sayı. */
+    tokens: integer('tokens').notNull().default(0),
+    /** NULL = xərc BİLİNMİR (qayda 4). 0 = həqiqətən pulsuz (lokal axtarış). */
+    costUsd: real('cost_usd'),
+    ok: integer('ok', { mode: 'boolean' }).notNull().default(true),
+    /** Xəta mətni — KƏSİLMİŞ saxlanılır (qayda 18). */
+    detail: text('detail'),
+    at: integer('at').notNull(),
+  },
+  (t) => [index('memory_ops_task_idx').on(t.taskId, t.at)],
 )
 
 export const contextsRelations = relations(contexts, ({ many }) => ({

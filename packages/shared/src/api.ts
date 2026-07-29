@@ -57,6 +57,15 @@ export const UpdateContextBody = z.object({
    * sürət verir, nə də pul qənaət edir.
    */
   maxParallel: z.number().int().min(0).max(16).optional(),
+  /**
+   * Yaddaş sahəsi (Faza 3). `null` = avtomatik (kontekstin öz `id`-si).
+   *
+   * Eyni ad verilən iki kontekst yaddaşı PAYLAŞIR — bu, açıq qərardır və
+   * default deyil: fərqli layihələrin qeydlərinin qarışması səssiz zərərdir.
+   */
+  memoryScope: z.string().min(1).max(100).nullable().optional(),
+  /** Bu kontekstdə yaddaş işə düşsünmü. */
+  memoryEnabled: z.boolean().optional(),
   budgetTokens: z.number().int().positive().nullable().optional(),
   budgetUsd: z.number().positive().nullable().optional(),
   budgetSeconds: z.number().int().positive().nullable().optional(),
