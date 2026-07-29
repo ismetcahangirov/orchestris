@@ -286,6 +286,81 @@ describe('model rolları', () => {
     expect(models.filter((m: { roleBoss: boolean }) => m.roleBoss)).toHaveLength(0)
   })
 
+  it('`exclusive` işçi rolunu YALNIZ bir modeldə saxlayır', async () => {
+    // İdarə panelindəki dropdown tək seçim deməkdir. Bayraq olmasaydı, klient
+    // köhnə işçiləri təmizləmək üçün N ayrı sorğu göndərməli olardı — yarıda
+    // sınsa sistem "işçi yoxdur" vəziyyətində qalardı.
+    const { app } = makeApp()
+    await setKey(app)
+
+    for (const id of ['anthropic:claude-tanınan', 'anthropic:claude-yeni']) {
+      await app.inject({
+        method: 'POST',
+        url: '/api/models/role',
+        payload: { id, role: 'worker', value: true },
+      })
+    }
+    // İki işçi QANUNİDİR — Auto onların içindən seçir.
+    let models = (await app.inject({ method: 'GET', url: '/api/models' })).json()
+    expect(models.filter((m: { roleWorker: boolean }) => m.roleWorker)).toHaveLength(2)
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/models/role',
+      payload: {
+        id: 'anthropic:claude-tanınan',
+        role: 'worker',
+        value: true,
+        exclusive: true,
+      },
+    })
+
+    models = (await app.inject({ method: 'GET', url: '/api/models' })).json()
+    const workers = models.filter((m: { roleWorker: boolean }) => m.roleWorker)
+    expect(workers).toHaveLength(1)
+    expect(workers[0].modelId).toBe('claude-tanınan')
+  })
+
+  it('`exclusive` OLMADAN işçi rolu ƏLAVƏ olunur — köhnəsi qalır', async () => {
+    // `/providers` səhifəsindəki checkbox məhz bu yolu işlədir; dropdown-un
+    // davranışını ona da tətbiq etsəydik, çoxlu işçi qurmaq mümkün olmazdı.
+    const { app } = makeApp()
+    await setKey(app)
+
+    for (const id of ['anthropic:claude-tanınan', 'anthropic:claude-yeni']) {
+      await app.inject({
+        method: 'POST',
+        url: '/api/models/role',
+        payload: { id, role: 'worker', value: true },
+      })
+    }
+
+    const models = (await app.inject({ method: 'GET', url: '/api/models' })).json()
+    expect(models.filter((m: { roleWorker: boolean }) => m.roleWorker)).toHaveLength(2)
+  })
+
+  it('`exclusive` rol ALINANDA nəzərə alınmır', async () => {
+    // "Nəyi tək qoyaq?" sualının cavabı yoxdur — bayraq yalnız rol VERİLƏNDƏ
+    // mənalıdır.
+    const { app } = makeApp()
+    await setKey(app)
+    const id = 'anthropic:claude-tanınan'
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/models/role',
+      payload: { id, role: 'worker', value: true },
+    })
+    await app.inject({
+      method: 'POST',
+      url: '/api/models/role',
+      payload: { id, role: 'worker', value: false, exclusive: true },
+    })
+
+    const models = (await app.inject({ method: 'GET', url: '/api/models' })).json()
+    expect(models.filter((m: { roleWorker: boolean }) => m.roleWorker)).toHaveLength(0)
+  })
+
   it('naməlum model üçün 404', async () => {
     const { app } = makeApp()
     const res = await app.inject({

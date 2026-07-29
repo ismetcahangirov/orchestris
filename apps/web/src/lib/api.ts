@@ -437,10 +437,21 @@ export const api = {
   discoverModels: (providerId: string) =>
     request<DiscoveryResult>(`/api/providers/${providerId}/discover`, { method: 'POST' }),
 
-  setModelRole: (id: string, role: 'boss' | 'worker' | 'classifier', value: boolean) =>
+  /**
+   * `exclusive` yalnız `worker` üçün: bu model TƏK işçi olsun.
+   *
+   * İdarə panelindəki dropdown bunu işlədir (tək seçim), `/providers`-dəki
+   * checkbox isə işlətmir (çoxlu işçi qanunidir).
+   */
+  setModelRole: (
+    id: string,
+    role: 'boss' | 'worker' | 'classifier',
+    value: boolean,
+    exclusive?: boolean,
+  ) =>
     request<ModelRow>('/api/models/role', {
       method: 'POST',
-      body: JSON.stringify({ id, role, value }),
+      body: JSON.stringify({ id, role, value, ...(exclusive === true ? { exclusive } : {}) }),
     }),
 
   setModelEnabled: (id: string, enabled: boolean) =>
