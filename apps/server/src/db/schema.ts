@@ -53,13 +53,29 @@ export const tasks = sqliteTable(
       .notNull()
       .references(() => contexts.id, { onDelete: 'cascade' }),
     parentTaskId: text('parent_task_id'),
+    /**
+     * Dekompozisiyada (Faza 4) alt-taskın SIRA nömrəsi, 0-dan başlayır.
+     * Valideyn tasklarda NULL.
+     *
+     * NİYƏ `created_at` KİFAYƏT ETMİR: alt-tasklar bir dövrədə, eyni
+     * millisaniyədə yaradılır — vaxta görə sıralama onları təsadüfi qaydada
+     * qaytarardı. Halbuki bölgünün müqaviləsi məhz SIRADIR: "sonrakı alt-task
+     * əvvəlkinin nəticəsi üzərində işləyir". Sıra itsə, icra da, UI-dakı ağac
+     * da yanlış olardı.
+     */
+    subtaskIndex: integer('subtask_index'),
     prompt: text('prompt').notNull(),
     taskType: text('task_type').notNull().default('unknown'),
     status: text('status').notNull().default('pending'),
     createdAt: integer('created_at').notNull(),
     completedAt: integer('completed_at'),
   },
-  (t) => [index('tasks_context_idx').on(t.contextId, t.createdAt)],
+  (t) => [
+    index('tasks_context_idx').on(t.contextId, t.createdAt),
+    // Alt-task ağacı hər task səhifəsində oxunur — indekssiz bu, tam cədvəl
+    // taraması olardı.
+    index('tasks_parent_idx').on(t.parentTaskId, t.subtaskIndex),
+  ],
 )
 
 export const runs = sqliteTable(

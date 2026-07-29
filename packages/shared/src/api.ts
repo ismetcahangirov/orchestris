@@ -30,6 +30,15 @@ export const CreateTaskBody = z.object({
   maxOutputTokens: z.number().int().positive().optional(),
   maxSeconds: z.number().int().positive().optional(),
   maxCostUsd: z.number().positive().optional(),
+  /**
+   * Task dekompozisiyası (Faza 4) — başçı taskı alt-tasklara bölsün.
+   *
+   * AÇIQ SEÇİMDİR, avtomatik deyil: bölgü BİR başçı icrası + N nərdivan
+   * dövrəsi ödəyir, faydası isə hələ ölçülməyib. Avtomatik açsaydıq hər
+   * çoxaddımlı task əlavə başçı icrası ödəyərdi — halbuki eyni hal üçün onsuz
+   * da Pillə 5 (plan) var və o, CƏMİ bir işçi icrası ödəyir.
+   */
+  decompose: z.boolean().optional(),
 })
 export type CreateTaskBody = z.infer<typeof CreateTaskBody>
 

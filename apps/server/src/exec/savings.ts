@@ -6,7 +6,19 @@ import { getTask, listEvents, listRunsForTask } from '../db/repo.js'
 import { listRoutingDecisions } from '../db/routing-repo.js'
 import { models } from '../db/schema.js'
 import { computeCostUsd, type TokenCounts } from '../registry/pricing.js'
+import { DECOMPOSE_RUNG } from './decompose.js'
 import { DISTILL_RUNG } from './distill.js'
+
+/**
+ * Nərdivandan KƏNAR (mənfi nömrəli) icralar — taskın CAVABINI yazmayan, amma
+ * pul yandıran addımlar.
+ *
+ * Hər ikisi eyni ölçmə qaydasına tabedir: tokenləri BASELINE-a girmir (başçı
+ * taskı təkbaşına həll etsəydi nə şablon, nə bölgü yazardı — girsəydi baseline
+ * şişər və qənaət olduğundan böyük görünərdi), xərci isə ORKESTRASİYA xərcinə
+ * yazılır və `byRung`-da AYRICA görünür (qayda 22, 37).
+ */
+const ORCHESTRATION_RUNGS: ReadonlySet<number> = new Set([DISTILL_RUNG, DECOMPOSE_RUNG])
 
 /**
  * Qənaətin DÜRÜST ölçülməsi.
@@ -102,10 +114,11 @@ export function computeTaskSavings(db: Db, taskId: string): TaskSavings {
     cacheWriteTokens: 0,
   }
   const rungs = new Map<number, RungCost>()
-  // Prompt distilləsinin xərci — bu taskın CAVABINA girmir, ona görə aşağıda
-  // orkestrasiya xərcinə qatılır (klassifikator ilə eyni məntiq, qayda 22).
-  let distillation = 0
-  let distillationKnown = true
+  // Nərdivandan kənar icraların (distillə, dekompozisiya) xərci — bu taskın
+  // CAVABINA girmir, ona görə aşağıda orkestrasiya xərcinə qatılır
+  // (klassifikator ilə eyni məntiq, qayda 22).
+  let offLadder = 0
+  let offLadderKnown = true
 
   for (const run of runs) {
     const tokens: TokenCounts = run.cachedHit
@@ -117,12 +130,13 @@ export function computeTaskSavings(db: Db, taskId: string): TaskSavings {
           cacheWriteTokens: run.tokensCacheWrite,
         }
 
-    // Distillə icrası BASELINE-a girmir: baseline "başçı bu taskı təkbaşına
-    // həll etsəydi" əks-faktıdır, başçı isə orada şablon YAZMAZDI. Tokenlərini
-    // ora qatsaq baseline şişər və qənaət olduğundan böyük görünərdi (qayda 23,
-    // 25 ilə eyni prinsip). Xərci isə gizlədilmir — aşağıda görünür.
-    const isDistillation = run.ladderRung === DISTILL_RUNG
-    if (!isDistillation) {
+    // Nərdivandan kənar icra BASELINE-a girmir: baseline "başçı bu taskı
+    // təkbaşına həll etsəydi" əks-faktıdır, başçı isə orada nə şablon, nə bölgü
+    // YAZARDI. Tokenlərini ora qatsaq baseline şişər və qənaət olduğundan böyük
+    // görünərdi (qayda 23, 25 ilə eyni prinsip). Xərci isə gizlədilmir —
+    // aşağıda görünür.
+    const isOffLadder = ORCHESTRATION_RUNGS.has(run.ladderRung)
+    if (!isOffLadder) {
       baselineTokens.inputTokens += tokens.inputTokens
       baselineTokens.outputTokens += tokens.outputTokens
       baselineTokens.cacheReadTokens += tokens.cacheReadTokens ?? 0
@@ -143,13 +157,13 @@ export function computeTaskSavings(db: Db, taskId: string): TaskSavings {
     }
     bucket.runs += 1
 
-    if (isDistillation) {
-      // `byRung`-da GÖRÜNÜR (bucket yuxarıda artırıldı) — bir dəfəlik
-      // investisiya gizlədilməməlidir; sadəcə taskın həll xərci deyil.
+    if (isOffLadder) {
+      // `byRung`-da GÖRÜNÜR (bucket yuxarıda artırıldı) — orkestrasiya
+      // investisiyası gizlədilməməlidir; sadəcə taskın həll xərci deyil.
       if (cost === null) {
-        if (usedTokens > 0) distillationKnown = false
+        if (usedTokens > 0) offLadderKnown = false
       } else {
-        distillation += cost
+        offLadder += cost
         if (run.subscriptionBilled) bucket.subscriptionUsd += cost
         else bucket.costUsd += cost
       }
@@ -176,11 +190,12 @@ export function computeTaskSavings(db: Db, taskId: string): TaskSavings {
   }
 
   // ── Orkestrasiya xərci ────────────────────────────────────────────────
-  // Distillə buraya girir: o, taskın cavabını yazmır, gələcək taskların iş
-  // üsulunu yazır — yəni klassifikator kimi ORKESTRASİYA xərcidir. Net
-  // qənaətdən çıxılır, çünki pul REAL yanıb (qayda 22).
-  let orchestration = distillation
-  let orchestrationKnown = distillationKnown
+  // Distillə və dekompozisiya buraya girir: heç biri taskın cavabını yazmır —
+  // biri gələcək taskların iş üsulunu, digəri isə bu taskın BÖLGÜSÜNÜ yazır.
+  // Yəni klassifikator kimi ORKESTRASİYA xərcidir. Net qənaətdən çıxılır, çünki
+  // pul REAL yanıb (qayda 22).
+  let orchestration = offLadder
+  let orchestrationKnown = offLadderKnown
   for (const decision of listRoutingDecisions(db, taskId)) {
     if (decision.decisionCostUsd === null) {
       // Qərar tokensizdirsə (qayda routing) xərc onsuz da 0-dır.

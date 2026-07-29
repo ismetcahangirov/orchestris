@@ -1,10 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
-import { useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import EventTimeline from '../components/EventTimeline.js'
 import RoutingBadge from '../components/RoutingBadge.js'
 import RunHeader from '../components/RunHeader.js'
 import UsageBadge from '../components/UsageBadge.js'
 import MemoryPanel from '../components/MemoryPanel.js'
+import SubtaskTree from '../components/SubtaskTree.js'
 import WorktreePanel from '../components/WorktreePanel.js'
 import { api, type StoredEventRow, type TaskDetail } from '../lib/api.js'
 import { useRunStream } from '../lib/useRunStream.js'
@@ -25,6 +26,10 @@ const DIFF_GRACE_MS = 15_000
 function needsPoll(data: TaskDetail | undefined): boolean {
   if (data === undefined) return true
   if (!TERMINAL.has(data.task.status)) return true
+  // Bölünmüş taskda (Faza 4) valideynin statusu ALT-TASKLARDAN ƏVVƏL terminal
+  // olur: `RunSupervisor` onu bölgü icrası bitən kimi yazır. Yalnız valideynə
+  // baxsaydıq, sorğu dayanar və alt-task ağacı birinci parçada donub qalardı.
+  if (data.subtasks.some((s) => !TERMINAL.has(s.status))) return true
   if (data.artifacts.length > 0) return false
   if (!data.runs.some((r) => r.worktreePath !== null)) return false
   return Date.now() - (data.task.completedAt ?? 0) < DIFF_GRACE_MS
@@ -50,6 +55,14 @@ export default function TaskView(): React.JSX.Element {
       <div className="mb-4 flex items-start justify-between gap-4">
         <div className="min-w-0">
           <h1 className="text-xl font-semibold">Task</h1>
+          {data.task.parentTaskId !== null && (
+            <Link
+              to={`/tasks/${data.task.parentTaskId}`}
+              className="text-xs text-ink-dim hover:underline"
+            >
+              ↑ bu, bölünmüş taskın parçasıdır
+            </Link>
+          )}
           <p className="mt-1 whitespace-pre-wrap break-words text-sm text-ink-dim">
             {data.task.prompt}
           </p>
@@ -78,6 +91,11 @@ export default function TaskView(): React.JSX.Element {
       {(data.artifacts ?? []).map((artifact) => (
         <WorktreePanel key={artifact.id} artifact={artifact} />
       ))}
+
+      {/* Bölünmüş taskda (Faza 4) həlli parçalar yazır — istifadəçinin ilk
+          sualı "hansı parça hardadır?" olur, valideynin öz jurnalı isə yalnız
+          bölgü icrasını daşıyır. */}
+      <SubtaskTree subtasks={data.subtasks ?? []} />
 
       <MemoryPanel ops={data.memory ?? []} />
 

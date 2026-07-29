@@ -22,6 +22,9 @@ export default function Dashboard(): React.JSX.Element {
   const [runner, setRunner] = useState('auto')
   const [model, setModel] = useState('claude-haiku-4-5-20251001')
   const [prompt, setPrompt] = useState('')
+  // Faza 4 — başçı taskı alt-tasklara bölsün. AÇIQ seçimdir: bölgü bir başçı
+  // icrası + N nərdivan dövrəsi ödəyir, faydası isə hələ ölçülməyib.
+  const [decompose, setDecompose] = useState(false)
 
   const { data: contexts } = useQuery({ queryKey: ['contexts'], queryFn: api.listContexts })
   const { data: providers } = useQuery({ queryKey: ['providers'], queryFn: api.listProviders })
@@ -40,7 +43,15 @@ export default function Dashboard(): React.JSX.Element {
         // Auto rejimində runner və model GÖNDƏRİLMİR — onları router seçir.
         // Boş sətir göndərsək server onu "əl ilə seçim" kimi oxuyardı.
         ...(auto ? {} : { runner, model }),
+        // `false` GÖNDƏRİLMİR: server sahənin YOXLUĞUNU "bölmə" kimi oxuyur və
+        // hər sorğuya `decompose: false` qoymaq köhnə klientləri fərqləndirilməz
+        // edərdi.
+        ...(decompose ? { decompose: true } : {}),
         // Sərt limit: ilk versiyada hər task ən çox 30k output token və 10 dəqiqə.
+        //
+        // Limit BÖLÜNMÜŞ taskda da BÜTÖVDÜR: alt-tasklar onu öz aralarında
+        // paylaşır (`Decomposer` → `RemainingBudget`), yoxsa altı parçalı task
+        // limitin altı mislini xərcləyə bilərdi.
         maxOutputTokens: 30_000,
         maxSeconds: 600,
       }),
@@ -147,6 +158,23 @@ export default function Dashboard(): React.JSX.Element {
             placeholder="Bu funksiyaya test yaz…"
             className="w-full rounded border border-white/15 bg-surface px-3 py-2 text-sm text-ink"
           />
+        </label>
+
+        <label className="flex items-start gap-2 text-xs text-ink-dim">
+          <input
+            type="checkbox"
+            checked={decompose}
+            onChange={(e) => setDecompose(e.target.checked)}
+            className="mt-0.5"
+          />
+          <span>
+            Böyük taskı alt-tasklara böl
+            <span className="block text-ink-dim/70">
+              Başçı bir dəfə bölgü yazır, hər parça ayrıca nərdivandan keçir.
+              Bir başçı icrası + parça sayı qədər dövrə ödənilir — yalnız
+              həqiqətən böyük tasklarda özünü ödəyir.
+            </span>
+          </span>
         </label>
 
         {blocked && (
