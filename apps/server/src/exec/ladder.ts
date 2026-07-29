@@ -214,6 +214,19 @@ export interface LadderInput {
    * səssizcə pozulardı.
    */
   worktree?: Worktree
+  /**
+   * `false` → izolyasiya TAMAMİLƏ söndürülür (workflow zəncirləri, Faza 4).
+   *
+   * Zəncirin addımları da alt-tasklar kimi ASILIDIR: 2-ci addım 1-cinin
+   * yazdığı faylı görməlidir. Hər addıma ayrıca ağac açılsaydı (`shouldIsolate`
+   * kod taskında bunu edərdi), hər addımın işi öz `pending` diff-ində qalar və
+   * növbəti addım onu GÖRMƏZDİ — zəncirin bütün mənası itərdi.
+   *
+   * Dekompozisiyadan fərqli olaraq burada ORTAQ ağac da açılmır: diff `artifacts`
+   * cədvəlində TASKA bağlıdır, zəncir icrasının isə öz taskı yoxdur (bax
+   * "Bilinən boşluqlar").
+   */
+  isolate?: boolean
 }
 
 export interface AgreementSummary {
@@ -1413,6 +1426,9 @@ export class Ladder {
   ): Promise<Worktree | undefined> {
     const cwd = input.context.cwd
     if (this.worktrees === undefined || cwd === null) return undefined
+    // Çağıran AÇIQ şəkildə söndürübsə `shouldIsolate` ümumiyyətlə soruşulmur:
+    // zəncir addımları asılıdır və ayrıca ağac onları bir-birindən gizlədərdi.
+    if (input.isolate === false) return undefined
     const isolate = shouldIsolate({
       maxParallel: input.context.maxParallel ?? 0,
       taskType,

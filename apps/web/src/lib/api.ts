@@ -1,9 +1,73 @@
 import type {
   CreateContextBody,
   CreateTaskBody,
+  CreateScheduleBody,
+  CreateWorkflowBody,
   RunEvent,
+  RunWorkflowBody,
   UpdateContextBody,
+  UpdateScheduleBody,
+  UpdateWorkflowBody,
 } from '@orchestris/shared'
+
+/** Faza 4 — cədvəl. Hər üç limit MƏCBURİDİR (issue #12). */
+export interface ScheduleRow {
+  id: string
+  workflowId: string
+  intervalSeconds: number
+  enabled: boolean
+  budgetUsdPerRun: number
+  budgetUsdTotal: number
+  maxRuns: number
+  spentUsd: number
+  runs: number
+  nextRunAt: number
+  lastRunAt: number | null
+  /** Cədvəl NİYƏ söndürüldü — səssiz dayanma ən pis haldır. */
+  disabledReason: string | null
+  createdAt: number
+}
+
+/** Faza 4 — zəncir tərifi. `stepsJson` sxemi `@orchestris/shared`-dədir. */
+export interface WorkflowRow {
+  id: string
+  contextId: string
+  name: string
+  description: string | null
+  stepsJson: string
+  createdAt: number
+  updatedAt: number
+  archivedAt: number | null
+  /** Siyahı cavabında gəlir — ayrıca sorğu N+1 yaradardı. */
+  lastRun?: WorkflowRunRow | null
+}
+
+export interface WorkflowRunRow {
+  id: string
+  workflowId: string
+  trigger: string
+  status: string
+  stepsJson: string
+  startedAt: number
+  endedAt: number | null
+  error: string | null
+}
+
+export interface WorkflowStepRunRow {
+  id: number
+  workflowRunId: string
+  stepId: string
+  stepIndex: number
+  kind: string
+  attempt: number
+  taskId: string | null
+  status: string
+  output: string
+  outputTruncated: boolean
+  detail: string | null
+  startedAt: number
+  endedAt: number | null
+}
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -406,4 +470,40 @@ export const api = {
   /** Diff-i atır və worktree-ni silir. Əsas repoya heç nə yazılmır. */
   rejectDiff: (taskId: string) =>
     request<{ ok: boolean }>(`/api/tasks/${taskId}/diff/reject`, { method: 'POST' }),
+
+  // ── Workflow zəncirləri (Faza 4) ─────────────────────────────────────
+  listWorkflows: () => request<{ workflows: WorkflowRow[] }>('/api/workflows'),
+  getWorkflow: (id: string) =>
+    request<{ workflow: WorkflowRow; runs: WorkflowRunRow[] }>(`/api/workflows/${id}`),
+  createWorkflow: (body: CreateWorkflowBody) =>
+    request<{ workflow: WorkflowRow }>('/api/workflows', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateWorkflow: (id: string, body: UpdateWorkflowBody) =>
+    request<{ workflow: WorkflowRow }>(`/api/workflows/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  runWorkflow: (id: string, body: RunWorkflowBody = {}) =>
+    request<{ workflowRunId: string }>(`/api/workflows/${id}/run`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  getWorkflowRun: (id: string) =>
+    request<{ run: WorkflowRunRow; steps: WorkflowStepRunRow[] }>(
+      `/api/workflow-runs/${id}`,
+    ),
+
+  listSchedules: () => request<{ schedules: ScheduleRow[] }>('/api/schedules'),
+  createSchedule: (body: CreateScheduleBody) =>
+    request<{ schedule: ScheduleRow }>('/api/schedules', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateSchedule: (id: string, body: UpdateScheduleBody) =>
+    request<{ schedule: ScheduleRow }>(`/api/schedules/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
 }

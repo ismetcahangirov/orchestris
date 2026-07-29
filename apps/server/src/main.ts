@@ -1,5 +1,5 @@
 import type { Runner } from '@orchestris/shared'
-import { buildApp } from './app.js'
+import { buildOrchestris } from './app.js'
 import { listPendingArtifacts } from './db/artifact-repo.js'
 import { openDb } from './db/client.js'
 import { cleanupOrphanWorktrees, GitWorktrees } from './exec/worktree.js'
@@ -37,12 +37,15 @@ const orphanWorktrees = await cleanupOrphanWorktrees(worktrees, {
 // Verilməsə sistem Faza 2-dəki kimi yaddaşsız işləyir.
 const memory = memoryFromEnv()
 
-const app = buildApp({
+const { app } = buildOrchestris({
   db,
   runners,
   credentials,
   worktrees,
   logger: true,
+  // Cədvəl taymeri YALNIZ burada açılır — `buildApp` testlərin giriş nöqtəsidir
+  // və orada fon taymeri səssizcə model çağıra bilərdi (bax `BuildAppInput`).
+  startScheduler: true,
   ...(memory !== undefined ? { memory } : {}),
 })
 if (orphanWorktrees.removed.length > 0) {

@@ -6,6 +6,7 @@ import History from './pages/History.js'
 import Ladder from './pages/Ladder.js'
 import Providers from './pages/Providers.js'
 import TaskView from './pages/TaskView.js'
+import Workflows from './pages/Workflows.js'
 
 export default function App(): React.JSX.Element {
   return (
@@ -17,6 +18,7 @@ export default function App(): React.JSX.Element {
           <Route path="/contexts" element={<Contexts />} />
           <Route path="/providers" element={<Providers />} />
           <Route path="/ladder" element={<Ladder />} />
+          <Route path="/workflows" element={<Workflows />} />
           <Route path="/history" element={<History />} />
           <Route path="/tasks/:id" element={<TaskView />} />
         </Routes>

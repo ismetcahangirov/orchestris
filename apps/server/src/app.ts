@@ -6,6 +6,8 @@ import { getRunTaskId, getTask, markOrphanedRunsInterrupted } from './db/repo.js
 import { Decomposer } from './exec/decomposer.js'
 import { Ladder } from './exec/ladder.js'
 import { TaskPool } from './exec/pool.js'
+import { Scheduler, SCHEDULER_TICK_MS } from './exec/scheduler.js'
+import { WorkflowEngine } from './exec/workflow-engine.js'
 import { RunSupervisor } from './exec/supervisor.js'
 import type { WorktreeManager } from './exec/worktree.js'
 import { NullProvider, type MemoryProvider } from './memory/provider.js'
@@ -20,6 +22,7 @@ import {
 } from './routes/providers.js'
 import { registerStatsRoutes } from './routes/stats.js'
 import { registerTaskRoutes } from './routes/tasks.js'
+import { registerWorkflowRoutes } from './routes/workflows.js'
 import { seedCliProviders } from './routing/candidates.js'
 import { WorkerRouter } from './routing/decide.js'
 import { RunnerReadiness } from './routing/readiness.js'
@@ -59,9 +62,31 @@ export interface BuildAppInput {
    * taskların mətnini kənar anbara yazmaq olmaz.
    */
   memory?: MemoryProvider
+  /**
+   * Cədvəl üzrə icranın TAYMERİNİ qurur (Faza 4).
+   *
+   * Default `false` və bu, QƏSDƏNDİR: `buildApp` testlərin əsas giriş
+   * nöqtəsidir və hər test fon taymeri açsaydı, testlər bir-birinin cədvəlini
+   * qaçırar, `--experimental` xəbərdarlıqları ilə asılı qalar və ən pisi —
+   * SƏSSİZCƏ model çağırışı edə bilərdi. Taymer yalnız `main.ts`-də açılır.
+   *
+   * Məntiqin özü taymerdən ASILI DEYİL: `Scheduler.tick(now)` saf funksiyaya
+   * yaxındır və testlərdə saat irəli sürülərək çağırılır.
+   */
+  startScheduler?: boolean
+}
+
+export interface OrchestrisApp {
+  app: FastifyInstance
+  /** Cədvəl motoru — `main.ts` taymeri onun üzərində qurur. */
+  scheduler: Scheduler
 }
 
 export function buildApp(input: BuildAppInput): FastifyInstance {
+  return buildOrchestris(input).app
+}
+
+export function buildOrchestris(input: BuildAppInput): OrchestrisApp {
   const app = Fastify({ logger: input.logger ?? false })
   const { db, runners } = input
   const credentials = input.credentials ?? new KeyringStore()
@@ -94,6 +119,15 @@ export function buildApp(input: BuildAppInput): FastifyInstance {
   // Kontekst başına paralellik. Limit hər task göndərişində oxunur, ona görə
   // istifadəçi ayarı dəyişəndə server yenidən başladılmır.
   const pool = new TaskPool()
+  // Workflow zəncirləri (Faza 4). Xarici HTTP addımları FAIL-CLOSED-dur: icazə
+  // yalnız `ORCHESTRIS_WORKFLOW_HTTP_ALLOW` ilə verilir (`workflow-http.ts`).
+  const workflowEngine = new WorkflowEngine({
+    db,
+    ladder,
+    decomposer,
+    pool,
+    ...(input.fetchImpl !== undefined ? { fetchImpl: input.fetchImpl } : {}),
+  })
 
   // runId → taskId çevirməsi keşlənir: hər hadisə üçün DB sorğusu artıqdır.
   const runToTask = new Map<string, string>()
@@ -126,6 +160,7 @@ export function buildApp(input: BuildAppInput): FastifyInstance {
   registerContextRoutes(app, db)
   registerStatsRoutes(app, db)
   registerMemoryRoutes(app, { provider: memoryProvider, active: memory !== undefined })
+  registerWorkflowRoutes(app, { db, engine: workflowEngine })
   registerTaskRoutes(app, {
     db,
     supervisor,
@@ -180,9 +215,25 @@ export function buildApp(input: BuildAppInput): FastifyInstance {
     })
   })
 
+  const scheduler = new Scheduler(db, workflowEngine)
+  // Taymer YALNIZ açıq şəkildə istənəndə qurulur (`main.ts`). Bax
+  // `BuildAppInput.startScheduler` — default `false` olmasının səbəbi orada.
+  const timer =
+    input.startScheduler === true
+      ? setInterval(() => {
+          void scheduler.tick().catch((err: unknown) => {
+            app.log.error({ err }, 'scheduler.tick tutulmamış xəta')
+          })
+        }, SCHEDULER_TICK_MS)
+      : undefined
+  // `unref` MƏCBURİDİR: taymer proses ömrünü uzatmamalıdır, yoxsa `SIGINT`-dən
+  // sonra server bağlanmaz və istifadəçi onu `kill` etməli olardı.
+  timer?.unref()
+
   app.addHook('onClose', async () => {
     supervisor.cancelAll()
+    if (timer !== undefined) clearInterval(timer)
   })
 
-  return app
+  return { app, scheduler }
 }
