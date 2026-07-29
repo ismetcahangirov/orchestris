@@ -7,17 +7,23 @@ const RUNGS: { rung: number; name: string; cost: string; status: string }[] = [
   { rung: 0, name: 'Cache', cost: '0 token', status: 'işləyir' },
   { rung: 1, name: 'Qayda routing', cost: '0 token', status: 'işləyir' },
   { rung: 2, name: 'Zəif model + alət yoxlaması', cost: '0 token (yoxlama)', status: 'işləyir' },
-  { rung: 3, name: 'Best-of-N + razılaşma', cost: '—', status: 'Faza 2' },
+  {
+    rung: 3,
+    name: 'Best-of-N + razılaşma',
+    cost: 'işçi × 3, razılaşmasa × 5',
+    status: 'işləyir',
+  },
   { rung: 4, name: 'İpucu (shepherding)', cost: '—', status: 'Faza 2' },
   { rung: 5, name: 'Plan güclü / icra zəif', cost: '—', status: 'Faza 2' },
-  { rung: 6, name: 'Self-escalation', cost: '—', status: 'Faza 2' },
+  { rung: 6, name: 'Self-escalation', cost: '~40 token müqavilə', status: 'işləyir' },
   { rung: 7, name: 'Tam güclü model', cost: '$$$', status: 'işləyir' },
 ]
 
 const PROFILE_HINT: Record<string, string> = {
-  cheap: 'Yalnız ən ucuz pillələr — sadə, təkrarlanan işlər üçün.',
-  balanced: 'Gündəlik iş üçün default.',
-  quality: 'Bütün pillələr — kritik işlər üçün.',
+  cheap: 'Yalnız ən ucuz pillələr — eskalasiya yoxdur, nəticə həmişə işçinindir.',
+  balanced:
+    'Gündəlik iş üçün default. İşçi imtina edərsə və ya nüsxələr razılaşmazsa başçıya qalxır.',
+  quality: 'Bütün mövcud pillələr — kritik işlər üçün (4 və 5 hələ tətbiq olunmayıb).',
   'boss-only': 'Baseline ölçməsi: keş və yoxlama söndürülür, hər task başçıya gedir.',
 }
 
@@ -29,6 +35,14 @@ export default function LadderPage(): React.JSX.Element {
   const { data: contexts } = useQuery({ queryKey: ['contexts'], queryFn: api.listContexts })
 
   const selected = contexts?.find((c) => c.id === contextId) ?? contexts?.[0]
+
+  // Pillə dəstini server verir (`ladder.ts` → `activeRungs`). Burada təkrar
+  // yazsaydıq iki həqiqət mənbəyi olardı və biri dəyişəndə səhifə yalan
+  // danışardı — istifadəçi "aktiv" görüb, əslində işə düşməyən pilləyə
+  // güvənərdi.
+  const activeInProfile = new Set(
+    rules?.profileRungs?.[selected?.amplificationProfile ?? 'balanced'] ?? [],
+  )
 
   const setProfile = useMutation({
     mutationFn: (profile: string) =>
@@ -101,7 +115,11 @@ export default function LadderPage(): React.JSX.Element {
       </section>
 
       <section className="mb-6 rounded-lg border border-white/10 bg-surface-2 p-5">
-        <h2 className="mb-3 text-sm font-semibold">Pillələr</h2>
+        <h2 className="mb-1 text-sm font-semibold">Pillələr</h2>
+        <p className="mb-3 text-xs text-ink-dim">
+          "Cari profildə" sütunu seçilmiş kontekstə görə hesablanır — hansı pillələrin bu
+          taskda HƏQİQƏTƏN işə düşəcəyini göstərir.
+        </p>
         <table className="w-full text-left text-xs">
           <thead className="text-ink-dim">
             <tr>
@@ -109,6 +127,7 @@ export default function LadderPage(): React.JSX.Element {
               <th className="pb-2">Pillə</th>
               <th className="pb-2">Xərc</th>
               <th className="pb-2">Vəziyyət</th>
+              <th className="pb-2">Cari profildə</th>
             </tr>
           </thead>
           <tbody className="font-mono">
@@ -119,6 +138,11 @@ export default function LadderPage(): React.JSX.Element {
                 <td className="py-1.5">{r.cost}</td>
                 <td className={`py-1.5 ${r.status === 'işləyir' ? 'text-good' : 'text-ink-dim'}`}>
                   {r.status}
+                </td>
+                <td
+                  className={`py-1.5 ${activeInProfile.has(r.rung) ? 'text-accent' : 'text-ink-dim'}`}
+                >
+                  {activeInProfile.has(r.rung) ? 'aktiv' : '—'}
                 </td>
               </tr>
             ))}

@@ -4,7 +4,9 @@ const RUNG_LABEL: Record<number, string> = {
   0: 'Pillə 0 — keş',
   1: 'Pillə 1 — qayda',
   2: 'Pillə 2 — alət yoxlaması',
-  7: 'Pillə 7 — birbaşa model',
+  3: 'Pillə 3 — best-of-N nüsxəsi',
+  6: 'Pillə 6 — self-escalation',
+  7: 'Pillə 7 — başçı',
 }
 
 // DİQQƏT: bunlar RUN statuslarıdır. `verification_failed` burada YOXDUR,
@@ -32,11 +34,26 @@ export default function RunHeader({ run }: { run: RunRow }): React.JSX.Element {
           {RUNG_LABEL[run.ladderRung] ?? `Pillə ${run.ladderRung}`}
         </span>
         {run.attempt > 1 && (
+          // Pillə 3-də `attempt` "neçənci NÜSXƏ" deməkdir, təkrar cəhd yox —
+          // ikisini eyni sözlə adlandırmaq istifadəçiyə "yoxlama sındı"
+          // təəssüratı verərdi.
           <span
             className="rounded bg-warn/15 px-2 py-0.5 text-xs text-warn"
-            title="Yoxlama sındığı üçün təkrar cəhd"
+            title={
+              run.ladderRung === 3
+                ? 'Razılaşma üçün qaçırılan əlavə nüsxə'
+                : 'Yoxlama sındığı üçün təkrar cəhd'
+            }
           >
-            {run.attempt}. cəhd
+            {run.attempt}. {run.ladderRung === 3 ? 'nüsxə' : 'cəhd'}
+          </span>
+        )}
+        {run.escalatedFromRunId !== null && (
+          <span
+            className="rounded bg-accent/15 px-2 py-0.5 text-xs text-accent"
+            title="İşçi bu taskı həll edə bilmədi — nərdivan yuxarı pilləyə qalxdı"
+          >
+            eskalasiya
           </span>
         )}
         {run.cachedHit && (

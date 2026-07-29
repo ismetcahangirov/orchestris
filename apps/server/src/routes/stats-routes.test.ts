@@ -82,6 +82,15 @@ async function runTask(
     payload: { name: 'C' },
   })
   const ctx = res.json() as { id: string }
+  // `cheap` profili QƏSDƏN: bu fayl qənaət RİYAZİYYATINI yoxlayır və rəqəmlər
+  // oxunaqlı qalmalıdır (1 icra = $1). `balanced` yoxlama əmri olmayan taskda
+  // Pillə 3-ü işə salıb 3 nüsxə qaçırardı — düsturu deyil, nüsxə sayını
+  // yoxlamış olardıq.
+  await app.inject({
+    method: 'PATCH',
+    url: `/api/contexts/${ctx.id}`,
+    payload: { amplificationProfile: 'cheap' },
+  })
   const created = await app.inject({
     method: 'POST',
     url: '/api/tasks',

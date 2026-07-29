@@ -15,13 +15,26 @@ function makeApp() {
   return buildApp({ db, runners, credentials: new MemoryStore() })
 }
 
-async function newContext(app: ReturnType<typeof makeApp>, name = 'C', cwd?: string) {
+async function newContext(
+  app: ReturnType<typeof makeApp>,
+  name = 'C',
+  cwd?: string,
+  profile?: string,
+) {
   const res = await app.inject({
     method: 'POST',
     url: '/api/contexts',
     payload: { name, ...(cwd !== undefined ? { cwd } : {}) },
   })
-  return res.json() as { id: string }
+  const ctx = res.json() as { id: string }
+  if (profile !== undefined) {
+    await app.inject({
+      method: 'PATCH',
+      url: `/api/contexts/${ctx.id}`,
+      payload: { amplificationProfile: profile },
+    })
+  }
+  return ctx
 }
 
 describe('GET /api/health', () => {
@@ -135,7 +148,11 @@ describe('POST /api/tasks', () => {
 describe('GET /api/tasks/:id', () => {
   it('task, run-lar və hadisələri qaytarır', async () => {
     const app = makeApp()
-    const ctx = await newContext(app)
+    // `cheap` profili QƏSDƏN: bu test endpoint-in FORMASINI yoxlayır, nərdivanın
+    // neçə pillə qalxdığını yox. `balanced` profili yoxlama əmri olmayan taskda
+    // Pillə 3-ü (best-of-N) işə salır və nəticədə bir neçə run yaranır — o,
+    // ladder testlərinin işidir.
+    const ctx = await newContext(app, 'C', undefined, 'cheap')
     const created = (
       await app.inject({
         method: 'POST',

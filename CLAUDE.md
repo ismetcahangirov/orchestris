@@ -345,7 +345,76 @@ Digər ölçülmüş incəliklər (`claude` 2.1.220):
   tokenlik düşünmə = 4 delta). UI ardıcıl deltaları göstərişdə birləşdirir
   (`lib/mergeDeltas.ts`) — jurnalda isə hamısı ayrıca qalır.
 
-## Amplification Ladder (Faza 2+)
+### 28. Eskalasiya siqnalı cavabın BÜTÜNÜ olmalıdır, içində keçməsi kifayət deyil
+
+Pillə 6 müqaviləsi işçiyə deyir: bacarmırsansa `{"escalate": true, ...}` qaytar.
+`parseEscalation` bu JSON-u yalnız cavabın TAMI (ən çoxu bir kod çərçivəsi
+içində) olanda qəbul edir.
+
+Səbəb ölçüldü, təxmin deyil: `answer.includes('"escalate"')` yazsaydıq, bu
+sistemin öz sənədini, müqaviləsini və ya testlərini izah edən HƏR task
+"bacarmadım" kimi oxunardı — model həmin JSON-u nümunə kimi sitat gətirir.
+Yanlış-müsbət eskalasiya layihənin məqsədinin tam əksidir: hazır nəticə atılır
+və üstündən ən bahalı model işlədilir. `escalate` sahəsi məhz `true` olmalıdır
+(`"true"` və `1` qəbul edilmir).
+
+### 29. Müqavilə istifadəçi mesajının SONUNA gedir
+
+Eskalasiya müqaviləsi sistem promptuna DEYİL, istifadəçi mesajına əlavə olunur.
+Qayda 1-dəki ölçmə: `claude` CLI-nın sistem prompt prefiksini dəyişmək
+Anthropic prompt-cache-ini sındırır və eyni task 5x bahalaşır ($0.0085 →
+$0.0444). Suffiks prefiksi toxunmur.
+
+### 30. Best-of-N yalnız yoxlama əmri OLMAYANDA işə düşür
+
+Determinist yoxlama (`tsc`, testlər) PULSUZ həqiqət mənbəyidir və razılaşmadan
+güclüdür: üç nüsxə eyni SƏHV cavabda da razılaşa bilər, `tsc` isə səhvi görür.
+Pulsuz və güclü siqnal varkən bahalısını (N icra) almaq mənasızdır.
+
+Eyni səbəbdən yoxlama 3 cəhddən sonra sınıbsa Pillə 3-ə DEYİL, birbaşa
+başçıya (7) qalxılır — alət artıq "səhvdir" deyib.
+
+`AGREEMENT_STEPS = [3, 5]` KUMULYATİVDİR: ilk icra onsuz da ödənilib, ona görə
+hər addım cəmi 2 əlavə icradır. Sabit N=5 israfdır — adaptiv strategiya
+naive best-of-N-dən ~4x səmərəlidir.
+
+Razılaşma ölçüsü MƏTN normallaşdırmasıdır, AST deyil (`agreement.ts`). Semantik
+eyni, amma fərqli yazılmış kod "razılaşmır" kimi oxunur — yəni xəta BAHA
+istiqamətə gedir (task yuxarı qalxır), uydurma razılaşma yaranmır. Böyük/kiçik
+hərf qorunur: kodda `Foo` və `foo` fərqli identifikatorlardır.
+
+### 31. Pillə 7 "başçı işlədi" deməkdir — başqa heç nə
+
+Əvvəllər yoxlama əmri olmayan İŞÇİ icrası da `ladder_rung: 7` yazılırdı. Bu,
+layihənin əsas hədəfini ("taskların <20%-i 7-yə çatsın") ölçülməz edirdi:
+metrik işçi icralarını başçı icraları kimi sayardı.
+
+İndi hər işçi icrası 2-dir (yoxlama əmri olsun-olmasın), best-of-N nüsxələri
+3-dür, 7 YALNIZ başçının icrasıdır. `boss-only` profilində işçi rolunu başçı
+oynayır — orada tək icra yenə 7-dir, yoxsa baseline ölçməsi (qayda 25) yalan
+olardı.
+
+### 32. Kaskad monotondur — yuxarı pillə əvvəlkini ATA BİLMƏZ
+
+Səhv qurulmuş kaskad tək modeldən PİS nəticə verə bilər. Ona görə hər
+eskalasiya öz `fallback`-ını daşıyır: başçı təyin olunmayıbsa, büdcə bitibsə,
+profil 7-ni söndürübsə və ya başçı da sınıbsa əvvəlki nəticə saxlanılır.
+Başçının uğursuz icrası DB-də QALIR (xərc gizlədilmir), sadəcə nəticə onun
+olmur.
+
+`Ladder.settle` taskın DB statusunu QAYTARILAN nəticə ilə uyğunlaşdırır.
+Məcburidir: `RunSupervisor` statusu SON icraya görə yazır, nərdivan isə sonda
+başqa icranın nəticəsini qaytara bilər — uyğunlaşdırmasaq `/tasks/:id` uğurlu
+cavabı `failed` kimi göstərərdi.
+
+### 33. Başçının cavabı işçinin keş açarı altında saxlanılmır
+
+Keş açarı model və runner id-sini ehtiva edir (`cache-key.ts`). Başqa modelin
+cavabını ora yazmaq girişi yalançı edərdi — və sonrakı `cheap` profilli icra
+(Pillə 7-ni QƏSDƏN söndürən) səssizcə başçı cavabı alardı. Eyni səbəbdən
+işçinin eskalasiya JSON-u da keşlənmir: imtina cavab deyil.
+
+## Amplification Ladder
 
 Pillələr ucuzdan bahaya:
 
@@ -353,11 +422,30 @@ Pillələr ucuzdan bahaya:
 0. Cache                      hash → hazır nəticə            0 token   ✅
 1. Qayda routing              regex/heuristika               0 token   ✅
 2. Zəif model + ALƏT yoxlaması tsc/eslint/test dövrəsi        0 token  ⭐ ✅
-3. Best-of-N + razılaşma      N adaptiv (1→3→5)                        Faza 2
+3. Best-of-N + razılaşma      N adaptiv (1→3→5)                        ✅
 4. İpucu (Shepherding)        başçıdan 10-30% prefiks                  Faza 2
 5. Plan güclü / icra zəif     boss plan yazır, işçi tikir              Faza 2
-6. Self-escalation            işçi "əmin deyiləm" deyir                Faza 2
+6. Self-escalation            işçi "əmin deyiləm" deyir                ✅
 7. Tam güclü model            son çarə, hədəf: <20%                    ✅
+```
+
+Profil → aktiv pillələr (`exec/ladder.ts` → `PROFILE_RUNGS`, həqiqət mənbəyi;
+UI onu `GET /api/routing/rules` cavabındakı `profileRungs`-dan alır):
+
+| Profil | Pillələr |
+|---|---|
+| `cheap` | 0, 1, 2 |
+| `balanced` (default) | 0, 1, 2, 3, 6, 7 |
+| `quality` | 0, 1, 2, 3, 6, 7 (4 və 5 hələ yoxdur) |
+| `boss-only` | 7 |
+
+Eskalasiya axını (`exec/ladder.ts`):
+
+```
+işçi imtina etdi (Pillə 6)          → başçı    ~40 token müqavilə
+yoxlama 3 cəhddən sonra sındı        → başçı    0 token siqnal
+nüsxələr razılaşmadı (Pillə 3)      → başçı    N×işçi
+başçı əlçatmazdır                    → əvvəlki nəticə saxlanılır
 ```
 
 Pillə 1 axını (`routing/decide.ts`):
@@ -388,12 +476,22 @@ həqiqət mənbəyi yoxdur.
   (öz fixture-ləri ilə)
 - **1C** (bitdi) — Pillə 0–2 amplifikasiya: keş, qayda routing + Auto, alət
   yoxlaması, `savings_ledger` (qənaətin dürüst ölçülməsi)
-- **2** — tam Ladder, paralellik, git worktree izolyasiyası
+- **2** (davam edir) — Pillə 3 (best-of-N + razılaşma), 6 (self-escalation) və
+  7-yə eskalasiya bitdi. Qalır: Pillə 4 (ipucu), 5 (plan/icra bölgüsü), prompt
+  distilləsi (`task_templates`), paralellik və git worktree izolyasiyası
+  (issue #10)
 - **3** — memory (claude-mem adapter arxasında)
 - **4** — task dekompozisiyası, workflow zəncirləri
 
 ## Bilinən boşluqlar
 
+- Pillə 3 və 6 **real modellə** yoxlanılmayıb: `FakeRunner` ilə hər yol
+  örtülüb, amma zəif modelin müqaviləyə NƏ QƏDƏR əməl etdiyi (imtina nisbəti,
+  yanlış-müsbət) ölçülməyib. Real işçi modeli təyin olunandan sonra bir neçə
+  qəsdən çətin task verilib `routing_decisions` + `runs.ladder_rung` üzərindən
+  "taskların neçə faizi 7-yə çatdı" ölçülməlidir (hədəf <20%).
+- Pillə 3 nüsxələri **ardıcıl** qaçır, paralel yox — 3 nüsxə divar saatı üzrə
+  3x uzun çəkir. Paralellik issue #10-dadır (`contexts.max_parallel`).
 - `codex` bu maşında login olunmayıb (`codex login status` → `Not logged in`).
   Ona görə codex parser-inin **uğur yolu** real fixture ilə yoxlanılmayıb —
   yalnız xəta yolu. `codex login` edildikdən sonra

@@ -42,6 +42,15 @@ export interface FakeRunnerConfig {
   id?: string
   /** Fixture yerinə birbaşa hadisə siyahısı */
   events?: readonly RunEvent[]
+  /**
+   * ÇAĞIRIŞ-BAŞINA fərqli cavablar: birinci `run()` birinci siyahını verir,
+   * ikinci ikincini və s. Siyahı tükənəndə SONUNCU təkrarlanır.
+   *
+   * Pillə 3 (best-of-N) üçün lazımdır: sabit cavab verən runner ilə nüsxələr
+   * həmişə 100% razılaşardı və "razılaşmadılar → yuxarı pillə" yolu heç vaxt
+   * test edilə bilməzdi.
+   */
+  eventsPerCall?: readonly (readonly RunEvent[])[]
   detect?: DetectResult
   capabilities?: Partial<Capabilities>
   /** Hər hadisə arasında gecikmə (ms). Default 0 — testlər sürətli olsun. */
@@ -59,6 +68,8 @@ export class FakeRunner implements Runner {
   readonly id: string
   readonly kind: 'cli' | 'api' | 'fake'
   readonly capabilities: Capabilities
+  /** `eventsPerCall` üçün sayğac — neçənci `run()` çağırışıdır. */
+  private calls = 0
 
   constructor(private readonly config: FakeRunnerConfig) {
     this.id = config.id ?? 'fake'
@@ -91,6 +102,12 @@ export class FakeRunner implements Runner {
   }
 
   private materialize(): RunEvent[] {
+    const perCall = this.config.eventsPerCall
+    if (perCall !== undefined && perCall.length > 0) {
+      const index = Math.min(this.calls, perCall.length - 1)
+      this.calls += 1
+      return [...(perCall[index] as readonly RunEvent[])]
+    }
     if (this.config.events) return [...this.config.events]
 
     const { fixture, flavor } = this.config

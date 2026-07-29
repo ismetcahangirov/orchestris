@@ -1,4 +1,4 @@
-import type { RunEvent, Runner } from '@orchestris/shared'
+import { AMPLIFICATION_PROFILES, type RunEvent, type Runner } from '@orchestris/shared'
 import type { Db } from '../db/client.js'
 import {
   appendEvent,
@@ -18,34 +18,82 @@ import { recordRoutingDecision } from '../db/routing-repo.js'
 import { recordSavings } from '../db/savings-repo.js'
 import type { WorkerRouter } from '../routing/decide.js'
 import type { RoutingDecision } from '../routing/router.js'
+import {
+  AGREEMENT_STEPS,
+  measureAgreement,
+  type AgreementSample,
+} from './agreement.js'
 import type { BudgetLimits } from './budget.js'
 import { computeCacheKey } from './cache-key.js'
+import {
+  buildEscalationPrompt,
+  collectAnswerText,
+  ESCALATION_CONTRACT,
+  parseEscalation,
+  type Escalation,
+} from './escalation.js'
 import { computeTaskSavings } from './savings.js'
 import type { RunSupervisor } from './supervisor.js'
 import { buildFeedbackPrompt, runVerifications } from './verify.js'
 
 /** Yoxlama dövrəsinin maksimum cəhd sayı. */
 const MAX_ATTEMPTS = 3
+
 /** Pillə 0 — hazır nəticə keşi. */
 const RUNG_CACHE = 0
-/** Pillə 2 — alət yoxlamasından keçən icra. */
-const RUNG_TOOL_VERIFIED = 2
-/** Yoxlama əmri yoxdursa — birbaşa güclü model. */
-const RUNG_FULL_MODEL = 7
+/** Pillə 1 — qayda routing. Həmişə işləyir; siyahıda sənəd üçün var. */
+const RUNG_ROUTING = 1
+/** Pillə 2 — zəif model (varsa alət yoxlaması dövrəsi ilə). */
+const RUNG_WORKER = 2
+/** Pillə 3 — best-of-N + razılaşma. */
+const RUNG_BEST_OF_N = 3
+/** Pillə 6 — işçinin özünü dayandırması. */
+const RUNG_SELF_ESCALATION = 6
+/** Pillə 7 — tam güclü model. Son çarə. */
+const RUNG_BOSS = 7
+
+export { AMPLIFICATION_PROFILES }
 
 /**
- * Amplifikasiya profilləri — kontekst səviyyəsində seçilir.
+ * Profil → aktiv pillələr.
  *
- * Pillə 3–7 hələ tətbiq olunmayıb (Faza 2), ona görə `cheap`, `balanced` və
- * `quality` hazırda eyni pillələri işlədir. `boss-only` isə FƏRQLİDİR və
- * indidən lazımdır: qənaəti sübut etmək üçün baseline ölçməsi ondan asılıdır.
+ * DİQQƏT — 7 `balanced`/`quality`-də QƏSDƏN var, spesifikasiyadakı cədvəldə
+ * sadalanmasa da: Pillə 3 və 6 "yuxarı qalx" qərarı verir və qalxacaq yer
+ * yoxdursa hər ikisi mənasızdır (işçi "bacarmıram" deyir, biz isə onun
+ * imtinasını cavab kimi qaytarırıq). 7 həmin pillələrin HƏDƏFİDİR, ayrıca
+ * seçilən addım deyil — hədəf taskların <20%-nin ora çatmasıdır.
+ *
+ * `cheap` isə eskalasiyasızdır və bu, davranışı Faza 1C ilə EYNİ saxlayır.
+ *
+ * Pillə 4 (ipucu) və 5 (plan/icra bölgüsü) hələ tətbiq olunmayıb — `quality`
+ * hazırda `balanced` ilə eyni dəstdir. Onları indidən siyahıya salsaq
+ * `activeRungs` yalan danışardı.
  */
-export const AMPLIFICATION_PROFILES = ['cheap', 'balanced', 'quality', 'boss-only'] as const
+const PROFILE_RUNGS: Readonly<Record<string, readonly number[]>> = {
+  cheap: [RUNG_CACHE, RUNG_ROUTING, RUNG_WORKER],
+  balanced: [
+    RUNG_CACHE,
+    RUNG_ROUTING,
+    RUNG_WORKER,
+    RUNG_BEST_OF_N,
+    RUNG_SELF_ESCALATION,
+    RUNG_BOSS,
+  ],
+  quality: [
+    RUNG_CACHE,
+    RUNG_ROUTING,
+    RUNG_WORKER,
+    RUNG_BEST_OF_N,
+    RUNG_SELF_ESCALATION,
+    RUNG_BOSS,
+  ],
+  // Baseline: nə keş, nə yoxlama dövrəsi, nə eskalasiya — yalnız başçının
+  // tək icrası. Qayda 25-dəki ölçmə bundan asılıdır.
+  'boss-only': [RUNG_BOSS],
+}
 
 export function activeRungs(profile: string): ReadonlySet<number> {
-  // Baseline: nə keş, nə yoxlama dövrəsi — yalnız güclü modelin tək icrası.
-  if (profile === 'boss-only') return new Set([RUNG_FULL_MODEL])
-  return new Set([RUNG_CACHE, RUNG_TOOL_VERIFIED])
+  return new Set(PROFILE_RUNGS[profile] ?? PROFILE_RUNGS['balanced'])
 }
 
 export type LadderStatus =
@@ -54,6 +102,19 @@ export type LadderStatus =
   | 'interrupted'
   | 'budget_exceeded'
   | 'verification_failed'
+  /**
+   * İşçi taskı həll edə bilmədiyini bildirdi (Pillə 6) və ya nüsxələr
+   * razılaşmadı (Pillə 3), amma başçıya qalxmaq MÜMKÜN OLMADI — profil 7-ni
+   * söndürüb, başçı təyin olunmayıb, ya da büdcə bitib.
+   *
+   * `failed`-dən ayrıdır, çünki səbəb tamamilə fərqlidir: icra sınmayıb,
+   * nərdivan bitib. UI istifadəçiyə "başçı seç" deməlidir, "yenidən cəhd et"
+   * yox.
+   */
+  | 'escalation_unavailable'
+
+/** Nə üçün yuxarı pilləyə qalxıldı. */
+export type EscalationTrigger = 'self' | 'verification' | 'disagreement'
 
 export interface LadderContext {
   id: string
@@ -77,6 +138,20 @@ export interface LadderInput {
   limits?: BudgetLimits
 }
 
+export interface AgreementSummary {
+  n: number
+  votes: number
+  threshold: number
+  agreed: boolean
+}
+
+export interface EscalationSummary {
+  trigger: EscalationTrigger
+  reason: string
+  /** Başçı həqiqətən işə düşdümü. `false` → `escalation_unavailable`. */
+  reached: boolean
+}
+
 export interface LadderResult {
   runId: string
   status: LadderStatus
@@ -88,6 +163,15 @@ export interface LadderResult {
   attempts: number
   /** Yoxlama əmrləri varsa nəticəsi; yoxdursa `null`. */
   verificationPassed: boolean | null
+  /**
+   * Nəticəni verən icranın pilləsi. "Taskların <20%-i 7-yə çatmalıdır"
+   * hədəfi MƏHZ bununla ölçülür — ona görə ayrıca sahədir.
+   */
+  finalRung: number
+  /** Pillə 3 işə düşübsə nüsxələrin razılaşma ölçüsü. */
+  agreement?: AgreementSummary
+  /** Pillə 6 və ya 3 yuxarı qalxmaq istəyibsə. */
+  escalation?: EscalationSummary
   /** Pillə 1-in qərarı — UI-da "niyə bu model?" sualına cavab verir. */
   decision?: RoutingDecision
   errorClass?: string
@@ -95,11 +179,109 @@ export interface LadderResult {
 }
 
 /**
- * Amplifikasiya nərdivanı — Pillə 0 və Pillə 2.
+ * Cəhdlər arasında QALAN büdcə.
+ *
+ * `RunSupervisor.execute` hər çağırışda TAM YENİ `BudgetGuard` yaradır (öz
+ * limitlərinə görə). Nərdivan isə eyni task üçün onu bir neçə dəfə çağırır:
+ * yoxlama dövrəsi (3-ə qədər), best-of-N (5-ə qədər), başçı (1). Limiti
+ * çağırışlar arasında ÖZÜMÜZ izləməsək, hər icra orijinal limiti təzədən alar
+ * və bir task limitin doqquz mislini xərcləyə bilərdi.
+ *
+ * `Ladder`-in sahəsi DEYİL, hər `run()` üçün yeni yaradılır — eyni instansiya
+ * paralel tasklar arasında paylaşılır.
+ */
+class RemainingBudget {
+  private readonly startedAt = Date.now()
+  private outputTokens = 0
+  private costUsd = 0
+
+  constructor(private readonly base: BudgetLimits | undefined) {}
+
+  /**
+   * Bitmiş icranın xərcini yazır.
+   *
+   * `costUsd` NULL-dursa xərc BİLİNMİR (qayda 4) — cari məbləğə `0` qatılır,
+   * çünki bilinməyəni bundan yaxşı təxmin edə bilmərik. `BudgetGuard` da eyni
+   * səbəbdən `costUsd` `undefined` olanda dollar yoxlamasını tamamilə keçir.
+   */
+  charge(run: { tokensOut: number; costUsd: number | null } | undefined): void {
+    if (run === undefined) return
+    this.outputTokens += run.tokensOut
+    if (run.costUsd !== null) this.costUsd += run.costUsd
+  }
+
+  /** Növbəti icraya ötürüləcək limitlər. Baza limit yoxdursa `undefined`. */
+  remaining(): BudgetLimits | undefined {
+    if (this.base === undefined) return undefined
+    const { maxOutputTokens, maxCostUsd, maxSeconds } = this.base
+    return {
+      ...this.base,
+      ...(maxOutputTokens !== undefined
+        ? { maxOutputTokens: Math.max(0, maxOutputTokens - this.outputTokens) }
+        : {}),
+      ...(maxCostUsd !== undefined
+        ? { maxCostUsd: Math.max(0, maxCostUsd - this.costUsd) }
+        : {}),
+      ...(maxSeconds !== undefined
+        ? { maxSeconds: Math.max(0, maxSeconds - this.elapsedSeconds()) }
+        : {}),
+    }
+  }
+
+  /**
+   * Komponentlərdən biri tükənibsə `true` — növbəti icranı BAŞLATMAQ ÖZÜ pul
+   * yandırmaq olardı (prompt döşəməsi ~21.7k token).
+   */
+  exhausted(): boolean {
+    const left = this.remaining()
+    if (left === undefined) return false
+    return left.maxOutputTokens === 0 || left.maxCostUsd === 0 || left.maxSeconds === 0
+  }
+
+  private elapsedSeconds(): number {
+    return (Date.now() - this.startedAt) / 1000
+  }
+}
+
+/** Bir icranın nərdivan daxilindəki konteksti — metodlar arasında ötürülür. */
+interface Phase {
+  input: LadderInput
+  runner: Runner
+  model: string
+  cwd: string | undefined
+  rungs: ReadonlySet<number>
+  cacheKey: string | null
+  verifyCommands: string[]
+  decision: RoutingDecision
+  budget: RemainingBudget
+  /** İşçi icralarının pilləsi. `boss-only`-də işçi ELƏ başçıdır → 7. */
+  workerRung: number
+}
+
+type WorkerOutcome =
+  | { kind: 'result'; result: LadderResult }
+  | {
+      kind: 'escalate'
+      trigger: EscalationTrigger
+      reason: string
+      /** Pillə 6-dan gəlirsə işçinin qismən nəticəsi. */
+      escalation?: Escalation
+      fromRunId: string
+      /** Başçıya qalxmaq mümkün olmasa qaytarılacaq nəticə (monoton qayda). */
+      fallback: LadderResult
+    }
+
+/**
+ * Amplifikasiya nərdivanı — Pillə 0, 2, 3, 6 və 7.
  *
  * `RunSupervisor` bir icranı idarə edir və bu sinif ona toxunmur. Ladder
  * onun üzərində oturur: keşə baxır, lazım olsa supervisor-u bir neçə dəfə
- * çağırır, hər dəfə determinist yoxlamadan keçirir.
+ * çağırır, hər dəfə determinist yoxlamadan keçirir, işçi imtina edəndə və ya
+ * nüsxələr razılaşmayanda başçıya qalxır.
+ *
+ * MONOTON QAYDA: yuxarı pillə DAHA PİS nəticə verə bilər (kaskad failure).
+ * Ona görə hər eskalasiya öz `fallback`-ını daşıyır — başçı yoxdursa, büdcə
+ * bitibsə və ya başçı da sınıbsa əvvəlki nəticə ATILMIR.
  */
 export class Ladder {
   private readonly db: Db
@@ -156,27 +338,13 @@ export class Ladder {
         cacheKey: null,
         attempts: 0,
         verificationPassed: null,
+        finalRung: RUNG_ROUTING,
         errorClass: 'crashed',
         errorMessage: selected.error,
       }
     }
     const { runner, model, decision } = selected
 
-    // `RunSupervisor.execute` hər çağırışda TAM YENİ BudgetGuard yaradır (öz
-    // limitlərinə görə). Yoxlama dövrəsi eyni task üçün onu bir neçə dəfə
-    // çağırır — limiti cəhdlər arasında ÖZ DAXİLİMİZDƏ izləməsək, hər cəhd
-    // orijinal limiti təzədən alar və MAX_ATTEMPTS dəfə xərclənə bilər.
-    // `RunSupervisor`-a toxunmuruq (plan: "RunSupervisor dəyişmir"); bunun
-    // əvəzinə Ladder xərclənəni özü izləyir və qalanını növbəti cəhdə ötürür.
-    // Bunlar `run()`-a LOKALDIR — sinif sahəsi DEYİL, çünki `Ladder` eyni anda
-    // paralel tasklar arasında paylaşılır.
-    const ladderStartedAt = Date.now()
-    let spentOutputTokens = 0
-    let spentCostUsd = 0
-
-    // `boss-only` baseline profilidir: "hər şey başçı ilə görülsəydi nə
-    // olardı?" sualına cavab verir. Keş və yoxlama dövrəsi amplifikasiyadır —
-    // onları baseline-a qatsaq müqayisə mənasız olar, ona görə söndürülür.
     const rungs = activeRungs(profile)
 
     const cacheKey = rungs.has(RUNG_CACHE)
@@ -195,42 +363,69 @@ export class Ladder {
       if (hit !== null) return { ...hit, decision }
     }
 
-    // ── Pillə 2 — zəif model + alət yoxlaması ──────────────────────────
-    const verifyCommands = rungs.has(RUNG_TOOL_VERIFIED)
-      ? this.parseVerifyCommands(input.context.verifyCommandsJson)
-      : []
-    const hasVerification = verifyCommands.length > 0
-    const rung = hasVerification ? RUNG_TOOL_VERIFIED : RUNG_FULL_MODEL
+    const phase: Phase = {
+      input,
+      runner,
+      model,
+      cwd,
+      rungs,
+      cacheKey,
+      decision,
+      verifyCommands: rungs.has(RUNG_WORKER)
+        ? this.parseVerifyCommands(input.context.verifyCommandsJson)
+        : [],
+      budget: new RemainingBudget(input.limits),
+      // `boss-only` profilində işçi rolunu başçı oynayır — icranı 2-ci pillə
+      // kimi qeyd etsək baseline ölçməsi (qayda 25) yalan olardı.
+      workerRung: rungs.has(RUNG_WORKER) ? RUNG_WORKER : RUNG_BOSS,
+    }
 
-    let prompt = input.task.prompt
+    const outcome = await this.workerPhase(phase)
+    if (outcome.kind === 'result') return outcome.result
+    return this.escalateToBoss(phase, outcome)
+  }
+
+  /**
+   * Pillə 2 (+6, +3) — zəif modelin işi.
+   *
+   * Sıra QƏSDƏN belədir:
+   *  1. eskalasiya siqnalı (Pillə 6) — bir neçə onluq token, ƏN UCUZ siqnal
+   *  2. determinist yoxlama (Pillə 2) — 0 token, ƏN GÜCLÜ siqnal
+   *  3. best-of-N (Pillə 3) — N icra, ƏN BAHA siqnal
+   *
+   * Best-of-N yalnız yoxlama əmri OLMAYANDA işə düşür: `tsc` üç eyni səhv
+   * cavabı da tutur, razılaşma isə tutmur — pulsuz və güclü siqnal varkən
+   * bahalısını almaq mənasızdır.
+   */
+  private async workerPhase(phase: Phase): Promise<WorkerOutcome> {
+    const { input } = phase
+    const useContract = phase.rungs.has(RUNG_SELF_ESCALATION)
+    const hasVerification = phase.verifyCommands.length > 0
+
+    // Müqavilə istifadəçi mesajının SONUNA əlavə olunur — sistem promptu
+    // toxunulmaz qalır (CLAUDE.md qayda 1: prefiks dəyişməsi keşi sındırır).
+    const contractSuffix = useContract ? `\n\n${ESCALATION_CONTRACT}` : ''
+    let prompt = `${input.task.prompt}${contractSuffix}`
     let attempts = 0
-    // İlk cəhd DƏYİŞMƏMİŞ `input.limits`-lə gedir — hələ heç nə xərclənməyib.
-    // Yoxlama sınıb yenidən cəhd edilməli olanda bu, aşağıda azaldılmış
-    // büdcə ilə əvəz olunur.
-    let currentLimits = input.limits
 
     while (attempts < MAX_ATTEMPTS) {
       attempts += 1
 
-      const exec = await this.supervisor.execute({
-        taskId: input.task.id,
-        runner,
-        model,
+      const exec = await this.runOnce(phase, {
         prompt,
         attempt: attempts,
-        ladderRung: rung,
-        ...(cwd !== undefined ? { cwd } : {}),
-        ...(currentLimits !== undefined ? { limits: currentLimits } : {}),
+        rung: phase.workerRung,
       })
 
       const base: LadderResult = {
         runId: exec.runId,
         status: exec.status,
         cached: false,
-        cacheKey,
+        cacheKey: phase.cacheKey,
         attempts,
         verificationPassed: null,
-        decision,
+        finalRung: phase.workerRung,
+        decision: phase.decision,
         ...(exec.errorClass !== undefined ? { errorClass: exec.errorClass } : {}),
         ...(exec.errorMessage !== undefined ? { errorMessage: exec.errorMessage } : {}),
       }
@@ -238,104 +433,339 @@ export class Ladder {
       // İcranın özü uğursuz olubsa yoxlamağa nə isə yoxdur. Təkrar cəhd
       // yalnız təkrarlana bilən xəta siniflərində mənalıdır — `auth` və
       // `budget_exceeded` halında yenidən cəhd etmək pul yandırmaqdır.
-      if (exec.status !== 'succeeded') return base
+      if (exec.status !== 'succeeded') return { kind: 'result', result: base }
 
-      // Bu cəhdin nə xərclədiyini toplayırıq ki, yenidən cəhd lazım olsa
-      // növbəti `execute()` çağırışına TAM deyil, QALAN büdcə ötürülsün.
-      const finishedRun = getRun(this.db, exec.runId)
-      if (finishedRun !== undefined) {
-        spentOutputTokens += finishedRun.tokensOut
-        // `costUsd` NULL-dursa xərc BİLİNMİR (bax CLAUDE.md qayda #4) — belə
-        // cəhd cari məbləğə `0` qatır, çünki bilinməyəni bundan yaxşı təxmin
-        // edə bilmərik. `BudgetGuard.check` da eyni səbəbdən `costUsd`
-        // `undefined` olanda xərc yoxlamasını tamamilə keçir.
-        if (finishedRun.costUsd !== null) spentCostUsd += finishedRun.costUsd
+      // ── Pillə 6 — işçi özü dayandı ────────────────────────────────────
+      if (useContract) {
+        const escalation = parseEscalation(this.answerOf(exec.runId))
+        if (escalation !== null) {
+          return {
+            kind: 'escalate',
+            trigger: 'self',
+            reason: escalation.reason,
+            escalation,
+            fromRunId: exec.runId,
+            // İşçi AÇIQ ŞƏKİLDƏ "həll etmədim" dedi. Onun imtinasını cavab
+            // kimi `succeeded` qaytarmaq UI-da yalan olardı.
+            fallback: { ...base, status: 'escalation_unavailable' },
+          }
+        }
       }
 
       if (!hasVerification) {
-        this.storeInCache(runner, model, cacheKey, exec.runId)
-        return base
+        // ── Pillə 3 — best-of-N ─────────────────────────────────────────
+        // Nüsxələr EYNİ promptu alır (müqavilə daxil): fərqli promptdan gələn
+        // cavabları müqayisə etmək razılaşma ölçüsünü mənasız edərdi.
+        if (phase.rungs.has(RUNG_BEST_OF_N)) return this.bestOfN(phase, base, prompt)
+        this.storeInCache(phase, exec.runId)
+        return { kind: 'result', result: base }
       }
 
-      const verification = await runVerifications(verifyCommands, { cwd: cwd ?? process.cwd() })
-      for (const r of verification.results) {
-        appendVerification(this.db, exec.runId, {
-          command: r.command,
-          exitCode: r.exitCode,
-          passed: r.passed,
-          outputExcerpt: r.output,
-          durationMs: r.durationMs,
-        })
-      }
-
+      const verification = await this.verify(phase, exec.runId)
       if (verification.passed) {
-        this.storeInCache(runner, model, cacheKey, exec.runId)
-        return { ...base, verificationPassed: true }
+        this.storeInCache(phase, exec.runId)
+        return {
+          kind: 'result',
+          result: { ...base, verificationPassed: true },
+        }
       }
 
-      // Sınıb. Son cəhddirsə burada dayanırıq — task həqiqətən bitib.
+      const failedResult: LadderResult = {
+        ...base,
+        status: 'verification_failed',
+        verificationPassed: false,
+      }
+
+      // Cəhdlər bitdi. Determinist alət "səhvdir" dedi — burada best-of-N
+      // mənasızdır (üç səhv nüsxə də yoxlamadan keçməz), tək qalan yol
+      // başçıdır.
       if (attempts === MAX_ATTEMPTS) {
         setTaskStatus(this.db, input.task.id, 'failed')
-        return { ...base, status: 'verification_failed', verificationPassed: false }
+        return {
+          kind: 'escalate',
+          trigger: 'verification',
+          reason: `${MAX_ATTEMPTS} cəhddən sonra avtomatik yoxlama keçmədi`,
+          fromRunId: exec.runId,
+          fallback: failedResult,
+        }
       }
 
-      // Hələ cəhd qalıb — icra özü uğurlu olsa da task HƏLƏ BİTMƏYİB. Supervisor
-      // exec.status === 'succeeded' görüb task-ı `succeeded` işarələyib, amma
-      // yoxlama sınıb və yenidən cəhd ediləcək — statusu geri `running`-ə
-      // qaytarırıq ki UI "bitdi" yalanı danışmasın (bax CLAUDE.md qayda #5,
-      // eyni prinsip: `billed` sahəsi kimi, status da real vəziyyəti əks
-      // etdirməlidir).
+      // Hələ cəhd qalıb — icra özü uğurlu olsa da task HƏLƏ BİTMƏYİB.
+      // Supervisor `succeeded` görüb taskı elə işarələyib; statusu geri
+      // `running`-ə qaytarırıq ki UI "bitdi" yalanı danışmasın.
       setTaskStatus(this.db, input.task.id, 'running')
 
-      // ── Növbəti cəhd üçün QALAN büdcəni hesabla ─────────────────────
-      // `input.limits` heç vaxt təyin olunmayıbsa heç bir məhdudiyyət
-      // gətirmirik — limitsiz tasklar üçün davranış tamamilə dəyişməz qalır.
-      if (input.limits !== undefined) {
-        const remainingMaxOutputTokens =
-          input.limits.maxOutputTokens !== undefined
-            ? Math.max(0, input.limits.maxOutputTokens - spentOutputTokens)
-            : undefined
-        const remainingMaxCostUsd =
-          input.limits.maxCostUsd !== undefined
-            ? Math.max(0, input.limits.maxCostUsd - spentCostUsd)
-            : undefined
-        const remainingMaxSeconds =
-          input.limits.maxSeconds !== undefined
-            ? Math.max(0, input.limits.maxSeconds - (Date.now() - ladderStartedAt) / 1000)
-            : undefined
-
-        if (
-          remainingMaxOutputTokens === 0 ||
-          remainingMaxCostUsd === 0 ||
-          remainingMaxSeconds === 0
-        ) {
-          // Qalan büdcə sıfırdır — növbəti cəhdi başlatmaq özü pul yandırmaq
-          // olardı. Dövrəni burada dayandırırıq, `execute()`-i BİR DƏFƏ də
-          // çağırmadan.
-          setTaskStatus(this.db, input.task.id, 'failed')
-          return { ...base, status: 'budget_exceeded', verificationPassed: false }
-        }
-
-        currentLimits = {
-          ...input.limits,
-          ...(remainingMaxOutputTokens !== undefined
-            ? { maxOutputTokens: remainingMaxOutputTokens }
-            : {}),
-          ...(remainingMaxCostUsd !== undefined ? { maxCostUsd: remainingMaxCostUsd } : {}),
-          ...(remainingMaxSeconds !== undefined ? { maxSeconds: remainingMaxSeconds } : {}),
+      if (phase.budget.exhausted()) {
+        setTaskStatus(this.db, input.task.id, 'failed')
+        return {
+          kind: 'result',
+          result: { ...failedResult, status: 'budget_exceeded' },
         }
       }
 
       // Xəta mətnini modelə geri ötürüb yenidən cəhd et. Yoxlama SIFIR token
       // xərcləyir; yalnız yeni icra xərcləyir.
-      prompt = `${input.task.prompt}\n\n${buildFeedbackPrompt(verification.results)}`
+      prompt = `${input.task.prompt}\n\n${buildFeedbackPrompt(
+        verification.results,
+      )}${contractSuffix}`
     }
 
-    // Bura yalnız MAX_ATTEMPTS < 1 olsa çatıla bilər — bu proqramçı xətasıdır,
-    // konfiqurasiya xətası deyil. Hər cəhd öz daxilində return edir, ona görə
-    // `attempts === MAX_ATTEMPTS` budağı MAX_ATTEMPTS >= 1 olduqca həmişə
-    // işə düşür və bura çatılmır.
+    // Bura yalnız MAX_ATTEMPTS < 1 olsa çatıla bilər — bu proqramçı xətasıdır.
     throw new Error('Ladder: MAX_ATTEMPTS ən azı 1 olmalıdır')
+  }
+
+  /**
+   * Pillə 3 — nüsxələri artırıb razılaşma axtarır.
+   *
+   * İlk nüsxə ARTIQ ödənilib (`first`), ona görə `AGREEMENT_STEPS` kumulyativ
+   * cəmi göstərir: 3 → 2 əlavə icra, 5 → yenə 2. Hər addımdan sonra dayanmaq
+   * imkanı var — bu, sabit N=5-dən ~4x səmərəlidir.
+   */
+  private async bestOfN(
+    phase: Phase,
+    first: LadderResult,
+    prompt: string,
+  ): Promise<WorkerOutcome> {
+    const samples: AgreementSample[] = [
+      { runId: first.runId, answer: this.answerOf(first.runId) },
+    ]
+    let outcome = measureAgreement(samples)
+
+    for (const target of AGREEMENT_STEPS) {
+      while (samples.length < target) {
+        // Büdcə bitibsə ƏLDƏ OLANLA qərar veririk: yeni icra başlatmaq sərt
+        // limitin mənasını pozardı.
+        if (phase.budget.exhausted()) break
+
+        const copy = await this.runOnce(phase, {
+          prompt,
+          // `attempt` burada "neçənci NÜSXƏ" deməkdir — yoxlama dövrəsindəki
+          // təkrar cəhd deyil. Pillə nömrəsi (3) ikisini ayırır.
+          attempt: samples.length + 1,
+          rung: RUNG_BEST_OF_N,
+        })
+        // Sınmış nüsxə səs vermir: onu "fərqli cavab" saysaq razılaşma
+        // süni şəkildə pozulub task boş yerə başçıya qalxardı.
+        if (copy.status !== 'succeeded') break
+
+        samples.push({ runId: copy.runId, answer: this.answerOf(copy.runId) })
+      }
+
+      outcome = measureAgreement(samples)
+      if (outcome.agreed) break
+      // Nüsxə əlavə edə bilmədiksə (büdcə/xəta) növbəti addım da edə bilməz.
+      if (samples.length < target) break
+    }
+
+    const agreement: AgreementSummary = {
+      n: outcome.n,
+      votes: outcome.votes,
+      threshold: outcome.threshold,
+      agreed: outcome.agreed,
+    }
+
+    // Tək nüsxə qalıbsa razılaşma ölçüsü mənasızdır — bu, sadəcə Pillə 2-nin
+    // nəticəsidir və onu "razılaşdı" kimi göstərmək yalan olardı.
+    if (outcome.agreed && samples.length > 1) {
+      this.storeInCache(phase, outcome.winnerRunId)
+      return {
+        kind: 'result',
+        result: this.settle(phase, {
+          ...first,
+          runId: outcome.winnerRunId,
+          finalRung: RUNG_BEST_OF_N,
+          agreement,
+        }),
+      }
+    }
+
+    if (samples.length === 1) {
+      // Nüsxə çoxalda bilmədik (büdcə və ya sınmış icra). Əlimizdə Pillə 2-nin
+      // nəticəsi var və o, uğurludur — onu ATMIRIQ.
+      this.storeInCache(phase, first.runId)
+      return { kind: 'result', result: this.settle(phase, first) }
+    }
+
+    return {
+      kind: 'escalate',
+      trigger: 'disagreement',
+      reason: `${outcome.n} nüsxədən yalnız ${outcome.votes}-i razılaşdı (lazım: ${outcome.threshold})`,
+      fromRunId: outcome.winnerRunId,
+      // Razılaşma yoxdur, amma cavab VAR. Başçı əlçatmazsa ən çox səs toplayan
+      // nüsxəni qaytarırıq — "cavab yoxdur" demək istifadəçi üçün daha pisdir.
+      fallback: {
+        ...first,
+        runId: outcome.winnerRunId,
+        finalRung: RUNG_BEST_OF_N,
+        agreement,
+      },
+    }
+  }
+
+  /**
+   * Pillə 7 — son çarə.
+   *
+   * Hər çıxış yolu `outcome.fallback`-a qayıdır: başçı yoxdursa, büdcə
+   * bitibsə və ya başçı da sınıbsa əvvəlki nəticə saxlanılır (monoton qayda).
+   * Kaskadın tək modeldən PİS nəticə verməsi məhz bu yolla qapanır.
+   */
+  private async escalateToBoss(
+    phase: Phase,
+    outcome: Extract<WorkerOutcome, { kind: 'escalate' }>,
+  ): Promise<LadderResult> {
+    const summary = (reached: boolean): EscalationSummary => ({
+      trigger: outcome.trigger,
+      reason: outcome.reason,
+      reached,
+    })
+    const giveUp = (why: string): LadderResult => {
+      const fallback = this.settle(phase, {
+        ...outcome.fallback,
+        escalation: summary(false),
+      })
+      // `errorMessage` YALNIZ uğursuz nəticəyə yazılır. Razılaşmama halında
+      // əlimizdə işləyən cavab var (ən çox səs toplayan nüsxə) — ona xəta
+      // mətni bağlasaq UI uğurlu nəticəni sınmış kimi göstərərdi.
+      if (fallback.status === 'succeeded') return fallback
+      return {
+        ...fallback,
+        errorMessage: `${outcome.reason} — başçıya qalxmaq mümkün olmadı: ${why}`,
+      }
+    }
+
+    if (!phase.rungs.has(RUNG_BOSS)) {
+      return giveUp('profil Pillə 7-ni söndürüb')
+    }
+    if (this.router === undefined) {
+      return giveUp('əl ilə seçimdə başçı təyin edilə bilmir')
+    }
+    if (phase.budget.exhausted()) {
+      return giveUp('büdcə bitdi')
+    }
+
+    const boss = this.router.resolveBoss(`eskalasiya (${outcome.trigger}): ${outcome.reason}`)
+    if (!boss.ok) return giveUp(boss.error)
+
+    // Eskalasiya qərarı da `routing_decisions`-a yazılır: istifadəçi "niyə
+    // başçı işə düşdü?" sualının cavabını UI-da görməlidir. Qərarın öz xərci
+    // sıfırdır (0 token) və qənaət hesabını şişirtmir.
+    recordRoutingDecision(this.db, phase.input.task.id, boss.decision)
+
+    const prompt =
+      outcome.escalation !== undefined
+        ? buildEscalationPrompt(phase.input.task.prompt, outcome.escalation)
+        : phase.input.task.prompt
+
+    const exec = await this.supervisor.execute({
+      taskId: phase.input.task.id,
+      runner: boss.runner,
+      model: boss.decision.modelId,
+      prompt,
+      attempt: 1,
+      ladderRung: RUNG_BOSS,
+      escalatedFromRunId: outcome.fromRunId,
+      ...(phase.cwd !== undefined ? { cwd: phase.cwd } : {}),
+      ...(this.limitsFor(phase) ?? {}),
+    })
+    phase.budget.charge(getRun(this.db, exec.runId))
+
+    const base: LadderResult = {
+      ...outcome.fallback,
+      runId: exec.runId,
+      status: exec.status,
+      finalRung: RUNG_BOSS,
+      verificationPassed: null,
+      escalation: summary(true),
+      ...(exec.errorClass !== undefined ? { errorClass: exec.errorClass } : {}),
+      ...(exec.errorMessage !== undefined ? { errorMessage: exec.errorMessage } : {}),
+    }
+
+    // Başçı da sındı — MONOTON qayda: işçinin nəticəsi daha yaxşıdır.
+    // Başçının icrası DB-də qalır (xərc gizlədilmir), amma nəticə onun deyil.
+    if (exec.status !== 'succeeded') {
+      return this.settle(phase, { ...outcome.fallback, escalation: summary(true) })
+    }
+
+    if (phase.verifyCommands.length === 0) {
+      // Başçının cavabı İŞÇİNİN keş açarı altında saxlanılmır: açar model və
+      // runner id-sini ehtiva edir (`cache-key.ts`), ona görə orada başqa
+      // modelin cavabını gizlətmək girişi yalançı edərdi — və sonrakı `cheap`
+      // profilli icra (Pillə 7-ni QƏSDƏN söndürən) səssizcə başçı cavabı alardı.
+      return base
+    }
+
+    const verification = await this.verify(phase, exec.runId)
+    if (verification.passed) return { ...base, verificationPassed: true }
+
+    setTaskStatus(this.db, phase.input.task.id, 'failed')
+    return { ...base, status: 'verification_failed', verificationPassed: false }
+  }
+
+  /**
+   * Taskın DB statusunu QAYTARILAN nəticə ilə uyğunlaşdırır.
+   *
+   * MƏCBURİDİR, çünki `RunSupervisor` hər icradan sonra taskın statusunu
+   * SON İCRAYA görə yazır — nərdivan isə sonda başqa icranın nəticəsini
+   * qaytara bilər (monoton qayda: başçı sındı → işçinin cavabı qalib;
+   * best-of-N-də sonuncu nüsxə sındı → əvvəlki nüsxə qalib). Uyğunlaşdırmasaq
+   * `/tasks/:id` uğurlu cavabı "failed" kimi göstərərdi.
+   */
+  private settle(phase: Phase, result: LadderResult): LadderResult {
+    setTaskStatus(
+      this.db,
+      phase.input.task.id,
+      result.status === 'succeeded' ? 'succeeded' : 'failed',
+    )
+    return result
+  }
+
+  /** Bir icra + büdcə uçotu. */
+  private async runOnce(
+    phase: Phase,
+    step: { prompt: string; attempt: number; rung: number },
+  ): Promise<{ runId: string; status: LadderStatus; errorClass?: string; errorMessage?: string }> {
+    const exec = await this.supervisor.execute({
+      taskId: phase.input.task.id,
+      runner: phase.runner,
+      model: phase.model,
+      prompt: step.prompt,
+      attempt: step.attempt,
+      ladderRung: step.rung,
+      ...(phase.cwd !== undefined ? { cwd: phase.cwd } : {}),
+      ...(this.limitsFor(phase) ?? {}),
+    })
+    phase.budget.charge(getRun(this.db, exec.runId))
+    return exec
+  }
+
+  /** `{ limits }` və ya heç nə — limitsiz tasklarda davranış dəyişməz qalır. */
+  private limitsFor(phase: Phase): { limits: BudgetLimits } | undefined {
+    const limits = phase.budget.remaining()
+    return limits === undefined ? undefined : { limits }
+  }
+
+  /** İcranın mətn cavabı — Pillə 6 və 3 bunun üzərində işləyir. */
+  private answerOf(runId: string): string {
+    return collectAnswerText(listEvents(this.db, runId).map((s) => s.event))
+  }
+
+  private async verify(
+    phase: Phase,
+    runId: string,
+  ): Promise<{ passed: boolean; results: Awaited<ReturnType<typeof runVerifications>>['results'] }> {
+    const verification = await runVerifications(phase.verifyCommands, {
+      cwd: phase.cwd ?? process.cwd(),
+    })
+    for (const r of verification.results) {
+      appendVerification(this.db, runId, {
+        command: r.command,
+        exitCode: r.exitCode,
+        passed: r.passed,
+        outputExcerpt: r.output,
+        durationMs: r.durationMs,
+      })
+    }
+    return verification
   }
 
   private parseVerifyCommands(json: string): string[] {
@@ -366,7 +796,7 @@ export class Ladder {
       taskId: input.task.id,
       runnerId: runner.id,
       modelId: model,
-      ladderRung: 0,
+      ladderRung: RUNG_CACHE,
       cachedHit: true,
       subscriptionBilled: runner.capabilities.subscriptionBilled,
     })
@@ -382,19 +812,20 @@ export class Ladder {
       cacheKey,
       attempts: 0,
       verificationPassed: null,
+      finalRung: RUNG_CACHE,
     }
   }
 
-  /** Yalnız uğurlu VƏ yoxlamadan keçmiş nəticə keşlənir. */
-  private storeInCache(
-    runner: Runner,
-    model: string,
-    cacheKey: string | null,
-    runId: string,
-  ): void {
-    if (cacheKey === null) return
+  /** Yalnız uğurlu VƏ (varsa) yoxlamadan keçmiş İŞÇİ nəticəsi keşlənir. */
+  private storeInCache(phase: Phase, runId: string): void {
+    if (phase.cacheKey === null) return
     const events: RunEvent[] = listEvents(this.db, runId).map((s) => s.event)
-    putCacheEntry(this.db, { hash: cacheKey, modelId: model, runnerId: runner.id, events })
+    putCacheEntry(this.db, {
+      hash: phase.cacheKey,
+      modelId: phase.model,
+      runnerId: phase.runner.id,
+      events,
+    })
   }
 
   /**

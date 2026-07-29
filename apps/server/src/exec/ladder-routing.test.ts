@@ -209,16 +209,22 @@ describe('Ladder — amplifikasiya profilləri', () => {
     expect(result.verificationPassed).toBeNull()
   })
 
-  it('balanslı profildə keş və yoxlama işləyir', async () => {
+  it('balanslı profildə keş işləyir', async () => {
     const { ladder, ctx, api, newTask } = setup()
     const spy = vi.spyOn(api, 'run')
 
     const prompt = 'Bu cümləni tərcümə et: salam'
     await ladder.run({ task: newTask(prompt), context: ctx })
+    // Yoxlama əmri olmayan taskda `balanced` Pillə 3-ü (best-of-N) işə salır:
+    // birinci task 3 nüsxə qaçırır. İKİNCİSİ isə keşdən gəlir — nüsxələr
+    // razılaşdığı üçün qalib cavab Pillə 0-a yazılıb.
+    const firstCalls = spy.mock.calls.length
+    expect(firstCalls).toBe(3)
+
     const second = await ladder.run({ task: newTask(prompt), context: ctx })
 
     expect(second.cached).toBe(true)
-    expect(spy).toHaveBeenCalledTimes(1)
+    expect(spy).toHaveBeenCalledTimes(firstCalls)
   })
 })
 
