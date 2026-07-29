@@ -9,6 +9,9 @@ const RUNG_LABEL: Record<number, string> = {
   // düşür — modelin adı ikisini onsuz da ayırır. Başçının ipucusunu "Pillə 7"
   // kimi göstərsək, istifadəçi tam başçı icrasının xərcini gözləyərdi.
   4: 'Pillə 4 — ipucu (shepherding)',
+  // Eyni səbəb: nişan həm başçının plan icrasına, həm işçinin planlı icrasına
+  // düşür.
+  5: 'Pillə 5 — plan (icra işçidə)',
   6: 'Pillə 6 — self-escalation',
   7: 'Pillə 7 — başçı',
 }

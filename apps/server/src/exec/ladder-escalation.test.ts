@@ -59,6 +59,19 @@ function failsUntilFourthCall(): string {
 /** Mətn taskı — routing onu API işçisinə yönləndirir və keş açarı hesablana bilir. */
 const TEXT_TASK = 'Bu cümləni tərcümə et: salam'
 
+/**
+ * ÇOXADDIMLI mətn taskı — `detectMultiStep` onu tutur, ona görə Pillə 5 seçilir.
+ *
+ * Fayl yolu QƏSDƏN yoxdur: routing onu API işçisinə yönləndirməlidir, yoxsa
+ * test CLI runner-i tələb edərdi.
+ */
+const MULTI_STEP_TASK = [
+  'Bu mətni hazırla:',
+  '1. cümlələri tərcümə et',
+  '2. terminləri lüğətlə yoxla',
+  '3. yekunu bir abzasda ver',
+].join('\n')
+
 function answer(text: string): RunEvent[] {
   return [
     { t: 'text', delta: text },
@@ -697,6 +710,169 @@ describe('Ladder — Pillə 4 ipucu (shepherding)', () => {
     expect(result.hint).toBeUndefined()
     expect(result.status).toBe('escalation_unavailable')
     expect(listRunsForTask(db, task.id)).toHaveLength(1)
+  })
+})
+
+describe('Ladder — Pillə 5 plan güclü / icra zəif', () => {
+  it('çoxaddımlı taskda ipucu YERİNƏ plan istənir', async () => {
+    const { db, ladder, ctx, newTask } = setup({
+      profile: 'quality',
+      worker: [ESCALATE, answer('PLANI İCRA ETDİM')],
+    })
+    const task = newTask(MULTI_STEP_TASK)
+
+    const result = await ladder.run({ task, context: ctx })
+
+    expect(result.status).toBe('succeeded')
+    expect(result.finalRung).toBe(5)
+    expect(result.plan).toMatchObject({ trigger: 'self', accepted: true })
+    // Pillə 4 və 5 EYNİ yerdə dayanır — ikisi birdən işə düşmür.
+    expect(result.hint).toBeUndefined()
+    // İşçinin imtinası, başçının planı, işçinin planlı cəhdi — başçının TAM
+    // icrası (7) YOXDUR.
+    expect(listRunsForTask(db, task.id).map((r) => r.ladderRung)).toEqual([2, 5, 5])
+    expect(getTask(db, task.id)?.status).toBe('succeeded')
+  })
+
+  it('təkaddımlı taskda plan yox, ipucu seçilir', async () => {
+    const { db, ladder, ctx, newTask } = setup({
+      profile: 'quality',
+      worker: [ESCALATE, answer('İPUCU İLƏ HƏLL')],
+    })
+    const task = newTask(TEXT_TASK)
+
+    const result = await ladder.run({ task, context: ctx })
+
+    expect(result.plan).toBeUndefined()
+    expect(result.hint).toMatchObject({ accepted: true })
+    expect(listRunsForTask(db, task.id).map((r) => r.ladderRung)).toEqual([2, 4, 4])
+  })
+
+  it('başçıdan addım bölgüsü istənir, icra yox', async () => {
+    const { ladder, ctx, boss, newTask } = setup({
+      profile: 'quality',
+      worker: [ESCALATE, answer('HƏLL')],
+    })
+    const spy = vi.spyOn(boss, 'run')
+
+    await ladder.run({ task: newTask(MULTI_STEP_TASK), context: ctx })
+
+    const prompt = spy.mock.calls[0]?.[0].prompt ?? ''
+    expect(prompt).toContain('TAM HƏLL İSTƏNMİR')
+    expect(prompt).toContain('GÖVDƏLƏRİ BOŞ saxla')
+    expect(prompt).toContain('kontekst çatmır')
+    expect(prompt).toContain(MULTI_STEP_TASK)
+  })
+
+  it('başçının planı işçinin növbəti promptuna qoyulur', async () => {
+    const { ladder, ctx, worker, newTask } = setup({
+      profile: 'quality',
+      worker: [ESCALATE, answer('HƏLL')],
+    })
+    const spy = vi.spyOn(worker, 'run')
+
+    await ladder.run({ task: newTask(MULTI_STEP_TASK), context: ctx })
+
+    const prompt = spy.mock.calls[1]?.[0].prompt ?? ''
+    expect(prompt).toContain('BAŞÇI CAVABI')
+    expect(prompt).toContain('PLAN')
+    expect(prompt).toContain(MULTI_STEP_TASK)
+  })
+
+  it('planlı işçi yenə imtina edərsə Pillə 7 işə düşür', async () => {
+    const { db, ladder, ctx, newTask } = setup({
+      profile: 'quality',
+      worker: [ESCALATE],
+    })
+    const task = newTask(MULTI_STEP_TASK)
+
+    const result = await ladder.run({ task, context: ctx })
+
+    expect(result.finalRung).toBe(7)
+    expect(result.status).toBe('succeeded')
+    // Plan boşa getdi, amma ödənildi — nəticədə GİZLƏDİLMİR.
+    expect(result.plan).toMatchObject({ accepted: false })
+    expect(listRunsForTask(db, task.id).map((r) => r.ladderRung)).toEqual([2, 5, 5, 7])
+  })
+
+  it('`balanced` profilində plan YOXDUR — birbaşa başçıya qalxılır', async () => {
+    const { db, ladder, ctx, newTask } = setup({ worker: [ESCALATE] })
+    const task = newTask(MULTI_STEP_TASK)
+
+    const result = await ladder.run({ task, context: ctx })
+
+    expect(result.plan).toBeUndefined()
+    expect(result.hint).toBeUndefined()
+    expect(listRunsForTask(db, task.id).map((r) => r.ladderRung)).toEqual([2, 7])
+  })
+
+  it('razılaşmama halında plan istənmir — nüsxələr onsuz da ödənilib', async () => {
+    const { db, ladder, ctx, newTask } = setup({
+      profile: 'quality',
+      worker: [answer('A'), answer('B'), answer('C'), answer('D'), answer('E')],
+    })
+    const task = newTask(MULTI_STEP_TASK)
+
+    const result = await ladder.run({ task, context: ctx })
+
+    expect(result.plan).toBeUndefined()
+    expect(result.finalRung).toBe(7)
+    expect(listRunsForTask(db, task.id).map((r) => r.ladderRung)).toEqual([2, 3, 3, 3, 3, 7])
+  })
+
+  it('planlı cavab KEŞƏ YAZILMIR — başçının köməyi işçinin açarı altında gizlənməməlidir', async () => {
+    const { db, ladder, ctx, newTask } = setup({
+      profile: 'quality',
+      worker: [ESCALATE, answer('PLANLA HƏLL')],
+    })
+
+    const result = await ladder.run({ task: newTask(MULTI_STEP_TASK), context: ctx })
+
+    expect(result.cacheKey).not.toBeNull()
+    expect(getCacheEntry(db, result.cacheKey as string)).toBeUndefined()
+  })
+
+  it('yoxlama sınıqlarından sonra planlı cəhd keçirsə nəticə onundur', async () => {
+    const { db, ladder, ctx, newTask } = setup({
+      profile: 'quality',
+      verifyCommands: [failsUntilFourthCall()],
+    })
+    const task = newTask(MULTI_STEP_TASK)
+
+    const result = await ladder.run({ task, context: ctx })
+
+    expect(result.status).toBe('succeeded')
+    expect(result.verificationPassed).toBe(true)
+    expect(result.finalRung).toBe(5)
+    expect(result.plan).toMatchObject({ trigger: 'verification', accepted: true })
+    expect(listRunsForTask(db, task.id).map((r) => r.ladderRung)).toEqual([2, 2, 2, 5, 5])
+  })
+
+  it('başçı təyin olunmayıbsa plan da istənmir', async () => {
+    const { db, ladder, ctx, newTask } = setup({
+      profile: 'quality',
+      worker: [ESCALATE],
+      withBoss: false,
+    })
+    const task = newTask(MULTI_STEP_TASK)
+
+    const result = await ladder.run({ task, context: ctx })
+
+    expect(result.status).toBe('escalation_unavailable')
+    expect(result.plan).toBeUndefined()
+    expect(listRunsForTask(db, task.id)).toHaveLength(1)
+  })
+
+  it('planın uzunluğu nəticədə qeyd olunur — pillənin iqtisadiyyatı bununla ölçülür', async () => {
+    const { ladder, ctx, newTask } = setup({
+      profile: 'quality',
+      worker: [ESCALATE, answer('HƏLL')],
+      boss: answer('1. birinci addım\n2. ikinci addım'),
+    })
+
+    const result = await ladder.run({ task: newTask(MULTI_STEP_TASK), context: ctx })
+
+    expect(result.plan?.planChars).toBe('1. birinci addım\n2. ikinci addım'.length)
   })
 })
 
