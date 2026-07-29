@@ -20,7 +20,7 @@ const RULES = {
   profileRungs: {
     cheap: [0, 1, 2],
     balanced: [0, 1, 2, 3, 6, 7],
-    quality: [0, 1, 2, 3, 6, 7],
+    quality: [0, 1, 2, 3, 4, 6, 7],
     'boss-only': [7],
   },
 }
@@ -126,6 +126,21 @@ describe('Ladder səhifəsi — profillər', () => {
   it('boss-only profilinin baseline üçün olduğunu izah edir', async () => {
     renderPage()
     expect(await screen.findByText(/baseline/i)).toBeTruthy()
+  })
+
+  it('Pillə 4 artıq "Faza 2" deyil — vəziyyəti "işləyir" göstərilir', async () => {
+    renderPage()
+
+    const row = (await screen.findByText(/İpucu \(shepherding\)/)).closest('tr')
+    expect(row?.textContent).toContain('işləyir')
+  })
+
+  it('Pillə 5 hələ tətbiq olunmayıb və bu, AÇIQ deyilir', async () => {
+    // Bir pilləni "hazır" göstərmək istifadəçini olmayan davranışa güvəndirər.
+    renderPage()
+
+    const row = (await screen.findByText(/Plan güclü/)).closest('tr')
+    expect(row?.textContent).toContain('Faza 2')
   })
 
   it('cari profildə hansı pillələrin aktiv olduğunu serverin verdiyi dəstdən göstərir', async () => {

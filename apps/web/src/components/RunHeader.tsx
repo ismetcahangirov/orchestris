@@ -5,6 +5,10 @@ const RUNG_LABEL: Record<number, string> = {
   1: 'Pillə 1 — qayda',
   2: 'Pillə 2 — alət yoxlaması',
   3: 'Pillə 3 — best-of-N nüsxəsi',
+  // Bu nişan HƏM başçının qısa ipucu icrasına, HƏM işçinin ipuculu icrasına
+  // düşür — modelin adı ikisini onsuz da ayırır. Başçının ipucusunu "Pillə 7"
+  // kimi göstərsək, istifadəçi tam başçı icrasının xərcini gözləyərdi.
+  4: 'Pillə 4 — ipucu (shepherding)',
   6: 'Pillə 6 — self-escalation',
   7: 'Pillə 7 — başçı',
 }

@@ -32,6 +32,7 @@ import {
   parseEscalation,
   type Escalation,
 } from './escalation.js'
+import { buildHintedPrompt, buildHintRequestPrompt } from './hint.js'
 import { computeTaskSavings } from './savings.js'
 import type { RunSupervisor } from './supervisor.js'
 import { buildFeedbackPrompt, runVerifications } from './verify.js'
@@ -47,6 +48,16 @@ const RUNG_ROUTING = 1
 const RUNG_WORKER = 2
 /** Pillə 3 — best-of-N + razılaşma. */
 const RUNG_BEST_OF_N = 3
+/**
+ * Pillə 4 — ipucu (shepherding).
+ *
+ * BU NÖMRƏ HƏM BAŞÇININ İPUCU İCRASINA, HƏM İŞÇİNİN İPUCULU İCRASINA yazılır.
+ * Başçının ipucusunu 7 kimi qeyd etsək, "taskların <20%-i 7-yə çatmalıdır"
+ * hədəfi (qayda 31) onu tam başçı icrası kimi sayardı — halbuki pillənin bütün
+ * mənası məhz tam icradan QAÇMAQDIR: uğurlu ipucu metrikada uğursuzluq kimi
+ * görünərdi.
+ */
+const RUNG_HINT = 4
 /** Pillə 6 — işçinin özünü dayandırması. */
 const RUNG_SELF_ESCALATION = 6
 /** Pillə 7 — tam güclü model. Son çarə. */
@@ -65,9 +76,13 @@ export { AMPLIFICATION_PROFILES }
  *
  * `cheap` isə eskalasiyasızdır və bu, davranışı Faza 1C ilə EYNİ saxlayır.
  *
- * Pillə 4 (ipucu) və 5 (plan/icra bölgüsü) hələ tətbiq olunmayıb — `quality`
- * hazırda `balanced` ilə eyni dəstdir. Onları indidən siyahıya salsaq
- * `activeRungs` yalan danışardı.
+ * Pillə 4 (ipucu) YALNIZ `quality`-dədir: o, başçının ƏLAVƏ icrasını (ipucu)
+ * ödəyir və işçini bir daha qaçırır — yəni uğurlu halda 7-dən ucuz, UĞURSUZ
+ * halda ondan bahadır. `balanced` gündəlik iş üçündür, ona görə orada bu risk
+ * götürülmür.
+ *
+ * Pillə 5 (plan/icra bölgüsü) hələ tətbiq olunmayıb — siyahıda YOXDUR, yoxsa
+ * `activeRungs` yalan danışardı (UI onu bu cavabdan oxuyur).
  */
 const PROFILE_RUNGS: Readonly<Record<string, readonly number[]>> = {
   cheap: [RUNG_CACHE, RUNG_ROUTING, RUNG_WORKER],
@@ -84,6 +99,7 @@ const PROFILE_RUNGS: Readonly<Record<string, readonly number[]>> = {
     RUNG_ROUTING,
     RUNG_WORKER,
     RUNG_BEST_OF_N,
+    RUNG_HINT,
     RUNG_SELF_ESCALATION,
     RUNG_BOSS,
   ],
@@ -152,6 +168,22 @@ export interface EscalationSummary {
   reached: boolean
 }
 
+export interface HintSummary {
+  /** İşçi nə üçün ilişmişdi — ipucu məhz ona görə istənildi. */
+  trigger: EscalationTrigger
+  /** Başçının ipucu icrası. */
+  hintRunId: string
+  /** İpucunun uzunluğu (simvol) — "başçı nə qədər yazdı?" sualının cavabı. */
+  hintChars: number
+  /**
+   * İpuculu işçi cəhdi taskı həll etdimi.
+   *
+   * `false` olsa da sahə QALIR: ipucu ödənilib və nəticədə gizlədilməməlidir —
+   * əks halda Pillə 4 həmişə "pulsuz" görünərdi (eyni prinsip: qayda 22).
+   */
+  accepted: boolean
+}
+
 export interface LadderResult {
   runId: string
   status: LadderStatus
@@ -170,6 +202,8 @@ export interface LadderResult {
   finalRung: number
   /** Pillə 3 işə düşübsə nüsxələrin razılaşma ölçüsü. */
   agreement?: AgreementSummary
+  /** Pillə 4 işə düşübsə ipucunun taleyi. */
+  hint?: HintSummary
   /** Pillə 6 və ya 3 yuxarı qalxmaq istəyibsə. */
   escalation?: EscalationSummary
   /** Pillə 1-in qərarı — UI-da "niyə bu model?" sualına cavab verir. */
@@ -382,7 +416,143 @@ export class Ladder {
 
     const outcome = await this.workerPhase(phase)
     if (outcome.kind === 'result') return outcome.result
-    return this.escalateToBoss(phase, outcome)
+    return this.escalate(phase, outcome)
+  }
+
+  /**
+   * İşçi ilişdi — nə edək?
+   *
+   * Sıra ucuzdan bahayadır: əvvəlcə Pillə 4 (başçının QISA ipucusu + işçinin
+   * bir icrası), o tutmasa Pillə 7 (başçının TAM icrası). İpucu nəticəsi
+   * qaytarılan cavaba HƏR HALDA yapışdırılır — qəbul edilməsə də ödənilib.
+   */
+  private async escalate(
+    phase: Phase,
+    outcome: Extract<WorkerOutcome, { kind: 'escalate' }>,
+  ): Promise<LadderResult> {
+    const hinted = await this.hintPhase(phase, outcome)
+    if (hinted.result !== undefined) return hinted.result
+
+    // İpuculu cəhd də sınıbsa zəncir 2 → 4 → 4 → 7-dir: başçının TAM icrası
+    // ƏN SON icradan doğur, ilk işçi cəhdindən yox.
+    const next =
+      hinted.fromRunId !== undefined ? { ...outcome, fromRunId: hinted.fromRunId } : outcome
+
+    const result = await this.escalateToBoss(phase, next)
+    return hinted.hint === undefined ? result : { ...result, hint: hinted.hint }
+  }
+
+  /**
+   * Pillə 4 — ipucu (shepherding).
+   *
+   * Başçıdan TAM cavab yox, həllin ilk 10–30%-i istənilir, sonra işçi ONUN
+   * üzərində bir dəfə də qaçırılır. Uğurlu halda başçının bahalı çıxışının
+   * yalnız kiçik hissəsi ödənilir.
+   *
+   * NİYƏ CƏMİ BİR CƏHD: kaskad riski (issue #9) — hər pillə maksimum bir dəfə.
+   * İkinci ipucu üçün ödəniş artıq başçının tam icrasına yaxınlaşır və pillənin
+   * mənası itir.
+   *
+   * NİYƏ RAZILAŞMAMA (Pillə 3) HALINDA İŞƏ DÜŞMÜR: orada işçi ilişməyib —
+   * cavab verib, sadəcə nüsxələr uyğun gəlməyib. Onların hər biri onsuz da
+   * ödənilib (3–5 icra), üstünə daha bir işçi icrası + başçı icrası qoymaq
+   * birbaşa 7-yə qalxmaqdan bahadır.
+   */
+  private async hintPhase(
+    phase: Phase,
+    outcome: Extract<WorkerOutcome, { kind: 'escalate' }>,
+  ): Promise<{ result?: LadderResult; hint?: HintSummary; fromRunId?: string }> {
+    if (!phase.rungs.has(RUNG_HINT)) return {}
+    if (outcome.trigger === 'disagreement') return {}
+    if (this.router === undefined) return {}
+    // Büdcə bitibsə YENİ icra başlatmaq sərt limitin mənasını pozardı.
+    if (phase.budget.exhausted()) return {}
+
+    const boss = this.router.resolveBoss(`ipucu (Pillə 4): ${outcome.reason}`)
+    if (!boss.ok) return {}
+    recordRoutingDecision(this.db, phase.input.task.id, boss.decision)
+
+    const hintExec = await this.supervisor.execute({
+      taskId: phase.input.task.id,
+      runner: boss.runner,
+      model: boss.decision.modelId,
+      prompt: buildHintRequestPrompt({
+        task: phase.input.task.prompt,
+        reason: outcome.reason,
+        ...(outcome.escalation?.partial !== undefined
+          ? { partial: outcome.escalation.partial }
+          : {}),
+      }),
+      attempt: 1,
+      ladderRung: RUNG_HINT,
+      escalatedFromRunId: outcome.fromRunId,
+      ...(phase.cwd !== undefined ? { cwd: phase.cwd } : {}),
+      ...(this.limitsFor(phase) ?? {}),
+    })
+    phase.budget.charge(getRun(this.db, hintExec.runId))
+
+    // İpucu alınmadı (xəta, ləğv, büdcə) — Pillə 7 hələ də açıqdır.
+    if (hintExec.status !== 'succeeded') return {}
+    const hintText = this.answerOf(hintExec.runId).trim()
+    if (hintText === '') return {}
+
+    const summary = (accepted: boolean): HintSummary => ({
+      trigger: outcome.trigger,
+      hintRunId: hintExec.runId,
+      hintChars: hintText.length,
+      accepted,
+    })
+
+    if (phase.budget.exhausted()) return { hint: summary(false) }
+
+    // Müqavilə (Pillə 6) SAXLANILIR: ipucu ilə də bacarmırsa işçi yenidən
+    // imtina edə bilməlidir — yoxsa o, uydurma cavab yazmağa məcbur qalardı.
+    const contractSuffix = phase.rungs.has(RUNG_SELF_ESCALATION)
+      ? `\n\n${ESCALATION_CONTRACT}`
+      : ''
+    const workerExec = await this.runOnce(phase, {
+      prompt: `${buildHintedPrompt(phase.input.task.prompt, hintText)}${contractSuffix}`,
+      attempt: 1,
+      rung: RUNG_HINT,
+      escalatedFromRunId: hintExec.runId,
+    })
+
+    if (workerExec.status !== 'succeeded') {
+      return { hint: summary(false), fromRunId: workerExec.runId }
+    }
+    if (contractSuffix !== '' && parseEscalation(this.answerOf(workerExec.runId)) !== null) {
+      return { hint: summary(false), fromRunId: workerExec.runId }
+    }
+
+    // Nəticə SIFIRDAN qurulur: `outcome.fallback`-ı yaymaq ora yapışmış xəta
+    // sahələrini (`errorClass`, `escalation_unavailable`) uğurlu cavabın üstünə
+    // daşıyardı.
+    const base: LadderResult = {
+      runId: workerExec.runId,
+      status: 'succeeded',
+      cached: false,
+      cacheKey: phase.cacheKey,
+      attempts: outcome.fallback.attempts,
+      verificationPassed: null,
+      finalRung: RUNG_HINT,
+      decision: phase.decision,
+      hint: summary(true),
+    }
+
+    // İPUCULU CAVAB KEŞLƏNMİR: keş açarı yalnız model + runner id-sindən
+    // qurulur (`cache-key.ts`), başçının köməyini göstərmir. Ora yazsaq sonrakı
+    // `cheap` profilli icra (Pillə 4 və 7-ni QƏSDƏN söndürən) səssizcə başçı
+    // köməyi ilə alınmış cavabı alardı — qayda 33 ilə eyni səbəb.
+    if (phase.verifyCommands.length === 0) {
+      return { result: this.settle(phase, base) }
+    }
+
+    const verification = await this.verify(phase, workerExec.runId)
+    if (verification.passed) {
+      return { result: this.settle(phase, { ...base, verificationPassed: true }) }
+    }
+    // Determinist alət "hələ də səhvdir" dedi — ipucu tutmadı, 7 qalır.
+    return { hint: summary(false), fromRunId: workerExec.runId }
   }
 
   /**
@@ -722,7 +892,13 @@ export class Ladder {
   /** Bir icra + büdcə uçotu. */
   private async runOnce(
     phase: Phase,
-    step: { prompt: string; attempt: number; rung: number },
+    step: {
+      prompt: string
+      attempt: number
+      rung: number
+      /** Bu icra hansı icradan doğdu — Pillə 4-də başçının ipucu icrası. */
+      escalatedFromRunId?: string
+    },
   ): Promise<{ runId: string; status: LadderStatus; errorClass?: string; errorMessage?: string }> {
     const exec = await this.supervisor.execute({
       taskId: phase.input.task.id,
@@ -731,6 +907,9 @@ export class Ladder {
       prompt: step.prompt,
       attempt: step.attempt,
       ladderRung: step.rung,
+      ...(step.escalatedFromRunId !== undefined
+        ? { escalatedFromRunId: step.escalatedFromRunId }
+        : {}),
       ...(phase.cwd !== undefined ? { cwd: phase.cwd } : {}),
       ...(this.limitsFor(phase) ?? {}),
     })
