@@ -42,6 +42,22 @@ export interface ClaudeArgOptions {
   sessionId?: string
   permissionMode?: 'acceptEdits' | 'plan' | 'dontAsk' | 'manual'
   fallbackModel?: string
+  /**
+   * Hərf-hərf axın (`--include-partial-messages`). Default AÇIQ.
+   *
+   * Bayraq `CLAUDE_STABLE_FLAGS`-a QOYULMUR (qayda 1: o dəst dondurulub),
+   * amma keşi də sındırmır — ÖLÇÜLDÜ (`claude` 2.1.220, Haiku 4.5, eyni
+   * prompt, ardıcıl iki icra):
+   *
+   * | İcra | cache_read | cache_creation | xərc |
+   * |---|---|---|---|
+   * | bayraqsız | 21,102 | 2,224 | $0.0075 |
+   * | bayraqla  | 21,102 | 2,180 | $0.0074 |
+   *
+   * `cache_read` eynidir — bayraq yalnız stdout-un dənəvərliyini dəyişir,
+   * modelə gedən prompt prefiksinə toxunmur.
+   */
+  partialMessages?: boolean
 }
 
 export function buildClaudeArgs(
@@ -49,6 +65,8 @@ export function buildClaudeArgs(
   opts: ClaudeArgOptions = {},
 ): string[] {
   const args: string[] = ['-p', req.prompt, ...CLAUDE_STABLE_FLAGS]
+
+  if (opts.partialMessages !== false) args.push('--include-partial-messages')
 
   args.push('--model', req.model)
 

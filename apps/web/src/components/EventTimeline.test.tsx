@@ -148,3 +148,63 @@ describe('EventTimeline', () => {
     expect(screen.getByText('[timeout] vaxt bitdi')).toBeInTheDocument()
   })
 })
+
+describe('EventTimeline — axın deltalarının birləşdirilməsi', () => {
+  it('ardıcıl text deltalarını bir sətirdə göstərir', () => {
+    render(
+      <EventTimeline
+        events={[
+          row(1, { t: 'text', delta: 'Salam ' }),
+          row(2, { t: 'text', delta: 'dünya' }),
+          row(3, { t: 'text', delta: '!' }),
+        ]}
+      />,
+    )
+    expect(screen.getByText('Salam dünya!')).toBeInTheDocument()
+    expect(screen.getAllByText('Cavab')).toHaveLength(1)
+  })
+
+  it('araya başqa hadisə düşəndə birləşdirmir', () => {
+    render(
+      <EventTimeline
+        events={[
+          row(1, { t: 'text', delta: 'birinci' }),
+          row(2, { t: 'tool', id: 't1', name: 'Read', input: {} }),
+          row(3, { t: 'text', delta: 'ikinci' }),
+        ]}
+      />,
+    )
+    expect(screen.getByText('birinci')).toBeInTheDocument()
+    expect(screen.getByText('ikinci')).toBeInTheDocument()
+  })
+
+  it('text və think deltalarını bir-birinə qarışdırmır', () => {
+    render(
+      <EventTimeline
+        events={[
+          row(1, { t: 'think', delta: 'fikir-1' }),
+          row(2, { t: 'think', delta: 'fikir-2' }),
+          row(3, { t: 'text', delta: 'cavab' }),
+        ]}
+      />,
+    )
+    // İki think deltası TƏK bloka birləşir → sayğac 1 göstərir.
+    expect(screen.getByText(/Düşünmə addımlarını göstər \(1\)/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('checkbox'))
+    expect(screen.getByText('fikir-1fikir-2')).toBeInTheDocument()
+    expect(screen.getByText('cavab')).toBeInTheDocument()
+  })
+
+  it('birləşən qrupun seq-i BİRİNCİ hadisənin seq-idir', () => {
+    render(
+      <EventTimeline
+        events={[
+          row(7, { t: 'text', delta: 'a' }),
+          row(8, { t: 'text', delta: 'b' }),
+        ]}
+      />,
+    )
+    expect(screen.getByText('7')).toBeInTheDocument()
+    expect(screen.queryByText('8')).not.toBeInTheDocument()
+  })
+})

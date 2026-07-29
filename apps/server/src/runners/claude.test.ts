@@ -104,3 +104,31 @@ describe('buildClaudeArgs — dəyişən hissələr', () => {
     expect(args[i + 1]).toBe('sonnet')
   })
 })
+
+describe('buildClaudeArgs — hərf-hərf axın', () => {
+  it('default olaraq --include-partial-messages əlavə edir', () => {
+    const args = buildClaudeArgs({ prompt: 'x', model: 'm' })
+    expect(args).toContain('--include-partial-messages')
+  })
+
+  it('açıq şəkildə söndürülə bilir', () => {
+    const args = buildClaudeArgs({ prompt: 'x', model: 'm' }, { partialMessages: false })
+    expect(args).not.toContain('--include-partial-messages')
+  })
+
+  it('dondurulmuş bayraq dəstinə GİRMİR', () => {
+    // Qayda 1: `CLAUDE_STABLE_FLAGS` dəyişməzdir. Bayraq ayrıca əlavə olunur
+    // ki, konfiqurasiya ilə söndürülə bilsin və dəst dondurulmuş qalsın.
+    expect(CLAUDE_STABLE_FLAGS).not.toContain('--include-partial-messages')
+  })
+
+  it('prefiksi hər iki rejimdə sabit saxlayır', () => {
+    const withFlag = buildClaudeArgs({ prompt: 'p', model: 'm' }, { sessionId: 'f' })
+    const without = buildClaudeArgs(
+      { prompt: 'p', model: 'm' },
+      { sessionId: 'f', partialMessages: false },
+    )
+    // Fərq YALNIZ bir bayraqdır — başqa heç nə sürüşmür.
+    expect(withFlag.filter((a) => a !== '--include-partial-messages')).toEqual(without)
+  })
+})

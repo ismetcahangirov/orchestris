@@ -281,3 +281,87 @@ describe('ClaudeStreamParser — costUsd yoxluğu', () => {
     expect(u && 'costUsd' in u).toBe(false)
   })
 })
+
+describe('ClaudeStreamParser — --include-partial-messages fixture', () => {
+  it('hər emit olunan hadisə RunEvent sxemini keçir', () => {
+    const { events } = parseFixture('claude-partial-messages.jsonl')
+    for (const e of events) {
+      expect(() => RunEventSchema.parse(e)).not.toThrow()
+    }
+  })
+
+  it('mətni parça-parça axın kimi verir və TƏKRARLAMIR', () => {
+    const { events } = parseFixture('claude-partial-messages.jsonl')
+    const texts = events.filter((e) => e.t === 'text')
+    // Axın olduğunu sübut edir: heç olmasa bir delta var və birləşməsi
+    // yekun cavabın ÖZÜDÜR — `assistant` bloku ayrıca emit olunsaydı
+    // "SALAMSALAM" alınardı.
+    expect(texts.length).toBeGreaterThan(0)
+    expect(texts.map((e) => (e.t === 'text' ? e.delta : '')).join('')).toBe('SALAM')
+  })
+
+  it('thinking-i axınla verir və tam bloku təkrar emit etmir', () => {
+    const { events } = parseFixture('claude-partial-messages.jsonl')
+    const thinks = events.filter((e) => e.t === 'think')
+    // Fixture-də 4 `thinking_delta` var; tam blok da emit olunsaydı 5 olardı.
+    expect(thinks).toHaveLength(4)
+    const joined = thinks.map((e) => (e.t === 'think' ? e.delta : '')).join('')
+    // Fixture-də thinking uzunluq qoruyan maska ilə əvəzlənib; parçaların
+    // birləşməsi blokun uzunluğuna BƏRABƏRDİR (dublikat olsaydı 2x = 430).
+    expect(joined.length).toBe(215)
+  })
+
+  it('signature-ı heç bir hadisəyə sızdırmır', () => {
+    const { events } = parseFixture('claude-partial-messages.jsonl')
+    expect(JSON.stringify(events)).not.toContain('signature')
+  })
+
+  it('usage-i yalnız bir dəfə, result sətrindən verir', () => {
+    const { events } = parseFixture('claude-partial-messages.jsonl')
+    const usages = events.filter((e) => e.t === 'usage')
+    // `stream_event/message_delta` də kumulyativ `usage` daşıyır — onu da
+    // emit etsək tokenlər iki dəfə sayılardı (CLAUDE.md qayda 3).
+    expect(usages).toHaveLength(1)
+    expect(usages[0]).toMatchObject({ inputTokens: 10, outputTokens: 67 })
+  })
+
+  it('start və done hadisələri dəyişmir', () => {
+    const { events } = parseFixture('claude-partial-messages.jsonl')
+    expect(events.filter((e) => e.t === 'start')).toHaveLength(1)
+    expect(events.filter((e) => e.t === 'done')).toHaveLength(1)
+  })
+})
+
+describe('ClaudeStreamParser — partial axında alət istifadəsi', () => {
+  it('alət girişini TAM obyekt kimi verir, input_json_delta parçalarını yox', () => {
+    const { events } = parseFixture('claude-partial-tool.jsonl')
+    const tools = events.filter((e) => e.t === 'tool')
+    expect(tools).toHaveLength(1)
+    const tool = tools[0]
+    if (tool?.t !== 'tool') throw new Error('tool hadisəsi yoxdur')
+    expect(tool.name).toBe('Read')
+    // `input_json_delta` parçaları yarımçıq JSON-dur — onları emit etsək
+    // UI-da sınıq mətn, DB-də isə parse olunmayan giriş qalardı.
+    expect(tool.input['file_path']).toContain('qeyd.txt')
+    expect(JSON.stringify(events)).not.toContain('partial_json')
+  })
+
+  it('iki mesajlı axında indeks sıfırlanması dublikat yaratmır', () => {
+    const { events } = parseFixture('claude-partial-tool.jsonl')
+    const texts = events.filter((e) => e.t === 'text')
+    // Hər blok bir neçə deltadan ibarətdir: axın yoxdursa 2 hadisə olardı
+    // (mesaj başına bir tam blok), axın varsa 4.
+    expect(texts).toHaveLength(4)
+    const joined = texts.map((e) => (e.t === 'text' ? e.delta : '')).join('')
+    // İkinci mesaj `content_block` indeksini 0-dan başladır — akkumulyator
+    // sıfırlanmasaydı birinci mesajın mətni ilə qarışardı.
+    expect(joined).toBe('Mən qeyd.txt faylını oxuyacağam.Faylda olan söz: **salam**')
+  })
+
+  it('alət nəticəsini result hadisəsi kimi verir', () => {
+    const { events } = parseFixture('claude-partial-tool.jsonl')
+    const results = events.filter((e) => e.t === 'result')
+    expect(results).toHaveLength(1)
+    expect(results[0]).toMatchObject({ ok: true })
+  })
+})
