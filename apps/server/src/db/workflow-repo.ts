@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { WorkflowSteps, type WorkflowStep } from '@orchestris/shared'
 import { and, desc, eq, isNull, lte, sql } from 'drizzle-orm'
+import { DIFF_KIND } from './artifact-repo.js'
 import type { Db } from './client.js'
-import { schedules, workflowRuns, workflows, workflowStepRuns } from './schema.js'
+import { artifacts, schedules, workflowRuns, workflows, workflowStepRuns } from './schema.js'
 
 export type WorkflowRow = typeof workflows.$inferSelect
 export type WorkflowRunRow = typeof workflowRuns.$inferSelect
@@ -97,6 +98,8 @@ export function createWorkflowRun(
     stepsJson: string
     /** Sintetik valideyn task (issue #36). `http`-only zəncirdə verilmir. */
     rootTaskId?: string | undefined
+    /** İcranı başladan cədvəl (issue #38). Əl ilə icrada verilmir. */
+    scheduleId?: string | undefined
   },
 ): WorkflowRunRow {
   const id = randomUUID()
@@ -107,6 +110,7 @@ export function createWorkflowRun(
       trigger: input.trigger,
       stepsJson: input.stepsJson,
       ...(input.rootTaskId !== undefined ? { rootTaskId: input.rootTaskId } : {}),
+      ...(input.scheduleId !== undefined ? { scheduleId: input.scheduleId } : {}),
       startedAt: now(),
     })
     .run()
@@ -207,6 +211,8 @@ export function createSchedule(
     budgetUsdPerRun: number
     budgetUsdTotal: number
     maxRuns: number
+    /** Baxılmamış diff tavanı (issue #38). Verilməsə DB defaultu. */
+    maxPendingDiffs?: number | undefined
     /** İlk icranın vaxtı. Verilməsə indidən BİR İNTERVAL sonra. */
     startAt?: number | undefined
   },
@@ -221,6 +227,9 @@ export function createSchedule(
       budgetUsdPerRun: input.budgetUsdPerRun,
       budgetUsdTotal: input.budgetUsdTotal,
       maxRuns: input.maxRuns,
+      ...(input.maxPendingDiffs !== undefined
+        ? { maxPendingDiffs: input.maxPendingDiffs }
+        : {}),
       // Default "indi" DEYİL, "bir interval sonra": cədvəl yaradan kimi icra
       // başlasaydı, istifadəçi limitləri yoxlamağa macal tapmazdı.
       nextRunAt: input.startAt ?? at + input.intervalSeconds * 1000,
@@ -260,6 +269,7 @@ export function updateSchedule(
     budgetUsdPerRun?: number | undefined
     budgetUsdTotal?: number | undefined
     maxRuns?: number | undefined
+    maxPendingDiffs?: number | undefined
   },
 ): ScheduleRow {
   const values: Record<string, unknown> = {}
@@ -267,6 +277,7 @@ export function updateSchedule(
   if (input.budgetUsdPerRun !== undefined) values['budgetUsdPerRun'] = input.budgetUsdPerRun
   if (input.budgetUsdTotal !== undefined) values['budgetUsdTotal'] = input.budgetUsdTotal
   if (input.maxRuns !== undefined) values['maxRuns'] = input.maxRuns
+  if (input.maxPendingDiffs !== undefined) values['maxPendingDiffs'] = input.maxPendingDiffs
   if (input.enabled !== undefined) {
     values['enabled'] = input.enabled
     // Yenidən açılanda səbəb TƏMİZLƏNİR: köhnə "büdcə doldu" mətni işləyən
@@ -309,6 +320,40 @@ export function addScheduleSpend(db: Db, id: string, amountUsd: number): void {
     .set({ spentUsd: sql`${schedules.spentUsd} + ${amountUsd}` })
     .where(eq(schedules.id, id))
     .run()
+}
+
+/**
+ * Cədvəlin yığdığı BAXILMAMIŞ diff sayı (issue #38).
+ *
+ * SAXLANILMIR, HƏR DƏFƏ HESABLANIR: istifadəçi diff-i qəbul və ya rədd edəndə
+ * `artifacts.status` dəyişir və worktree silinir. Sayğac sütunu saxlasaydıq, o
+ * an azalmazdı və cədvəl artıq mövcud olmayan qovluqlara görə söndürülərdi —
+ * yəni tavan dolan kimi ƏBƏDİ dolu qalardı. Sorğu indeksli sütunlar üzrədir və
+ * tik başına bir dəfə qaçır.
+ *
+ * SAY CƏDVƏL BAŞINADIR, zəncir başına yox: eyni zəncirə iki cədvəl qurmaq
+ * qanunidir və biri digərinin diskinə görə söndürülməməlidir. Məhz buna görə
+ * `workflow_runs.schedule_id` sütunu var — `trigger: 'schedule'` bunu ayırd edə
+ * bilmir.
+ *
+ * `rootTaskId` üzrə birləşdirilir, çünki zəncirin diff-i həmişə SİNTETİK
+ * valideyn taskın adına yazılır (issue #36) — addımların öz taskları diff
+ * yazmır.
+ */
+export function countPendingDiffsForSchedule(db: Db, scheduleId: string): number {
+  const row = db
+    .select({ n: sql<number>`count(*)` })
+    .from(artifacts)
+    .innerJoin(workflowRuns, eq(workflowRuns.rootTaskId, artifacts.taskId))
+    .where(
+      and(
+        eq(workflowRuns.scheduleId, scheduleId),
+        eq(artifacts.kind, DIFF_KIND),
+        eq(artifacts.status, 'pending'),
+      ),
+    )
+    .get()
+  return row?.n ?? 0
 }
 
 export function disableSchedule(db: Db, id: string, reason: string): void {

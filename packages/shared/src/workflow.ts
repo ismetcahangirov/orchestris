@@ -211,7 +211,32 @@ export type RunWorkflowBody = z.infer<typeof RunWorkflowBody>
 export const MIN_SCHEDULE_INTERVAL_SECONDS = 60
 
 /**
- * Cədvəl tərifi — **hər üç limit MƏCBURİDİR**.
+ * Baxılmamış diff tavanının DB defaultu (issue #38).
+ *
+ * NİYƏ ÜMUMİYYƏTLƏ DEFAULT VAR — halbuki qalan üç tavanda yoxdur: bu sütun
+ * MÖVCUD cədvələ sonradan əlavə olunur və SQLite `ALTER TABLE … ADD COLUMN …
+ * NOT NULL` əmrini DEFAULT olmadan ÜMUMİYYƏTLƏ qəbul etmir (sətir sayından
+ * asılı olmayaraq). Yəni seçim "default var" ilə "sütun `NULL` ola bilər"
+ * arasındadır — ikincisi isə məhz issue #12-nin qadağan etdiyi haldır
+ * ("sonra doldurram" = limitsiz avtomatik icra).
+ *
+ * Rəqəm KİÇİK seçilib və bu, qəsdəndir. Səhvin iki istiqaməti eyni qiymətə
+ * başa gəlmir:
+ *  - **çox kiçik** → cədvəl vaxtından tez söndürülür; istifadəçi diff-lərə
+ *    baxıb bir kliklə yenidən açır (`disabledReason` səbəbi göstərir)
+ *  - **çox böyük** → hər baxılmamış diff reponun AYRICA nüsxəsidir və yetim
+ *    təmizləyicisi ona QƏSDƏN toxunmur (qayda 44) — yəni disk heç nə ilə geri
+ *    qaytarılmır
+ *
+ * Ucuz istiqamət birincidir (eyni mühakimə: qayda 46-dakı simvol→token nisbəti).
+ * "Doğru" rəqəm real işlətmə ilə ölçülməlidir — ona görə sahə API-də
+ * MƏCBURİDİR: default yalnız sxem miqrasiyasının tələbidir, istifadəçinin
+ * seçimi deyil.
+ */
+export const DEFAULT_MAX_PENDING_DIFFS = 5
+
+/**
+ * Cədvəl tərifi — **hər dörd limit MƏCBURİDİR**.
  *
  * Issue #12-dəki xəbərdarlıq bu sxemin bütün formasını təyin edir: *"nəzarətsiz
  * cədvəl `$0.50 testdə → $50,000/ay` ssenarisinin ən asan yoludur"*. Ona görə
@@ -219,13 +244,19 @@ export const MIN_SCHEDULE_INTERVAL_SECONDS = 60
  *
  * | Limit | Nəyin qarşısını alır |
  * |---|---|
- * | `budgetUsdPerRun` | bir icranın qaçması (uzun zəncir, təkrar dövrəsi) |
- * | `budgetUsdTotal`  | ÇOX icranın YIĞILMASI — dəqiqədə $0.50 aylıq $21,600-dür |
- * | `maxRuns`         | abunəlik icraları: real xərc `0`-dır, USD tavanı ONLARI TUTMUR |
+ * | `budgetUsdPerRun`  | bir icranın qaçması (uzun zəncir, təkrar dövrəsi) |
+ * | `budgetUsdTotal`   | ÇOX icranın YIĞILMASI — dəqiqədə $0.50 aylıq $21,600-dür |
+ * | `maxRuns`          | abunəlik icraları: real xərc `0`-dır, USD tavanı ONLARI TUTMUR |
+ * | `maxPendingDiffs`  | DİSK: hər baxılmamış diff reponun ayrıca nüsxəsidir |
  *
  * `maxRuns` olmasaydı, CLI (abunəlik) işçisi ilə qurulan cədvəl SONSUZ qaçardı:
  * kartdan pul çıxmır, amma abunəlik limiti yanır və istifadəçi bunu yalnız
  * "rate limit" xətası ilə bilərdi.
+ *
+ * `maxPendingDiffs` (issue #38) FƏRQLİ resursu qoruyur: üç USD/sayğac tavanı
+ * XƏRC üçün seçilir və `maxRuns: 500` tam qanunidir — amma repoya yazan zənciri
+ * cədvəllə qaçıranda hər icra YENİ `pending` diff, yəni reponun yeni nüsxəsini
+ * yaradır. Xərc tavanları buna kordur.
  */
 export const CreateScheduleBody = z.object({
   workflowId: z.string().min(1),
@@ -235,6 +266,8 @@ export const CreateScheduleBody = z.object({
   budgetUsdPerRun: z.number().positive(),
   budgetUsdTotal: z.number().positive(),
   maxRuns: z.number().int().positive(),
+  /** Cədvəlin yığa biləcəyi ən çox baxılmamış diff sayı (issue #38). */
+  maxPendingDiffs: z.number().int().positive(),
 })
 export type CreateScheduleBody = z.infer<typeof CreateScheduleBody>
 
@@ -244,6 +277,7 @@ export const UpdateScheduleBody = z.object({
   budgetUsdPerRun: z.number().positive().optional(),
   budgetUsdTotal: z.number().positive().optional(),
   maxRuns: z.number().int().positive().optional(),
+  maxPendingDiffs: z.number().int().positive().optional(),
 })
 export type UpdateScheduleBody = z.infer<typeof UpdateScheduleBody>
 

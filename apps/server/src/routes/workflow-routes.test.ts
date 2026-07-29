@@ -176,9 +176,10 @@ describe('workflow REST', () => {
       budgetUsdPerRun: 0.5,
       budgetUsdTotal: 10,
       maxRuns: 20,
+      maxPendingDiffs: 5,
     }
 
-    for (const missing of ['budgetUsdPerRun', 'budgetUsdTotal', 'maxRuns'] as const) {
+    for (const missing of ['budgetUsdPerRun', 'budgetUsdTotal', 'maxRuns', 'maxPendingDiffs'] as const) {
       const payload: Record<string, unknown> = { ...base }
       delete payload[missing]
       const res = await app.inject({ method: 'POST', url: '/api/schedules', payload })
@@ -201,6 +202,7 @@ describe('workflow REST', () => {
         budgetUsdPerRun: 0.5,
         budgetUsdTotal: 10,
         maxRuns: 20,
+        maxPendingDiffs: 5,
       },
     })
     expect(res.statusCode).toBe(400)
@@ -224,6 +226,7 @@ describe('workflow REST', () => {
         budgetUsdPerRun: 0.5,
         budgetUsdTotal: 10,
         maxRuns: 20,
+        maxPendingDiffs: 5,
       },
     })
     expect(res.statusCode).toBe(409)
@@ -243,6 +246,7 @@ describe('workflow REST', () => {
         budgetUsdPerRun: 0.5,
         budgetUsdTotal: 10,
         maxRuns: 20,
+        maxPendingDiffs: 5,
       },
     })
     const scheduleId = (created.json() as { schedule: { id: string } }).schedule.id

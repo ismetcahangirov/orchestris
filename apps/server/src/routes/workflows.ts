@@ -9,6 +9,7 @@ import type { FastifyInstance } from 'fastify'
 import type { Db } from '../db/client.js'
 import { getContext } from '../db/repo.js'
 import {
+  countPendingDiffsForSchedule,
   createSchedule,
   createWorkflow,
   getSchedule,
@@ -156,14 +157,27 @@ export function registerWorkflowRoutes(app: FastifyInstance, deps: WorkflowRoute
   })
 
   // ── Cədvəl üzrə icra ────────────────────────────────────────────────
+
+  /**
+   * Cədvəllər — hər sətrə CANLI `pendingDiffs` sayı qoşulur (issue #38).
+   *
+   * Say cavaba burada qatılır, ayrıca route ilə yox: tavan yalnız yanındakı cari
+   * dəyərlə oxunaqlıdır ("5 / 5" vs sadəcə "5"). Digər üç tavanda bu, onsuz da
+   * belədir (`runs` / `maxRuns`, `spentUsd` / `budgetUsdTotal`) — say sütunda
+   * saxlanılmadığı üçün (səbəb `countPendingDiffsForSchedule`-dədir) yeganə yer
+   * budur.
+   */
   app.get<{ Querystring: { workflowId?: string } }>('/api/schedules', async (req) => ({
-    schedules: listSchedules(db, req.query.workflowId),
+    schedules: listSchedules(db, req.query.workflowId).map((s) => ({
+      ...s,
+      pendingDiffs: countPendingDiffsForSchedule(db, s.id),
+    })),
   }))
 
   /**
    * Cədvəl yaradır.
    *
-   * Hər üç limit MƏCBURİDİR və bu, sxemdə (`CreateScheduleBody`) təmin olunur —
+   * Hər dörd limit MƏCBURİDİR və bu, sxemdə (`CreateScheduleBody`) təmin olunur —
    * route-da əlavə yoxlama yoxdur, çünki bir təminatın iki yerdə saxlanması
    * onların ayrılmasının ən qısa yoludur. Səbəb issue #12-dədir: nəzarətsiz
    * cədvəl "$0.50 testdə → $50,000/ay" ssenarisinin ən asan yoludur.

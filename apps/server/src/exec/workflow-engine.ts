@@ -68,6 +68,14 @@ export interface WorkflowRunInput {
   steps: readonly WorkflowStep[]
   context: LadderContext
   trigger: 'manual' | 'schedule'
+  /**
+   * İcranı başladan cədvəl (issue #38) — `trigger: 'schedule'` ilə birgə gəlir.
+   *
+   * Baxılmamış diff tavanı CƏDVƏL BAŞINA sayılır, ona görə icranın hansı
+   * cədvəldən doğduğu jurnalda qalmalıdır: `trigger` yalnız "avtomatikdir"
+   * deyir, hansı cədvəl olduğunu yox.
+   */
+  scheduleId?: string
   /** Birinci addımın `{{previous}}` başlanğıc dəyəri. */
   input?: string
   limits?: BudgetLimits
@@ -150,6 +158,7 @@ export class WorkflowEngine {
       trigger: input.trigger,
       stepsJson: JSON.stringify(input.steps),
       rootTaskId,
+      ...(input.scheduleId !== undefined ? { scheduleId: input.scheduleId } : {}),
     })
     return { workflowRunId: run.id, done: this.execute(run.id, input, rootTaskId) }
   }
