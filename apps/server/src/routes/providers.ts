@@ -23,8 +23,10 @@ import {
   upsertModels,
   upsertProvider,
 } from '../db/registry-repo.js'
+import { isTaskCapableModel } from '../registry/capability.js'
 import { adapterFor, discoverModels, providerSupport } from '../registry/discovery.js'
 import { loadCatalog, refreshCatalog, type Catalog } from '../registry/models-dev.js'
+import { CLI_CATALOG_PROVIDER } from '../routing/candidates.js'
 import { buildApiRunner } from '../runners/api-factory.js'
 import { credentialRef, type CredentialStore } from '../secrets/keychain.js'
 import { redactAll } from '../secrets/redact.js'
@@ -75,6 +77,32 @@ export function registerProviderRoutes(app: FastifyInstance, deps: ProviderRoute
   let catalog = deps.catalog
 
   const catalogProvider = (id: string) => catalog.providers.find((p) => p.id === id)
+
+  /**
+   * Modelin modalitləri — `taskCapable` süzgəcinin siqnalı (issue #47).
+   *
+   * `models` cədvəlində modalit sütunu QƏSDƏN YOXDUR: sütun kəşf anındaki
+   * nüsxəni dondurar və kataloq yeniləndikdən sonra köhnə qalardı (yalnız
+   * yenidən kəşf onu düzəldərdi). Kataloq isə onsuz da yaddaşdadır — həqiqət
+   * mənbəyi birdir.
+   *
+   * CLI provayderləri kataloqda öz adı ilə YOXDUR (`cli:codex` → `openai`,
+   * qayda 21) — xəritə olmadan onların modelləri süzgəcdən həmişə keçərdi,
+   * halbuki `cli:codex` BÜTÜN OpenAI kataloqunu (embedding və şəkil modelləri
+   * daxil) daşıyır.
+   */
+  const catalogModalities = (
+    providerId: string,
+    modelId: string,
+  ): { inputModalities?: string[]; outputModalities?: string[] } => {
+    const source = catalogProvider(CLI_CATALOG_PROVIDER[providerId] ?? providerId)
+    const model = source?.models.find((m) => m.modelId === modelId)
+    if (model === undefined) return {}
+    return {
+      inputModalities: model.inputModalities,
+      outputModalities: model.outputModalities,
+    }
+  }
 
   /**
    * Kəşfi işlədib nəticəni DB-yə yazır. ATMIR — nəticəni qaytarır ki, həm
@@ -328,6 +356,14 @@ export function registerProviderRoutes(app: FastifyInstance, deps: ProviderRoute
       ...m,
       // `null` qiymət "bilinmir" deməkdir — UI bunu `0` kimi göstərməməlidir.
       priceKnown: m.priceIn !== null && m.priceOut !== null,
+      // Siyahı yararsız modeli də QAYTARIR (istifadəçi `/providers`-də hər şeyi
+      // görməli və əl ilə söndürə bilməlidir) — sadəcə işarələnir. Süzgəci
+      // SEÇİCİ tətbiq edir (issue #47, qayda 63).
+      taskCapable: isTaskCapableModel({
+        modelId: m.modelId,
+        displayName: m.displayName,
+        ...catalogModalities(m.providerId, m.modelId),
+      }),
     }))
   })
 

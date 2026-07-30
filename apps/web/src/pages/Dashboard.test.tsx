@@ -27,6 +27,7 @@ function modelRow(over: Partial<ModelRow> = {}): ModelRow {
     roleWorker: false,
     roleClassifier: false,
     priceKnown: true,
+    taskCapable: true,
     ...over,
   }
 }

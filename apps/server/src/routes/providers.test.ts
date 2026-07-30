@@ -32,6 +32,19 @@ const CATALOG: Catalog = {
           structuredOutput: true,
           reasoning: true,
           inputModalities: ['text'],
+          outputModalities: ['text'],
+        },
+        // Task icra EDƏ BİLMƏYƏN model (issue #47): çıxışı şəkildir.
+        {
+          providerId: 'anthropic',
+          modelId: 'şəkil-modeli',
+          displayName: 'Şəkil Modeli',
+          price: { input: 5, output: 30 },
+          toolCall: false,
+          structuredOutput: false,
+          reasoning: false,
+          inputModalities: ['text', 'image'],
+          outputModalities: ['image'],
         },
       ],
     },
@@ -56,6 +69,7 @@ const CATALOG: Catalog = {
           structuredOutput: true,
           reasoning: false,
           inputModalities: ['text'],
+          outputModalities: ['text'],
         },
       ],
     },
@@ -315,6 +329,28 @@ describe('POST /api/providers/:id/credential', () => {
       contextLimit: 200000,
       priceKnown: true,
     })
+  })
+
+  it('modelin task icra edə bilib-bilmədiyini bildirir (issue #47)', async () => {
+    // Süzgəc SEÇİCİ üçündür, siyahı üçün deyil: `/api/models` yararsız modeli
+    // də QAYTARIR (istifadəçi `/providers`-də hər şeyi görməli və əl ilə
+    // söndürə bilməlidir), sadəcə onu işarələyir.
+    const { app } = makeApp({
+      fetchImpl: fetchReturning({
+        data: [{ id: 'claude-tanınan' }, { id: 'şəkil-modeli' }, { id: 'claude-yeni' }],
+      }),
+    })
+    await setKey(app)
+
+    const models = (await app.inject({ method: 'GET', url: '/api/models' })).json()
+    const byId = (modelId: string): { taskCapable: boolean } =>
+      models.find((m: { modelId: string }) => m.modelId === modelId)
+
+    expect(byId('claude-tanınan').taskCapable).toBe(true)
+    expect(byId('şəkil-modeli').taskCapable).toBe(false)
+    // Kataloqda YOXDUR → modalitlər bilinmir → BURAXILIR. İşlək modeli səssizcə
+    // siyahıdan atmaq səhvin bahalı istiqamətidir.
+    expect(byId('claude-yeni').taskCapable).toBe(true)
   })
 
   it('models.dev-də olmayan model işlədilə bilir, amma qiyməti NULL-dur', async () => {

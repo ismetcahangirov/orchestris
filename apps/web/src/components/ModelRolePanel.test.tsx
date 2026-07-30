@@ -26,6 +26,7 @@ function modelRow(over: Partial<ModelRow> = {}): ModelRow {
     roleWorker: false,
     roleClassifier: false,
     priceKnown: true,
+    taskCapable: true,
     ...over,
   }
 }
@@ -92,6 +93,25 @@ describe('selectableModels', () => {
 
     expect(out.map((o) => o.runnerId)).toEqual(['cli:claude', 'api:anthropic'])
     expect(out.map((o) => o.subscription)).toEqual([true, false])
+  })
+
+  it('task icra EDƏ BİLMƏYƏN modeli siyahıya salmır (issue #47)', () => {
+    // Embedding/şəkil/audio modeli başçı və ya işçi OLA BİLMƏZ — seçilsə task
+    // icra anında sınardı. Siqnal serverdə kataloqun modalitlərindən
+    // hesablanır (`registry/capability.ts`); süzgəc yalnız SEÇİCİDƏDİR,
+    // `/providers` siyahısına toxunmur.
+    const out = selectableModels(
+      [
+        modelRow(),
+        modelRow({
+          id: 'anthropic:embed',
+          modelId: 'text-embedding-3-small',
+          taskCapable: false,
+        }),
+      ],
+      providers(),
+    )
+    expect(out.map((o) => o.model.modelId)).toEqual(['haiku'])
   })
 
   it('söndürülmüş modeli siyahıya salmır', () => {

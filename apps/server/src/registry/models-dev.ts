@@ -77,6 +77,14 @@ export interface CatalogModel {
   structuredOutput: boolean
   reasoning: boolean
   inputModalities: string[]
+  /**
+   * Model NƏ çıxarır (`text` / `image` / `audio`).
+   *
+   * Model seçicisinin süzgəcinin ƏSAS siqnalıdır (issue #47, qayda 63): şəkil
+   * və ya audio çıxaran model task icra edə bilməz. BOŞ massiv "bilinmir"
+   * deməkdir — süzgəc o halda modeli BURAXIR.
+   */
+  outputModalities: string[]
   releaseDate?: string
 }
 
@@ -139,6 +147,7 @@ function normalizeModel(providerId: string, raw: unknown): CatalogModel | null {
     structuredOutput: m.structured_output ?? false,
     reasoning: m.reasoning ?? false,
     inputModalities: m.modalities?.input ?? [],
+    outputModalities: m.modalities?.output ?? [],
     ...(m.release_date !== undefined ? { releaseDate: m.release_date } : {}),
   }
 }
