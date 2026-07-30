@@ -22,6 +22,10 @@ export interface RefreshVerdictInput {
  * `request` mətni `"502 <url>: <gövdə>"` kimi qurur, gövdə isə serverin JSON
  * cavabıdır (`{"ok":false,"error":"…"}`). Xam JSON-u ekrana yazmaq səbəbi
  * gizlətməklə eynidir — istifadəçi onu oxumur.
+ *
+ * Sıra `message` → `error`-dur (issue #50): Fastify-ın ÖZ xəta gövdəsində
+ * `error` KATEQORİYADIR ("Bad Request"), səbəb isə `message`-dədir. Tərsinə
+ * yazsaydıq UI "Səbəb: Bad Request" göstərərdi — yəni səbəbin yerində heç nə.
  */
 export function refreshErrorReason(err: unknown): string {
   const text = err instanceof Error ? err.message : String(err)
@@ -29,9 +33,11 @@ export function refreshErrorReason(err: unknown): string {
   if (bodyStart === -1) return text
   try {
     const body: unknown = JSON.parse(text.slice(bodyStart))
-    if (typeof body === 'object' && body !== null && 'error' in body) {
-      const reason = (body as { error: unknown }).error
-      if (typeof reason === 'string' && reason !== '') return reason
+    if (typeof body === 'object' && body !== null) {
+      for (const field of ['message', 'error'] as const) {
+        const reason = (body as Record<string, unknown>)[field]
+        if (typeof reason === 'string' && reason !== '') return reason
+      }
     }
   } catch {
     // JSON deyil — mətn olduğu kimi qalır.

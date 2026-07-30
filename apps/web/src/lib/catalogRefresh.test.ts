@@ -102,6 +102,19 @@ describe('refreshErrorReason', () => {
     expect(refreshErrorReason(err)).toBe('models.dev → HTTP 503')
   })
 
+  it('Fastify gövdəsindən OXUNAQLI sahəni (`message`) seçir', () => {
+    // Ölçülmüş (issue #50): Fastify-ın öz xəta gövdəsində `error` KATEQORİYADIR
+    // ("Bad Request"), səbəb isə `message`-dədir. `error`-u götürsək UI
+    // "Səbəb: Bad Request" yazır — yəni səbəb yerinə heç nə.
+    const err = new Error(
+      '400 /api/registry/refresh: {"statusCode":400,"code":"FST_ERR_CTP_EMPTY_JSON_BODY",' +
+        '"error":"Bad Request","message":"Body cannot be empty when content-type is set to \'application/json\'"}',
+    )
+    expect(refreshErrorReason(err)).toBe(
+      "Body cannot be empty when content-type is set to 'application/json'",
+    )
+  })
+
   it('JSON olmayan gövdəni olduğu kimi saxlayır', () => {
     const err = new Error('Failed to fetch')
     expect(refreshErrorReason(err)).toBe('Failed to fetch')
