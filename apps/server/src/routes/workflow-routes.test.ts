@@ -33,6 +33,7 @@ function model(): ModelUpsert {
     structuredOutput: true,
     reasoning: false,
     inputModalities: ['text'],
+    outputModalities: ['text'],
     source: 'models.dev',
   }
 }

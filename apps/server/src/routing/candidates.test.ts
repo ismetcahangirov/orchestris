@@ -37,6 +37,7 @@ const CATALOG: Catalog = {
           structuredOutput: true,
           reasoning: false,
           inputModalities: ['text'],
+          outputModalities: ['text'],
         },
       ],
     },
@@ -64,6 +65,7 @@ function apiModel(over: Partial<ModelUpsert> = {}): ModelUpsert {
     structuredOutput: true,
     reasoning: false,
     inputModalities: ['text'],
+    outputModalities: ['text'],
     source: 'models.dev',
     ...over,
   }

@@ -1179,6 +1179,64 @@ issue #46-daki yalanın əks istiqamətidir.
 `POST /api/registry/refresh` 0.28 s-də cavab verir. Uydurma timeout əlavə
 edilmədi (qayda 50 prinsipi); əvəzinə nəticə mesajı hər iki halda dürüst edildi.
 
+### 63. Model seçicisinin süzgəci MODALİTƏ görədir, bayraqlara görə YOX
+
+Issue #47. Başçı/İşçi seçicisi kataloqdaki BÜTÜN modelləri göstərirdi —
+embedding, şəkil, audio (`text-embedding-3-small`, `gpt-image-2`,
+`gpt-realtime-2.1`). Onlar başçı və ya işçi ola bilməz: seçilsə task icra anında
+sınır.
+
+İssue-də təklif olunan hər iki sadə siqnal ÖLÇÜLDÜ (models.dev keşi,
+2026-07-30, 175 provayder / 5892 model, 5686-sı mətn→mətn) və hər ikisi
+TƏKBAŞINA YANLIŞ çıxdı:
+
+| Siqnal | Nə edir |
+|---|---|
+| `toolCall` | **1000** mətn modelini atır (`gpt-3.5-turbo`, lokal modellər) |
+| `toolCall && structuredOutput` | **3288**-ni atır — `azure/claude-opus-4-5`-də `structured_output` sahəsi ÜMUMİYYƏTLƏ yoxdur |
+| modality | embedding-i TUTMUR: models.dev onları `out: ["text"]` bildirir |
+
+Ona görə süzgəc İKİ müstəqil qapıdan ibarətdir (`registry/capability.ts` →
+`isTaskCapableModel`, saf funksiya, **0 token**) və bayraqlar İSTİFADƏ
+OLUNMUR:
+
+- **çıxışda mətn olmayan modalit varsa rədd** — `gpt-image-1.5` çıxışında `text`
+  DA var (`limit.output` isə sıfırdır), ona görə şərt "mətn çıxarırmı" deyil,
+  "mətndən BAŞQA nə çıxarır"dır. Girişdə mətn yoxsa da rədd (`whisper`:
+  `in: ["audio"]` — prompt verə bilmirik).
+- **adında `embed` varsa rədd** — kataloqda embedding üçün STRUKTUR bayraq
+  yoxdur (`family: "text-embedding"` sərbəst mətndir). Ölçülmüş: adında `embed`
+  olan 58 modelin HEÇ BİRİ `tool_call: true` deyil, yəni bu qapı işlək çat
+  modelinə dəymir. Ad həm də modalitlər bilinmədikdə (Ollama, LM Studio) yeganə
+  siqnaldır.
+
+Dörd qərar davranışı izah edir:
+
+- **Modalitlər DB-də SAXLANILMIR** — `taskCapable` `GET /api/models` cavabında
+  kataloqdan HESABLANIR. Sütun kəşf anındaki nüsxəni dondurar və kataloq
+  yeniləndikdən sonra köhnə qalardı (yalnız yenidən kəşf düzəldərdi). Eyni
+  mühakimə issue #38-dəki `pendingDiffs` və #41-dəki `binaryFiles` ilə eynidir.
+- **CLI provayderləri üçün xəritə MƏCBURİDİR.** `CLI_CATALOG_PROVIDER`
+  (`cli:codex` → `openai`, qayda 21) olmadan süzgəc SIFIR model tutardı: real
+  ölçmədə bu maşındaki 66 modeldən düşən 9-un HAMISI `cli:codex` altındadır —
+  çünki `seedCliProviders` BÜTÜN OpenAI kataloqunu (embedding və şəkil daxil)
+  köçürür.
+- **Modalitlər bilinmirsə model BURAXILIR.** Kəşf edilmiş, kataloqda olmayan
+  model (`source: 'api'`) `[]` daşıyır. Səhvin ucuz istiqaməti budur: yararsız
+  model siyahıda görünsə istifadəçi onu seçib xətanı görür, işlək model səssizcə
+  düşsə səbəbi heç yerdə tapa bilmir.
+- **Süzgəc YALNIZ seçicidədir** (`lib/selectableModels.ts`). `/providers`
+  siyahısı hamısını göstərməyə davam edir — orada istifadəçi əl ilə
+  aktiv/söndürür — amma yararsız model `task üçün yararsız` işarəsi alır. İşarə
+  olmasaydı, "modelim niyə seçicidə yoxdur?" sualının cavabı heç yerdə
+  görünməzdi.
+
+`gpt-3.5-turbo` QƏSDƏN siyahıda qalır: models.dev onu `tool_call: false`
+bildirir, amma model task icra EDƏ BİLİR. Onu tutmaq üçün lazım olan bayraq
+yanında 1000 işlək modeli atardı.
+
+Ölçmə (real DB, 66 model): düşən **9** model — issue-də sadalananların hamısı.
+
 ## Amplification Ladder
 
 Pillələr ucuzdan bahaya:

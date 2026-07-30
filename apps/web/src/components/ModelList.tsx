@@ -53,6 +53,20 @@ export default function ModelList({ providerId }: { providerId: string }): React
             {m.structuredOutput && <Badge>struktur</Badge>}
             {m.reasoning && <Badge>düşünmə</Badge>}
             {m.source === 'api' && <Badge>models.dev-də yoxdur</Badge>}
+            {/*
+              Model seçicisi belə modelləri GİZLƏDİR (issue #47). Burada da
+              gizlətsəydik, "modelim niyə seçicidə yoxdur?" sualının cavabı heç
+              yerdə görünməzdi — halbuki istifadəçi modelləri məhz bu səhifədə
+              idarə edir.
+            */}
+            {!m.taskCapable && (
+              <span
+                className="rounded bg-warn/15 px-1.5 py-0.5 text-[10px] text-warn"
+                title="Embedding / şəkil / audio modeli — başçı və ya işçi ola bilməz"
+              >
+                task üçün yararsız
+              </span>
+            )}
           </div>
 
           <div className="mt-1 flex flex-wrap gap-3 text-[11px] text-ink-dim">

@@ -53,6 +53,7 @@ const CATALOG: CatalogProvider = {
       structuredOutput: true,
       reasoning: true,
       inputModalities: ['text', 'image'],
+      outputModalities: ['text'],
     },
   ],
 }

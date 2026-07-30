@@ -55,6 +55,18 @@ describe('normalizeCatalog', () => {
     expect(m?.contextLimit).toBe(200000)
     expect(m?.toolCall).toBe(true)
     expect(m?.inputModalities).toEqual(['text', 'image'])
+    // Çıxış modalitləri seçicinin süzgəcinin ƏSAS siqnalıdır (issue #47):
+    // şəkil/audio çıxaran model task icra edə bilməz.
+    expect(m?.outputModalities).toEqual(['text'])
+  })
+
+  it('modalitlər yoxdursa sahələr BOŞ massivdir — "bilinmir" halı', () => {
+    // Boş massiv "bilinmir" deməkdir və süzgəc onu BURAXIR: models.dev bəzi
+    // provayderlərdə modalit vermir, işlək modeli səssizcə atmaq isə səhvin
+    // bahalı istiqamətidir.
+    const [p] = normalizeCatalog({ x: { id: 'x', models: { m: { id: 'm' } } } })
+    expect(p?.models[0]?.inputModalities).toEqual([])
+    expect(p?.models[0]?.outputModalities).toEqual([])
   })
 
   it('qiyməti olmayan model üçün price BOŞ obyektdir — 0 yazılmır', () => {

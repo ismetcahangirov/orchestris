@@ -225,7 +225,11 @@ export function mergeWithCatalog(
       toolCall: false,
       structuredOutput: false,
       reasoning: false,
+      // Modalitlər də BİLİNMİR — boş massiv məhz bunu bildirir. `['text']`
+      // yazsaydıq, seçicinin süzgəci (issue #47) ölçülməmiş bir iddiaya
+      // əsaslanardı: kəşf edilmiş model şəkil modeli də ola bilər.
       inputModalities: [],
+      outputModalities: [],
       source: 'api' as const,
     }
   })

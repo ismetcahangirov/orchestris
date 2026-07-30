@@ -18,9 +18,14 @@ function runnerIdFor(providerId: string): string {
 /**
  * Seçilə bilən modellər.
  *
- * Üç filtr, hər biri ayrıca bir yalanın qarşısını alır:
+ * Dörd filtr, hər biri ayrıca bir yalanın qarşısını alır:
  *  - `enabled` — istifadəçi modeli söndürübsə, onu rol siyahısında göstərmək
  *    "seç" deyib sonra işlətməmək olardı
+ *  - `taskCapable` — embedding/şəkil/audio modeli başçı və ya işçi OLA BİLMƏZ
+ *    (issue #47); seçilsə task icra anında sınardı. Siqnal serverdə kataloqdan
+ *    hesablanır (`registry/capability.ts`) — burada yalnız tətbiq olunur.
+ *    `/providers` səhifəsindəki siyahıya bu filtr TOXUNMUR: orada istifadəçi
+ *    hər şeyi görməli və əl ilə aktiv/söndürə bilməlidir
  *  - runner tanınır — server o runner-i qeydiyyatdan keçirməyibsə seçim heç
  *    vaxt icra olunmazdı
  *  - hazır DEYİLSƏ siyahıda QALIR, amma işarələnir: "quraşdır" mesajını
@@ -39,7 +44,7 @@ export function selectableModels(
 
   const out: SelectableModel[] = []
   for (const model of models) {
-    if (!model.enabled) continue
+    if (!model.enabled || !model.taskCapable) continue
     const runnerId = runnerIdFor(model.providerId)
 
     const cliRow = cli.get(runnerId)

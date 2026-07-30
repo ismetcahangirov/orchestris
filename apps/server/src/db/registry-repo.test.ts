@@ -34,6 +34,7 @@ function model(overrides: Partial<CatalogModel> = {}): ModelUpsert {
     structuredOutput: true,
     reasoning: false,
     inputModalities: ['text'],
+    outputModalities: ['text'],
     source: 'models.dev',
     ...overrides,
   }

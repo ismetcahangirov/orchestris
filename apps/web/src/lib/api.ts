@@ -201,6 +201,15 @@ export interface ModelRow {
   roleWorker: boolean
   roleClassifier: boolean
   priceKnown: boolean
+  /**
+   * `false` = model task icra EDƏ BİLMƏZ (embedding, şəkil, audio, whisper…) —
+   * issue #47. Sütunda saxlanılmır, `GET /api/models` cavabında kataloqun
+   * modalitlərindən hesablanır (`registry/capability.ts`).
+   *
+   * Model seçicisi belə modelləri GÖSTƏRMİR, `/providers` siyahısı isə göstərir:
+   * orada istifadəçi hər şeyi görməli və əl ilə söndürə bilməlidir.
+   */
+  taskCapable: boolean
 }
 
 export interface DiscoveryResult {
