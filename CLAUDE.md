@@ -1142,6 +1142,43 @@ Açar OPSİONALDIR — lokal provayderlər (Ollama, LM Studio) tələb etmir. A�
 əlavədə kəşf qaça bilmir, ona görə modellər KATALOQDAN yazılır: seçicidə model
 görünməsə provayderi əlavə etməyin mənası qalmazdı.
 
+### 62. Əməliyyatın nəticəsini SERVERİN vəziyyəti təyin edir, klientin `fetch`-i yox
+
+Issue #46. `/providers` səhifəsi "Kataloqu yenilə" düyməsinin nəticəsini
+`mutation.isError`-dan oxuyurdu. Bu, klientin sorğusunun taleyidir — SERVERİN
+gördüyü işin deyil. `POST /api/registry/refresh` 3 MB yükləyir, keş faylını yazır
+və provayderləri yenidən səpir; sorğu yolda kəsilsə iş yenə də GÖRÜLÜB, UI isə
+"yenilənmədi" yazır. İstifadəçi düyməyə bir daha basır — halbuki hər basış yeni
+3 MB yükləmə deməkdir.
+
+Ona görə `mutationFn` artıq XƏTA ATMIR: sorğunun taleyi (`requestError`) və
+kataloqun ƏVVƏL/SONRA vəziyyəti (`GET /api/providers` → `catalog`) birləşdirilir
+(`lib/catalogRefresh.ts` → `catalogRefreshVerdict`, saf funksiya):
+
+| Sorğu | Kataloq | Deyilən söz |
+|---|---|---|
+| uğurlu | — | yeniləndi |
+| sınıq | `fetchedAt` irəliləyib (və ya `bundled` → `cache`) | **yeniləndi** |
+| sınıq | dəyişməyib / oxunmayıb | yenilənmədi + **SƏBƏB** |
+
+İki incəlik:
+
+- **`bundled` → `cache` keçidi ayrıca yoxlanılır.** Yalnız `fetchedAt`
+  müqayisəsi yazsaydıq, ilk uğurlu yeniləmə görünməzdi: snapshot mənbəyində o
+  sahə ÜMUMİYYƏTLƏ yoxdur.
+- **Səbəb indi göstərilir.** Server 502 gövdəsində `error` sahəsini qaytarır,
+  köhnə UI isə onu atırdı — istifadəçi "sındı"nın niyəsini heç yerdə tapa
+  bilmirdi. `refreshErrorReason` xam JSON-u açır (`{"ok":false,"error":"…"}` →
+  yalnız mətn), çünki ekrana yazılan JSON səbəbi gizlətməklə eynidir.
+
+Bilinməyən qəsdən bilinməz saxlanılır: kataloq vəziyyəti OXUNMAYANDA (`after`
+yoxdur) nəticə **uğursuz** sayılır. "Bilmirəm"i "oldu" kimi göstərmək məhz
+issue #46-daki yalanın əks istiqamətidir.
+
+İssue-daki ehtimal (klient `fetch` timeout-u) TƏSDİQLƏNMƏDİ — ölçülmüş:
+`POST /api/registry/refresh` 0.28 s-də cavab verir. Uydurma timeout əlavə
+edilmədi (qayda 50 prinsipi); əvəzinə nəticə mesajı hər iki halda dürüst edildi.
+
 ## Amplification Ladder
 
 Pillələr ucuzdan bahaya:

@@ -165,6 +165,124 @@ describe('Providers səhifəsi', () => {
   })
 })
 
+/**
+ * Kataloq yeniləməsinin NƏTİCƏSİ (issue #46).
+ *
+ * `refreshMock` iki şeyi ayrıca idarə edir: `POST /api/registry/refresh`-in
+ * uğuru və ondan SONRAKI `/api/providers` cavabındakı kataloq. Məhz bu ikisinin
+ * fərqli ola bilməsi issue #46-nın səbəbidir — server işi bitirir, klientin
+ * sorğusu isə kəsilir.
+ */
+function refreshMock(opts: {
+  refreshFails?: string
+  catalogAfter: ProvidersResponse['catalog']
+}): void {
+  let refreshed = false
+  const impl = vi.fn(async (url: string) => {
+    if (url === '/api/providers') {
+      const catalog = refreshed ? opts.catalogAfter : PROVIDERS.catalog
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ ...PROVIDERS, catalog }),
+        text: async () => '',
+      } as Response
+    }
+    if (url === '/api/registry/refresh') {
+      refreshed = true
+      if (opts.refreshFails !== undefined) {
+        return {
+          ok: false,
+          status: 502,
+          json: async () => ({}),
+          text: async () => opts.refreshFails as string,
+        } as Response
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, providerCount: 175 }),
+        text: async () => '',
+      } as Response
+    }
+    return { ok: true, status: 200, json: async () => [], text: async () => '' } as Response
+  })
+  globalThis.fetch = impl as unknown as typeof fetch
+}
+
+describe('Providers — kataloq yeniləməsinin nəticəsi (issue #46)', () => {
+  const originalFetch = globalThis.fetch
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    vi.restoreAllMocks()
+  })
+
+  it('sorğu sınsa DA kataloq yenilənibsə "yenilənmədi" DEMİR', async () => {
+    // İssue #46-nın mahiyyəti: server 3 MB-lıq yükləməni sona çatdırır, klient
+    // tərəfdəki sorğu isə kəsilir. Köhnə UI `isError` üzərində qurulduğu üçün
+    // görülmüş işi "sındı" kimi göstərirdi.
+    refreshMock({
+      refreshFails: 'sorğu kəsildi',
+      catalogAfter: { source: 'cache', fetchedAt: 5000, providerCount: 175 },
+    })
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Kataloqu yenilə' }))
+
+    expect(await screen.findByText(/Kataloq yeniləndi/)).toBeInTheDocument()
+    expect(screen.queryByText(/Kataloq yenilənmədi/)).not.toBeInTheDocument()
+  })
+
+  it('yeni yeniləmə gedərkən KÖHNƏ nəticə göstərilmir', async () => {
+    // "Yenilənir…" düyməsinin yanında qalan "Kataloq yeniləndi." keçmişdən
+    // danışır, istifadəçi isə onu HAZIRKI sorğunun nəticəsi kimi oxuyur.
+    let hold: (() => void) | null = null
+    const impl = vi.fn(async (url: string) => {
+      // İKİNCİ yeniləmə qəsdən yarımçıq saxlanılır — birincinin nəticəsi
+      // ekranda qalırsa məhz burada görünür.
+      if (url === '/api/registry/refresh' && hold !== null) {
+        await new Promise<void>((resolve) => {
+          const release = hold as () => void
+          hold = () => {
+            release()
+            resolve()
+          }
+        })
+      }
+      const body = url === '/api/providers' ? PROVIDERS : { ok: true }
+      return { ok: true, status: 200, json: async () => body, text: async () => '' } as Response
+    })
+    globalThis.fetch = impl as unknown as typeof fetch
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Kataloqu yenilə' }))
+    expect(await screen.findByText(/Kataloq yeniləndi/)).toBeInTheDocument()
+
+    hold = () => {}
+    fireEvent.click(screen.getByRole('button', { name: 'Kataloqu yenilə' }))
+
+    await waitFor(() => expect(screen.getByText('Yenilənir…')).toBeInTheDocument())
+    expect(screen.queryByText(/Kataloq yeniləndi/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Kataloq yenilənmədi/)).not.toBeInTheDocument()
+    hold()
+  })
+
+  it('həqiqətən sındıqda SƏBƏBİ göstərir', async () => {
+    // Köhnə mesaj yalnız "yenilənmədi" deyirdi — istifadəçi səbəbi HEÇ YERDƏ
+    // görə bilmirdi, halbuki 502 cavabı onu daşıyır.
+    refreshMock({
+      refreshFails: 'models.dev → HTTP 503',
+      catalogAfter: PROVIDERS.catalog,
+    })
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Kataloqu yenilə' }))
+
+    expect(await screen.findByText(/Kataloq yenilənmədi/)).toBeInTheDocument()
+    expect(screen.getByText(/HTTP 503/)).toBeInTheDocument()
+  })
+})
+
 describe('Providers — CLI modellərinə rol vermək', () => {
   it('CLI kartında model siyahısını açmaq mümkündür', async () => {
     // Auto rejimi yalnız "işçi" işarəli modellər arasından seçir. CLI

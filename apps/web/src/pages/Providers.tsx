@@ -2,7 +2,17 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import AddProvider from '../components/AddProvider.js'
 import ModelList from '../components/ModelList.js'
-import { api, type ApiProviderRow, type CliProviderRow } from '../lib/api.js'
+import {
+  api,
+  type ApiProviderRow,
+  type CliProviderRow,
+  type ProvidersResponse,
+} from '../lib/api.js'
+import {
+  catalogRefreshVerdict,
+  refreshErrorReason,
+  type RefreshVerdict,
+} from '../lib/catalogRefresh.js'
 
 function CredentialForm({
   provider,
@@ -183,9 +193,30 @@ export default function Providers(): React.JSX.Element {
     queryFn: api.listProviders,
   })
 
-  const refresh = useMutation({
-    mutationFn: api.refreshCatalog,
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['providers'] }),
+  /**
+   * Kataloq yeniləməsi (issue #46).
+   *
+   * `mutationFn` XƏTA ATMIR — nəticəni serverin kataloq vəziyyətindən oxuyur.
+   * Səbəb: `POST /api/registry/refresh` 3 MB yükləyir və işi sona çatdırır,
+   * klient tərəfdəki sorğu isə kəsilə bilir. `isError` üzərində qurulmuş mesaj
+   * həmin halda görülmüş işi "sındı" kimi göstərirdi — istifadəçi düyməyə bir
+   * daha basırdı.
+   */
+  const refresh = useMutation<RefreshVerdict>({
+    mutationFn: async () => {
+      const before = qc.getQueryData<ProvidersResponse>(['providers'])?.catalog
+      let requestError: string | null = null
+      try {
+        await api.refreshCatalog()
+      } catch (err) {
+        requestError = refreshErrorReason(err)
+      }
+      // Həqiqət mənbəyi klientin `fetch`-i deyil, serverin kataloqudur — ona
+      // görə cavab GƏLMƏSƏ də vəziyyət yenidən oxunur.
+      await qc.invalidateQueries({ queryKey: ['providers'] })
+      const after = qc.getQueryData<ProvidersResponse>(['providers'])?.catalog
+      return catalogRefreshVerdict({ requestError, before, after })
+    },
   })
 
   if (isLoading) return <p className="text-ink-dim">Aşkarlanır…</p>
@@ -235,8 +266,16 @@ export default function Providers(): React.JSX.Element {
             ` · ${new Date(data.catalog.fetchedAt).toLocaleString('az')}`}
         </p>
       )}
-      {refresh.isError && (
-        <p className="mt-2 text-xs text-bad">Kataloq yenilənmədi — köhnə nüsxə işlədilir.</p>
+      {refresh.data?.kind === 'refreshed' && (
+        <p className="mt-2 text-xs text-good">Kataloq yeniləndi.</p>
+      )}
+      {(refresh.data?.kind === 'failed' || refresh.isError) && (
+        <p className="mt-2 text-xs text-bad">
+          Kataloq yenilənmədi — köhnə nüsxə işlədilir. Səbəb:{' '}
+          {refresh.data?.kind === 'failed'
+            ? refresh.data.reason
+            : refreshErrorReason(refresh.error)}
+        </p>
       )}
     </div>
   )
