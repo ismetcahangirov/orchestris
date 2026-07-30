@@ -1179,6 +1179,9 @@ issue #46-daki yalanın əks istiqamətidir.
 `POST /api/registry/refresh` 0.28 s-də cavab verir. Uydurma timeout əlavə
 edilmədi (qayda 50 prinsipi); əvəzinə nəticə mesajı hər iki halda dürüst edildi.
 
+Bu qayda yalnız MESAJI dürüst edir. Əməliyyatın ÖZÜNÜN niyə işləmədiyi
+brauzerdə ölçüldü və başqa çıxdı — bax qayda 64 (issue #50).
+
 ### 63. Model seçicisinin süzgəci MODALİTƏ görədir, bayraqlara görə YOX
 
 Issue #47. Başçı/İşçi seçicisi kataloqdaki BÜTÜN modelləri göstərirdi —
@@ -1236,6 +1239,43 @@ bildirir, amma model task icra EDƏ BİLİR. Onu tutmaq üçün lazım olan bayr
 yanında 1000 işlək modeli atardı.
 
 Ölçmə (real DB, 66 model): düşən **9** model — issue-də sadalananların hamısı.
+
+### 64. İŞLƏTMƏDİYİN content-type-ı BİLDİRMƏ
+
+Issue #50 — qayda 62-nin (issue #46) ƏSL kök səbəbi. Brauzerdə ölçüldü:
+
+```
+POST /api/registry/refresh
+  content-type: application/json
+  content-length: 0
+→ 400 FST_ERR_CTP_EMPTY_JSON_BODY
+  "Body cannot be empty when content-type is set to 'application/json'"
+```
+
+`api.ts` → `request` başlığı HƏR sorğuya qoyurdu — gövdə olmasa da. Fastify boş
+gövdəni JSON kimi parse edə bilmir, yəni route-un kodu **heç vaxt çağırılmırdı**.
+Bir düymə deyil, BÜTÜN gövdəsiz sorğular sınıq idi: kataloq yeniləməsi, "Yenidən
+kəşf et", "Açarı sil", task ləğvi və **diff qəbulu/rəddi** (qayda 42-dəki baxış
+qapısı!).
+
+Düzəliş KLİENTDƏDİR: başlıq yalnız gövdə olanda qoyulur. Serverin 400-ü
+DOĞRUDUR və maskalanmadı (`addContentTypeParser` ilə boş gövdəni qəbul etmək
+gələcək klient səhvini səssizcə keçirərdi — qayda 50 ilə eyni fəlsəfə).
+
+Üç dərs, hər biri ölçməyə əsaslanır:
+
+- **`curl` brauzeri təmsil etmir.** `curl -X POST` content-type GÖNDƏRMİR, ona
+  görə issue #46-da terminal 200, brauzer isə xəta verirdi. "Terminaldan işləyir"
+  müşahidəsi klient yolunu SÜBUT ETMİR.
+- **Saxta `fetch` bu sinif səhvləri tutmur.** Web testləri `globalThis.fetch`-i
+  əvəz edir — Fastify-a heç vaxt çatmır. Server testləri isə `app.inject`
+  işlədir və orada content-type təyin olunmur. Yəni brauzerin göndərdiyi sorğu
+  formasını HEÇ BİR test təkrarlamırdı. İndi hər iki tərəfdə var:
+  `lib/api.test.ts` başlığı yoxlayır, `routes/providers.test.ts` isə serverin
+  400-ünü sənədləşdirir.
+- **Xəta gövdəsində `message` seçilir, `error` yox.** Fastify-ın `error` sahəsi
+  KATEQORİYADIR ("Bad Request"); səbəb `message`-dədir. Tərsi UI-da
+  "Səbəb: Bad Request" yazırdı — səbəbin yerində heç nə.
 
 ## Amplification Ladder
 

@@ -625,6 +625,29 @@ describe('POST /api/registry/refresh', () => {
     expect(res.statusCode).toBe(502)
     expect(res.json().ok).toBe(false)
   })
+
+  it('BOŞ gövdə + JSON content-type 400 verir — klient başlığı QOYMAMALIDIR (issue #50)', async () => {
+    // Serverin davranışı DOĞRUDUR və maskalanmır. Bu test brauzerin göndərdiyi
+    // sorğu formasını təkrarlayır: qalan testlər content-type təyin etmədiyi
+    // üçün səhv HEÇ BİR testdə görünmürdü — yalnız brauzerdə (issue #50).
+    const { app } = makeApp({
+      fetchImpl: fetchReturning({
+        anthropic: { id: 'anthropic', name: 'Anthropic', env: [], models: { m: { id: 'm' } } },
+      }),
+    })
+
+    const withHeader = await app.inject({
+      method: 'POST',
+      url: '/api/registry/refresh',
+      headers: { 'content-type': 'application/json' },
+    })
+    expect(withHeader.statusCode).toBe(400)
+    expect(withHeader.json().code).toBe('FST_ERR_CTP_EMPTY_JSON_BODY')
+
+    // Başlıqsız EYNİ sorğu işləyir — yəni düzəliş klientdə olmalıdır.
+    const withoutHeader = await app.inject({ method: 'POST', url: '/api/registry/refresh' })
+    expect(withoutHeader.statusCode).toBe(200)
+  })
 })
 
 describe('keychain əlçatan olmadıqda', () => {

@@ -82,10 +82,26 @@ export interface WorkflowStepRunRow {
   endedAt: number | null
 }
 
+/**
+ * Başlıq YALNIZ gövdə olanda qoyulur (issue #50).
+ *
+ * Ölçülmüş (Chrome, 2026-07-30): boş gövdə + `Content-Type: application/json`
+ * Fastify-da `FST_ERR_CTP_EMPTY_JSON_BODY` → **400** verir və route-un kodu HEÇ
+ * VAXT çağırılmır. Yəni gövdəsiz hər düymə (kataloq yeniləməsi, "Yenidən kəşf
+ * et", "Açarı sil", task ləğvi, **diff qəbulu/rəddi**) səssizcə işləmirdi.
+ *
+ * Səhv məhz burada idi: işlətmədiyimiz content-type-ı bildirirdik. Serverin
+ * 400-ü DOĞRUDUR və orada maskalanmır — əks halda gələcək klient səhvi səssizcə
+ * keçərdi. Terminaldakı `curl -X POST` bu başlığı göndərmədiyi üçün işləyirdi;
+ * issue #46-daki ziddiyyətin izahı da budur.
+ */
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    headers: {
+      ...(init?.body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      ...init?.headers,
+    },
   })
   if (!res.ok) {
     throw new Error(`${res.status} ${url}: ${(await res.text()).slice(0, 300)}`)
