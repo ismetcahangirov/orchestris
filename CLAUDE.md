@@ -1398,6 +1398,105 @@ qovluğunda zibil qalardı.
 seçicidə hələ yazılmaqda olan yol da yoxlanılır və 404 UI-da xəta kimi
 görünərdi, halbuki cavab sadəcə "hələ yoxdur"dur.
 
+### 69. Sual siqnalı da cavabın BÜTÜNÜ olmalıdır — və müqavilə BİRLƏŞDİRİLİB
+
+Qayda 28-in ailəsindən, amma nəticəsi daha pisdir. Yanlış-müsbət eskalasiya
+bahalı bir icra doğurur; yanlış-müsbət SUAL isə taskı **ƏBƏDİ DONDURUR** —
+istifadəçi heç vaxt cavab verməyəcəyi bir suala baxar. Bu sistemin öz sənədini
+və ya müqaviləsini izah edən HƏR task `{"ask": …}` nümunəsini sitat gətirir,
+yəni `includes` qaydası ilə hər belə task gözləmə vəziyyətinə düşərdi.
+
+`parseAsk` (`exec/ask.ts`) JSON-u yalnız cavabın TAMI olanda qəbul edir (ən
+çoxu bir kod çərçivəsi içində) və `kind` məhz üç dəyərdən biri olmalıdır.
+
+**Müqavilə eskalasiya ilə VAHİD blokdadır** (`buildSignalContract`), iki ayrı
+blok kimi YOX. İki səbəb: hər blok ~40 token və HƏR işçi icrasında ödənilir
+(ortaq mətn bir dəfə yazılır); iki oxşar JSON forması ardıcıl verilsə model
+onları qarışdırır — halbuki ikisi eyni sinifdəndir, "dayan və siqnal ver".
+Bloklar müstəqil qapılanır (Pillə 6 / `questions_enabled`).
+
+Uzun və ya çox variantlı sual **RƏDD edilir, KƏSİLMİR** (qayda 39/52
+prinsipi): yarımçıq kəsilmiş sual istifadəçini yanıldar və o, səhv cavab verib
+pulu İKİ dəfə yandırar. Rədd halında mexanizm SƏSSİZCƏ geri çəkilir — cavab adi
+mətn kimi qəbul edilir (qayda 32).
+
+Sual **eskalasiyadan ƏVVƏL** yoxlanılır: sual bir cümlədir, eskalasiya isə
+başçının icrasına aparır. Müqavilə "yalnız biri" desə də model hər ikisini
+yazmağa çalışa bilər — o halda UCUZ yol seçilməlidir.
+
+### 70. Gözləyən task hovuz slotunu SAXLAMIR — və timeout YOXDUR
+
+`max_parallel = 1` olan kontekstdə cavab gözləyən task slotu tutub qalsaydı,
+həmin iş sahəsi TAM KİLİDLƏNƏRDİ: bir cavabsız sual bütün növbəni dondurar və
+istifadəçi səbəbini heç yerdə görməzdi. `TaskPool.yield` slotu buraxır və
+cavabdan sonra ADİ növbəyə qaytarır (cavab vermək "növbədən kənar keçid"
+vermir).
+
+**Timeout YOXDUR** və bu şüurlu qərardır. Avtomatik davam etmək iki pis
+variantdan birini seçmək olardı: modelə "cavab yoxdur" deyib təxmin etdirmək
+(o, məhz bunun qarşısını almaq üçün soruşdu), ya da taskı uğursuz sayıb
+görülmüş işi atmaq. Slot onsuz da buraxıldığı üçün gözləmənin qiyməti sıfırdır.
+
+Cavab `--resume` ilə çatdırılır: işçinin oxuduğu fayllar və prompt keşi
+qorunur. Sıfırdan başlatsaydıq sual verməyin qiyməti TAM icranın qiyməti olardı
+— mexanizm qənaət əvəzinə xərc yaradardı. `MAX_ATTEMPTS` sual dövrəsini də
+məhdudlaşdırır: model ard-arda soruşub dövrəyə düşə bilməz.
+
+Server çökəndə gözləyən suallar başlanğıcda `cancelled` işarələnir
+(`cancelOrphanQuestions`, `markOrphanedRunsInterrupted` yanında) və bağlanmada
+`cancelAll` çağırılır — gözləyən `Promise` prosesi asılı saxlayardı və
+`SIGINT`-dən sonra server bağlanmazdı.
+
+### 71. Suallar AVTOMATİK icralarda söndürülür
+
+Cədvəl və zəncir icralarında (`LadderInput.interactive: false`) sual mexanizmi
+işə düşmür: orada cavab verəcək insan yoxdur və task əbədi gözləyərdi. Cədvəldə
+bu daha pisdir — növbəti tik yeni icra başladar və gözləyənlər YIĞILARDI (qayda
+57-dəki eyni mühakimə).
+
+İki ayrı qapı var və hər ikisi lazımdır: `contexts.questions_enabled`
+istifadəçinin SEÇİMİDİR (default açıq — bağlı olsa mexanizm heç vaxt özünü
+göstərməz), `interactive` isə icranın obyektiv FAKTIDIR. Birini digərinə
+qatsaydıq, istifadəçi bayrağı açanda cədvəl icraları da donardı.
+
+Dekompozisiya `interactive`-i alt-tasklara OLDUĞU KİMİ ötürür: zəncirin
+addımından doğan parçanın sualı bütün zənciri dondurardı.
+
+### 72. Review KEŞ SƏTRİNİ ləğv edir
+
+İstifadəçi rəy yazırsa, deməli əvvəlki cavab SƏHV idi — amma o cavab Pillə 0
+keşinə ARTIQ yazılıb. Ləğv etməsəydik, eyni prompt bir daha göndəriləndə məhz
+düzəldilməsini istədiyiniz səhv cavab qaytarılardı və istifadəçi bunu heç yerdə
+görməzdi.
+
+Açar route-da YENİDƏN HESABLANMIR: o, model, runner, şablon və yaddaş
+digest-indən asılıdır (`cache-key.ts`) və hesablamanı iki yerdə təkrarlamaq
+səssiz uyğunsuzluq mənbəyidir. `storeInCache` açarı `runs.cache_key` sütununa da
+yazır; review route taskın icralarını gəzib həmin sətirləri silir. Sütun
+`tasks`-da DEYİL: bir taskda bir neçə icra olur (yoxlama dövrəsi, best-of-N) və
+keşə hansının düşdüyü məhz İCRA faktıdır.
+
+Rəyli və sual-cavablı icralar keşə YAZILMIR və keşdən OXUMUR (qayda 33
+prinsipi). Ona görə review keş açarına da girmir — açar heç vaxt yoxlanılmır,
+yəni onu dəyişməyin mənası yoxdur və mövcud açarların forması toxunulmaz qalır.
+
+**İki rejim var və seçim istifadəçinindir:** `next` heç nə atmır, `interrupt`
+prosesi öldürür (qayda 6) və yarımçıq işin ÇIXIŞ tokenlərini yandırır (çıxış
+girişdən 3–5x bahadır). Birini "düzgün" sayıb digərini gizlətsəydik, ya səhv
+yolla gedən işçi bitənə qədər gözlənilərdi, ya da hər rəy token yandırardı.
+Qiymət UI-da açıq yazılır.
+
+Rəy BÜTÜN sonrakı icralara qoşulur (bir icraya yox): yoxlama dövrəsinin ikinci
+cəhdi istifadəçinin göstərişini unutmamalıdır. Prompt sırası bir addım genişlənir
+— **task → şablon → yaddaş(ETİBARSIZ) → REVIEW → müqavilə**: review istifadəçinin
+ÖZ göstərişidir (etibarlıdır, yaddaşdan fərqli), ona görə sona yaxındır; müqavilə
+isə ən sonda qalır (qayda 45).
+
+İcra işləmirsə "növbəti icra" yoxdur və route YENİSİNİ başladır (`--resume`
+ilə). Sərhəd ROUTE-dadır, nərdivanda yox: nərdivanın içində "rəy varsa bir daha
+qaç" dövrəsi qursaydıq, ard-arda yazılan rəylər bir çağırışı sonsuz uzada bilər
+və büdcə hesabı mənasını itirərdi.
+
 ## Amplification Ladder
 
 Pillələr ucuzdan bahaya:
@@ -1524,6 +1623,24 @@ Dörd tavanın hər biri ayrı sızma yolunu bağlayır (qayda 57) və hamısı
 MƏCBURİDİR; sonuncusu pulu deyil, DİSKİ qoruyur (qayda 59). Taymer yalnız
 `main.ts`-də qurulur; `Scheduler.tick(now)` saatı parametr alır.
 
+Yeddinci kəsişən mexanizm — **insan-döngədə** (`exec/ask.ts`,
+`exec/question-gate.ts`, `exec/review-queue.ts`, Faza 5B):
+
+```
+işçi məlumat istədi   → task `waiting_input`, HOVUZ SLOTU BURAXILIR (timeout YOX)
+istifadəçi cavab verdi → `--resume` ilə davam; sessiya və prompt keşi qorunur
+istifadəçi rəy yazdı   → növbəyə düşür; `interrupt` rejimində proses ÖLDÜRÜLÜR
+rəy yazıldı            → taskın KEŞ sətri SİLİNİR (`runs.cache_key`)
+icra işləmir + rəy     → route `--resume` ilə YENİ icra başladır
+cədvəl/zəncir icrası   → suallar SÖNDÜRÜLÜR (cavab verəcək insan yoxdur)
+```
+
+İşləyən CLI prosesinə mətn ötürmək MÜMKÜN DEYİL (`claude -p` argv-dən oxuyur,
+`codex exec` stdin bağlı işləyir — qayda 7), ona görə hər iki mexanizm
+icraların ARASINDA işləyir. Suallar `contexts.questions_enabled` ilə idarə
+olunur (default açıq) və `/tasks/:id` səhifəsində checkbox / radio / bəli-xeyr
+formasında cavablandırılır; gözləyən sual `LiveBar` nişanında görünür.
+
 Pillə 1 axını (`routing/decide.ts`):
 
 ```
@@ -1574,11 +1691,13 @@ həqiqət mənbəyi yoxdur.
   `GET /api/fs/check`, `FolderPicker`, qayda 67–68); `cwd` artıq
   `PATCH /api/contexts/:id` ilə dəyişdirilə bilir
 
-Növbəti alt-layihələr (istifadəçinin sorğusundan, hələ başlanmayıb):
+- **5B** (bitdi) — insan-döngədə: agentin SUAL verməsi (`task_questions`,
+  `exec/ask.ts`, checkbox / radio / bəli-xeyr, qayda 69–71) və işləyən icraya
+  CANLI review ötürülməsi (`task_reviews`, iki rejim, keş ləğvi, qayda 72);
+  `TaskPool.yield`, `runs.cache_key`, `contexts.questions_enabled`
 
-- **5B** — insan-döngədə: agentin SUAL verməsi (checkbox / bəli-xeyr, task
-  cavabı gözləyir) və işləyən icraya CANLI review ötürülməsi. Hər ikisi eyni
-  mexanizmi paylaşır: işləyən taskı dayandırıb mətn ötürmək və davam etdirmək.
+Növbəti alt-layihə (istifadəçinin sorğusundan, hələ başlanmayıb):
+
 - **5C** — MCP / skill / plugin dəstəyi + onları əlavə etmə bölmələri. Qayda 1
   ilə birbaşa toqquşur (ölçülmüş: tam yüklə $0.0251, onsuz $0.0085 — ~3x), ona
   görə dizaynın mərkəzi SEÇMƏ (yalnız seçilmiş MCP-lər), kontekst başına opt-in
@@ -1586,6 +1705,28 @@ Növbəti alt-layihələr (istifadəçinin sorğusundan, hələ başlanmayıb):
 
 ## Bilinən boşluqlar
 
+- **Sual mexanizminin FAYDASI ölçülməyib** (qayda 69). «Zəif model DOĞRU sual
+  verirmi, yoxsa hər qeyri-müəyyənlikdə dayanırmı?» sualı real modellə
+  sınanmayıb. Yanlış-müsbət burada bahalıdır: hər lazımsız sual istifadəçinin
+  diqqətini tələb edir və task gözləyir. Ölçmə üsulu: `task_questions`
+  sətirlərinin sayını taskların sayına nisbətlə izləmək; nisbət yüksəkdirsə
+  müqavilə sərtləşdirilməlidir («yalnız cavabsız qala biləcək məlumat üçün
+  soruş»).
+- **`QUESTION_CHAR_LIMIT` (500) və `MAX_QUESTION_OPTIONS` (8) mühakimə ilə
+  seçilib.** İlk real suallardan sonra rədd nisbəti (`parseAsk` → `null`)
+  izlənilməlidir — hər rədd bir işçi icrasının siqnalının itməsidir.
+- **Review-un iqtisadi faydası ölçülməyib** (qayda 72). `interrupt` çıxış
+  tokenləri yandırır; `next` isə səhv işin bitməsini gözləyir. Hansının ucuz
+  olduğu taskın uzunluğundan asılıdır. Ölçmə üsulu: eyni rəy mətni ilə iki
+  rejimi qaçırıb `savings_ledger`-dəki `actual_cost_usd` tutuşdurmaq.
+- **`--resume`-un prompt keşinə təsiri ölçülməyib.** Nəzəri olaraq sessiyanın
+  davamı keşi qoruyur (prefiks dəyişmir), amma ölçülməyib. Qayda 1-dəki
+  metodika ilə: eyni sual-cavab dövrəsini `--resume` ilə və onsuz qaçırıb
+  `cache_read` rəqəmlərini tutuşdurmaq.
+- **Server çökməsindən sonra sessiya davamı sınanmayıb.** `runs.session_id`
+  saxlanılır, amma çökmədən sonra CLI-nin həmin sessiyanı hələ də tanıyıb
+  tanımadığı yoxlanılmayıb. Tanımırsa `--resume` sınacaq və icra uğursuz
+  olacaq — mexanizm bunu hazırda AYIRD ETMİR.
 - **Yazma probu ŞƏBƏKƏ disklərində ölçülməyib** (qayda 68). Lokal SSD-də
   ölçülüb və ucuzdur: `GET /api/fs/check` → **1.2–2.7 ms** (real server, Windows
   11). Doğruluğu da təsdiqlənib — `C:\Windows\System32\config` üçün
