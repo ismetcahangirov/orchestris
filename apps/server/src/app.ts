@@ -17,6 +17,7 @@ import { NullProvider, type MemoryProvider } from './memory/provider.js'
 import { MemorySession } from './memory/session.js'
 import type { Catalog } from './registry/models-dev.js'
 import { registerContextRoutes } from './routes/contexts.js'
+import { registerCustomizationRoutes } from './routes/customizations.js'
 import { registerMemoryRoutes } from './routes/memory.js'
 import {
   defaultCatalog,
@@ -208,6 +209,7 @@ export function buildOrchestris(input: BuildAppInput): OrchestrisApp {
   seedCliProviders(db, runners, catalog)
 
   registerContextRoutes(app, db)
+  registerCustomizationRoutes(app, { db, credentials })
   registerRunRoutes(app, db)
   // Qovluq seçicisi (Faza 5A). `db` LAZIM DEYİL — bu route-lar yalnız fayl
   // sistemini oxuyur və heç nə saxlamır.
@@ -224,6 +226,9 @@ export function buildOrchestris(input: BuildAppInput): OrchestrisApp {
     pool,
     decomposer,
     questions: questionGate,
+    // MCP sirlərinin oxunması üçün (Faza 5C) — eyni nüsxə, `/api/mcp-servers`
+    // ilə paylaşılır ki, yazma və oxuma eyni anbara getsin.
+    credentials,
     ...(input.worktrees !== undefined ? { worktrees: input.worktrees } : {}),
   })
   registerProviderRoutes(app, {

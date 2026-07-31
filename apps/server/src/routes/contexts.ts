@@ -3,6 +3,10 @@ import { isAbsolute } from 'node:path'
 import { CreateContextBody, UpdateContextBody } from '@orchestris/shared'
 import type { FastifyInstance } from 'fastify'
 import type { Db } from '../db/client.js'
+import {
+  setContextMcpServers,
+  setContextPlugins,
+} from '../db/customization-repo.js'
 import { createContext, getContext, listContexts, updateContext } from '../db/repo.js'
 
 /**
@@ -84,6 +88,15 @@ export function registerContextRoutes(app: FastifyInstance, db: Db): void {
       ...(body.extraDirs ?? []),
     ])
     if (problem !== null) return reply.code(400).send({ error: problem })
+
+    // Fərdiləşdirmə seçimi (Faza 5C) AYRI cədvəllərdədir — `updateContext`
+    // yalnız `contexts` sətrini bilir. Seçim TAM ƏVƏZ olunur.
+    if (body.mcpServerIds !== undefined) {
+      setContextMcpServers(db, req.params.id, body.mcpServerIds)
+    }
+    if (body.pluginIds !== undefined) {
+      setContextPlugins(db, req.params.id, body.pluginIds)
+    }
 
     return reply.send(updateContext(db, req.params.id, body))
   })

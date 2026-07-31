@@ -80,6 +80,9 @@ export interface ContextUpdate {
   fileAccess?: string | undefined
   /** YALNIZ `'extended'` səviyyəsində tətbiq olunur (`exec/file-access.ts`). */
   extraDirs?: readonly string[] | undefined
+  questionsEnabled?: boolean | undefined
+  /** CLI-nin daxili skill dəsti (Faza 5C) — hamısı-birdən. */
+  builtinSkillsEnabled?: boolean | undefined
 }
 
 /**
@@ -111,6 +114,12 @@ export function updateContext(db: Db, id: string, input: ContextUpdate): Context
     ...(input.fileAccess !== undefined ? { fileAccess: input.fileAccess } : {}),
     ...(input.extraDirs !== undefined
       ? { extraDirsJson: JSON.stringify(input.extraDirs) }
+      : {}),
+    ...(input.questionsEnabled !== undefined
+      ? { questionsEnabled: input.questionsEnabled }
+      : {}),
+    ...(input.builtinSkillsEnabled !== undefined
+      ? { builtinSkillsEnabled: input.builtinSkillsEnabled }
       : {}),
   }
 

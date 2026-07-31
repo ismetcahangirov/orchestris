@@ -17,6 +17,10 @@ import {
   listReviews,
   type Question,
 } from '../db/interaction-repo.js'
+import {
+  listContextMcpServers,
+  listContextPlugins,
+} from '../db/customization-repo.js'
 import { listMemoryOps } from '../db/memory-repo.js'
 import {
   createTask,
@@ -36,12 +40,22 @@ import { activeRungs, type Ladder, type LadderContext } from '../exec/ladder.js'
 import type { TaskPool } from '../exec/pool.js'
 import type { DbQuestionGate } from '../exec/question-gate.js'
 import { answerProblem } from '../exec/ask.js'
+import {
+  buildMcpConfig,
+  pluginDirsOf,
+  resolveCustomizations,
+  writeMcpConfig,
+  type Customizations,
+} from '../exec/customizations.js'
+import { mcpSecretRef } from './customizations.js'
 import type { RunSupervisor } from '../exec/supervisor.js'
 import {
   detectBinaryFiles,
   resolveMaxParallel,
   type WorktreeManager,
 } from '../exec/worktree.js'
+import { mcpConfigDir } from '../paths.js'
+import type { CredentialStore } from '../secrets/keychain.js'
 import type { RunnerReadiness } from '../routing/readiness.js'
 import { BUILTIN_RULES } from '../routing/rules.js'
 
@@ -67,6 +81,53 @@ export interface TaskRouteDeps {
    * ÇATMIR — cavab `delivered: false` qaytarır və istifadəçi bunu görür.
    */
   questions?: DbQuestionGate
+  /**
+   * MCP sirlərinin oxunması üçün (Faza 5C). Verilməsə sirli serverlər
+   * konfiqurasiyaya DÜŞMÜR — yarımçıq `env` ilə server sınardı.
+   */
+  credentials?: CredentialStore
+}
+
+/**
+ * Kontekstin fərdiləşdirməsini BİR DƏFƏ həll edir və MCP faylını yazır.
+ *
+ * Nərdivanın İÇİNDƏ etmirik: o, bir taskda bir neçə icra qaçırır və hər
+ * birində faylı yenidən yazsaydıq paralel icralar eyni fayl üzərində yarışardı.
+ *
+ * `undefined` qaytarırsa runner köhnə bayraq dəstini işlədir və əmr sətri
+ * bayt-bayt dəyişməz qalır (qayda 1).
+ */
+async function resolveContextCustomizations(
+  db: Db,
+  contextId: string,
+  builtinSkills: boolean,
+  credentials: CredentialStore | undefined,
+): Promise<Customizations | undefined> {
+  const servers = listContextMcpServers(db, contextId)
+  const plugins = listContextPlugins(db, contextId)
+
+  let mcpConfigPath: string | undefined
+  if (servers.length > 0) {
+    const secrets = new Map<string, string>()
+    for (const s of servers) {
+      for (const name of JSON.parse(s.secretEnvJson) as string[]) {
+        const value = await credentials?.get(mcpSecretRef(s.id, name))
+        if (value !== null && value !== undefined) {
+          secrets.set(`${s.id}:${name}`, value)
+        }
+      }
+    }
+    const { config } = buildMcpConfig(servers, (id, name) => secrets.get(`${id}:${name}`))
+    if (config !== null) {
+      mcpConfigPath = writeMcpConfig(mcpConfigDir(), contextId, config)
+    }
+  }
+
+  return resolveCustomizations({
+    mcpConfigPath,
+    pluginDirs: pluginDirsOf(plugins),
+    builtinSkills,
+  })
 }
 
 /** Kontekst sətrindən nərdivanın gözlədiyi obyekti qurur — BİR yerdə. */
@@ -82,7 +143,7 @@ function toLadderContext(ctx: {
   fileAccess: string
   extraDirsJson: string
   questionsEnabled: boolean
-}): LadderContext {
+}, customizations?: Customizations): LadderContext {
   return {
     id: ctx.id,
     cwd: ctx.cwd,
@@ -95,6 +156,7 @@ function toLadderContext(ctx: {
     fileAccess: ctx.fileAccess,
     extraDirsJson: ctx.extraDirsJson,
     questionsEnabled: ctx.questionsEnabled,
+    ...(customizations !== undefined ? { customizations } : {}),
   }
 }
 
@@ -185,7 +247,15 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
           : {}),
     }
 
-    const ladderContext = toLadderContext(ctx)
+    const ladderContext = toLadderContext(
+      ctx,
+      await resolveContextCustomizations(
+        db,
+        ctx.id,
+        ctx.builtinSkillsEnabled,
+        deps.credentials,
+      ),
+    )
     // Hər ikisi birlikdə verilir və ya heç biri — Ladder bunu "əl ilə seçim"
     // və ya "Auto" kimi oxuyur.
     const manual =
@@ -459,10 +529,19 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
     // qaç" dövrəsi qursaydıq, ard-arda yazılan rəylər bir çağırışı sonsuz uzada
     // bilər və büdcə hesabı (`RemainingBudget`) mənasını itirərdi.
     const resumeSessionId = [...runs].reverse().find((r) => r.sessionId !== null)?.sessionId
+    const restartCustomizations = await resolveContextCustomizations(
+      db,
+      ctx.id,
+      ctx.builtinSkillsEnabled,
+      deps.credentials,
+    )
     const restart = (): Promise<unknown> =>
       ladder.run({
         task: { id: task.id, prompt: task.prompt },
-        context: toLadderContext(ctx),
+        context: toLadderContext(
+          ctx,
+          restartCustomizations,
+        ),
         ...(resumeSessionId != null ? { resumeSessionId } : {}),
       })
 

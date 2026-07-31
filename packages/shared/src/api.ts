@@ -98,6 +98,19 @@ export const UpdateContextBody = z.object({
    * orada cavab verəcək insan yoxdur.
    */
   questionsEnabled: z.boolean().optional(),
+  /**
+   * Fərdiləşdirmə seçimi (Faza 5C) — TAM ƏVƏZLƏMƏ.
+   *
+   * UI checkbox siyahısı onsuz da bütöv vəziyyət göndərir; qismən yeniləmə
+   * "hansı silindi?" sualını klientə yükləyərdi.
+   */
+  mcpServerIds: z.array(z.string()).optional(),
+  pluginIds: z.array(z.string()).optional(),
+  /**
+   * CLI-nin DAXİLİ skill dəsti (hamısı-birdən — ədəd-ədəd bayraq YOXDUR).
+   * Ölçülmüş qiymət: +3,648 token / icra.
+   */
+  builtinSkillsEnabled: z.boolean().optional(),
 })
 export type UpdateContextBody = z.infer<typeof UpdateContextBody>
 
@@ -216,6 +229,45 @@ export const CreateReviewBody = z.object({
   mode: z.enum(REVIEW_MODES),
 })
 export type CreateReviewBody = z.infer<typeof CreateReviewBody>
+
+export const MCP_TRANSPORTS = ['stdio', 'http', 'sse'] as const
+
+/**
+ * MCP serverinin əlavə edilməsi (Faza 5C).
+ *
+ * `secretEnv` DƏYƏRLƏRİ daşıyır və onlar YALNIZ bu istiqamətdə hərəkət edir:
+ * brauzer → server → OS keychain (qayda 13). Heç bir cavab sxemində sirr
+ * sahəsi YOXDUR və olmamalıdır.
+ */
+export const CreateMcpServerBody = z
+  .object({
+    name: z
+      .string()
+      .min(1)
+      .max(80)
+      // Ad MCP konfiqurasiyasında AÇAR olur və alət adlarına düşür
+      // (`mcp__<ad>__<alət>`) — boşluq və xüsusi simvol orada sınar.
+      .regex(/^[a-zA-Z0-9_-]+$/, 'Yalnız hərf, rəqəm, `-` və `_`'),
+    transport: z.enum(MCP_TRANSPORTS),
+    command: z.string().min(1).optional(),
+    args: z.array(z.string()).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+    /** Ad → dəyər. Dəyərlər keychain-ə gedir, DB-yə YOX. */
+    secretEnv: z.record(z.string(), z.string()).optional(),
+    url: z.string().url().optional(),
+  })
+  .refine(
+    (b) => (b.transport === 'stdio' ? b.command !== undefined : b.url !== undefined),
+    { message: 'stdio `command`, http/sse isə `url` tələb edir' },
+  )
+export type CreateMcpServerBody = z.infer<typeof CreateMcpServerBody>
+
+export const CreatePluginBody = z.object({
+  name: z.string().min(1).max(80),
+  /** Qovluq və ya `.zip` faylının MÜTLƏQ yolu. */
+  path: z.string().min(1),
+})
+export type CreatePluginBody = z.infer<typeof CreatePluginBody>
 
 export const WsClientMessage = z.discriminatedUnion('type', [
   z.object({ type: z.literal('subscribe'), taskId: z.string() }),
