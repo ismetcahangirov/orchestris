@@ -1,11 +1,22 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
+import FileAccessPanel from '../components/FileAccessPanel.js'
+import FolderPicker from '../components/FolderPicker.js'
 import { api } from '../lib/api.js'
 
 export default function Contexts(): React.JSX.Element {
   const qc = useQueryClient()
   const [name, setName] = useState('')
   const [cwd, setCwd] = useState('')
+  /**
+   * Seçicinin hədəfi: `'new'` = yaratma formasının qovluğu, `<id>` = mövcud
+   * kontekstin iş qovluğu, `null` = bağlı.
+   *
+   * TƏK state saxlanılır, hər sətrə ayrıca modal yox: eyni anda yalnız bir
+   * seçici açıq ola bilər və N modal render etmək N `/api/fs/list` sorğusu
+   * deməkdi.
+   */
+  const [picking, setPicking] = useState<string | null>(null)
 
   const { data } = useQuery({ queryKey: ['contexts'], queryFn: api.listContexts })
 
@@ -22,19 +33,30 @@ export default function Contexts(): React.JSX.Element {
     },
   })
 
-  const setParallel = useMutation({
-    mutationFn: (input: { id: string; maxParallel: number }) =>
-      api.updateContext(input.id, { maxParallel: input.maxParallel }),
+  /**
+   * Kontekst ayarlarının qismən yenilənməsi — paralellik, fayl icazəsi, iş
+   * qovluğu. Hamısı BİR mutasiyadan keçir: server onsuz da yalnız verilən
+   * sahəni dəyişir və hər ayar üçün ayrıca mutasiya eyni kodu təkrarlayardı.
+   */
+  const update = useMutation({
+    mutationFn: (input: { id: string; patch: Parameters<typeof api.updateContext>[1] }) =>
+      api.updateContext(input.id, input.patch),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['contexts'] })
     },
   })
 
+  const pickedContextCwd =
+    picking !== null && picking !== 'new'
+      ? (data?.find((c) => c.id === picking)?.cwd ?? null)
+      : null
+
   return (
     <div className="max-w-3xl">
       <h1 className="mb-1 text-xl font-semibold">Kontekstlər</h1>
       <p className="mb-6 text-sm text-ink-dim">
-        Hər kontekst öz iş qovluğu, büdcəsi və yoxlama əmrləri ilə ayrı iş sahəsidir.
+        Hər kontekst öz iş qovluğu, fayl icazəsi, büdcəsi və yoxlama əmrləri ilə ayrı iş
+        sahəsidir.
       </p>
 
       <form
@@ -55,13 +77,22 @@ export default function Contexts(): React.JSX.Element {
         </label>
         <label className="flex flex-col gap-1 text-xs text-ink-dim">
           İş qovluğu (opsional)
+          {/* Mətn sahəsi QALIR: yolu yapışdırmaq istəyən istifadəçi seçicidən
+              keçməyə məcbur olmamalıdır. */}
           <input
             value={cwd}
             onChange={(e) => setCwd(e.target.value)}
-            placeholder="C:\\Users\\me\\proj"
-            className="w-80 rounded border border-white/15 bg-surface px-3 py-2 font-mono text-sm text-ink"
+            placeholder="C:\Users\me\proj"
+            className="w-72 rounded border border-white/15 bg-surface px-3 py-2 font-mono text-sm text-ink"
           />
         </label>
+        <button
+          type="button"
+          onClick={() => setPicking('new')}
+          className="rounded border border-white/15 px-3 py-2 text-sm text-ink-dim hover:bg-white/5"
+        >
+          Seç…
+        </button>
         <button
           type="submit"
           disabled={name.trim() === '' || create.isPending}
@@ -74,6 +105,9 @@ export default function Contexts(): React.JSX.Element {
       {create.error !== null && (
         <p className="mb-4 text-sm text-bad">{String(create.error)}</p>
       )}
+      {update.error !== null && (
+        <p className="mb-4 text-sm text-bad">{String(update.error)}</p>
+      )}
 
       <ul className="space-y-2">
         {data?.map((c) => (
@@ -81,8 +115,17 @@ export default function Contexts(): React.JSX.Element {
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="font-medium">{c.name}</div>
-                <div className="mt-1 font-mono text-xs text-ink-dim">
-                  {c.cwd ?? '(iş qovluğu yoxdur)'}
+                <div className="mt-1 flex items-center gap-2">
+                  <span className="truncate font-mono text-xs text-ink-dim">
+                    {c.cwd ?? '(iş qovluğu yoxdur)'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setPicking(c.id)}
+                    className="shrink-0 text-xs text-accent hover:underline"
+                  >
+                    dəyiş
+                  </button>
                 </div>
                 <div className="mt-1 text-xs text-ink-dim">
                   profil: {c.amplificationProfile} · işçi rejimi: {c.workerMode}
@@ -93,7 +136,10 @@ export default function Contexts(): React.JSX.Element {
                 <select
                   value={String(c.maxParallel)}
                   onChange={(e) =>
-                    setParallel.mutate({ id: c.id, maxParallel: Number(e.target.value) })
+                    update.mutate({
+                      id: c.id,
+                      patch: { maxParallel: Number(e.target.value) },
+                    })
                   }
                   className="rounded border border-white/15 bg-surface px-2 py-1 text-sm text-ink"
                 >
@@ -108,13 +154,19 @@ export default function Contexts(): React.JSX.Element {
                 </select>
               </label>
             </div>
+
+            <FileAccessPanel
+              context={c}
+              onSave={(patch) => update.mutate({ id: c.id, patch })}
+            />
+
             {c.cwd !== null && c.maxParallel !== 1 && (
               // İzolyasiya YALNIZ paralel kod tasklarında işə düşür — istifadəçi
               // "niyə mənim repoma birbaşa yazıldı?" sualının cavabını burada
               // görməlidir.
               <p className="mt-2 text-xs text-ink-dim">
-                Paralel kod taskları ayrıca git worktree-də icra olunur; nəticə
-                diff kimi göstərilir və repoya yalnız siz qəbul edəndə yazılır.
+                Paralel kod taskları ayrıca git worktree-də icra olunur; nəticə diff
+                kimi göstərilir və repoya yalnız siz qəbul edəndə yazılır.
               </p>
             )}
           </li>
@@ -122,6 +174,18 @@ export default function Contexts(): React.JSX.Element {
       </ul>
 
       {data?.length === 0 && <p className="text-sm text-ink-dim">Hələ kontekst yoxdur.</p>}
+
+      <FolderPicker
+        open={picking !== null}
+        {...(pickedContextCwd !== null ? { initialPath: pickedContextCwd } : {})}
+        onClose={() => setPicking(null)}
+        onSelect={(p) => {
+          const target = picking
+          setPicking(null)
+          if (target === 'new') setCwd(p)
+          else if (target !== null) update.mutate({ id: target, patch: { cwd: p } })
+        }}
+      />
     </div>
   )
 }

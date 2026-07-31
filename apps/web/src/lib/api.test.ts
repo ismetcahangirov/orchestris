@@ -74,8 +74,8 @@ describe('fs endpoint-ləri (Faza 5A)', () => {
 
   it('listDir yolu sorğu parametrinə kodlayır', async () => {
     const calls = captureFetch({ path: '/', parent: null, drives: [], entries: [] })
-    await api.listDir('C:\Users\a b')
-    expect(calls[0]?.url).toBe(`/api/fs/list?path=${encodeURIComponent('C:\Users\a b')}`)
+    await api.listDir('C:\\Users\\a b')
+    expect(calls[0]?.url).toBe(`/api/fs/list?path=${encodeURIComponent('C:\\Users\\a b')}`)
   })
 
   it('listDir yolsuz çağırıla bilir — server ev qovluğundan başlayır', async () => {
