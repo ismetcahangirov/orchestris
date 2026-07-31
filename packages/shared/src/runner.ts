@@ -47,6 +47,29 @@ export interface DetectResult {
   detail: string
 }
 
+/**
+ * Kontekstin fayl icazə səviyyəsi.
+ *
+ * Runner-ə xas bayraq adları BURADA YOXDUR və bu qəsdəndir: `RunRequest`
+ * `ApiRunner` tərəfindən də işlədilir və orada `--permission-mode` anlayışı
+ * ümumiyyətlə yoxdur. Paylaşılan müqavilə NİYYƏTİ daşıyır, tərcüməni isə hər
+ * runner öz `build*Args` funksiyasında edir — yəni bayraq bilikləri onu
+ * işlədən yeganə faylda qalır və hər yeni CLI üçün bu tip genişlənmir.
+ */
+export const FILE_ACCESS_LEVELS = ['read-only', 'workspace', 'extended'] as const
+export type FileAccessLevel = (typeof FILE_ACCESS_LEVELS)[number]
+
+export interface FileAccess {
+  level: FileAccessLevel
+  /**
+   * Agentin toxuna biləcəyi qovluqlar — DETERMİNİST sıralanmış.
+   *
+   * Sıralamasaydıq, eyni qovluq dəsti fərqli sıra ilə fərqli əmr sətri verər
+   * və Anthropic prompt-cache-i lazımsız yerə sınardı (CLAUDE.md qayda 1).
+   */
+  dirs: readonly string[]
+}
+
 export interface RunRequest {
   prompt: string
   model: string
@@ -54,6 +77,11 @@ export interface RunRequest {
   cwd?: string
   /** Mövcud sessiyanı davam etdir */
   resumeSessionId?: string
+  /**
+   * Fayl icazəsi (Faza 5A). Verilməsə runner öz konstruktor default-una
+   * düşür — mövcud çağırışlar və testlər sınmır.
+   */
+  fileAccess?: FileAccess
 }
 
 export interface RunOptions {
