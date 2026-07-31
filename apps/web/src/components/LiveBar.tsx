@@ -32,7 +32,7 @@ function elapsed(startedAt: number, now: number): string {
  * onlardır.
  */
 export default function LiveBar(): React.JSX.Element | null {
-  const { runs } = useActivity()
+  const { runs, pendingQuestions } = useActivity()
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
@@ -42,14 +42,24 @@ export default function LiveBar(): React.JSX.Element | null {
     return () => clearInterval(t)
   }, [runs.length])
 
-  if (runs.length === 0) return null
+  // Zolaq gözləyən sual olanda da görünür (Faza 5B): sualı verən icra ARTIQ
+  // bitib, yəni `runs` boşdur — amma task cavab gözləyir və istifadəçi bunu
+  // görməsə, task səssizcə dayanmış kimi qalardı.
+  if (runs.length === 0 && pendingQuestions === 0) return null
 
   return (
     <div className="mb-4 rounded border border-accent/30 bg-accent/5 p-2">
+      {pendingQuestions > 0 && (
+        <div className="mb-2 rounded bg-accent/15 px-2 py-1 text-xs font-semibold text-accent">
+          ⚠ {pendingQuestions} sual cavab gözləyir
+        </div>
+      )}
+      {runs.length > 0 && (
       <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-accent">
         <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-accent" />
         CANLI — {runs.length} icra
       </div>
+      )}
       <ul className="space-y-2">
         {runs.map((r) => (
           <li key={r.runId}>

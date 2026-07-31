@@ -97,3 +97,32 @@ describe('fs endpoint-ləri (Faza 5A)', () => {
     expect(headerOf(calls[0]?.init, 'Content-Type')).toBeUndefined()
   })
 })
+
+describe('insan-döngədə endpoint-ləri (Faza 5B)', () => {
+  it('listPendingQuestions gövdəsiz GET-dir — content-type qoymur (qayda 64)', async () => {
+    const calls = captureFetch({ questions: [] })
+    await api.listPendingQuestions()
+    expect(calls[0]?.url).toBe('/api/questions/pending')
+    expect(calls[0]?.init?.body).toBeUndefined()
+    expect(headerOf(calls[0]?.init, 'Content-Type')).toBeUndefined()
+  })
+
+  it('answerQuestion gövdə ilə POST-dur və content-type QOYUR', async () => {
+    const calls = captureFetch({ ok: true, delivered: true })
+    await api.answerQuestion('t1', 'q1', ['a', 'b'])
+    expect(calls[0]?.url).toBe('/api/tasks/t1/questions/q1/answer')
+    expect(calls[0]?.init?.method).toBe('POST')
+    expect(headerOf(calls[0]?.init, 'Content-Type')).toBe('application/json')
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ answer: ['a', 'b'] })
+  })
+
+  it('createReview rejimi gövdədə göndərir', async () => {
+    const calls = captureFetch({ ok: true, applied: 'queued' })
+    await api.createReview('t1', { text: 'düzəlt', mode: 'interrupt' })
+    expect(calls[0]?.url).toBe('/api/tasks/t1/review')
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+      text: 'düzəlt',
+      mode: 'interrupt',
+    })
+  })
+})

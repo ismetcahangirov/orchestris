@@ -1,5 +1,6 @@
 import type {
   CreateContextBody,
+  CreateReviewBody,
   CreateTaskBody,
   CreateScheduleBody,
   CreateWorkflowBody,
@@ -121,6 +122,8 @@ export interface ContextRow {
   /** `null` = avtomatik (kontekstin öz `id`-si). */
   memoryScope: string | null
   memoryEnabled: boolean
+  /** İşçi bu kontekstdə sual verə bilirmi (Faza 5B). */
+  questionsEnabled: boolean
   /** `'read-only'` | `'workspace'` | `'extended'` (Faza 5A). */
   fileAccess: string
   /** YALNIZ `'extended'` səviyyəsində tətbiq olunur. */
@@ -154,6 +157,35 @@ export interface FsCheckResponse {
   isDirectory: boolean
   isRepo: boolean
   writable: boolean
+}
+
+/** İşçinin istifadəçiyə verdiyi sual (Faza 5B). */
+export interface QuestionRow {
+  id: string
+  taskId: string
+  runId: string
+  question: string
+  /** `yes_no` | `single` | `multi` */
+  kind: string
+  /** Serverdə `options_json`-dan AÇILIR — UI xam JSON oxumamalıdır. */
+  options: string[]
+  answerJson: string | null
+  /** `pending` | `answered` | `cancelled` */
+  status: string
+  askedAt: number
+  answeredAt: number | null
+}
+
+/** İstifadəçinin işləyən icraya yazdığı rəy (Faza 5B). */
+export interface ReviewRow {
+  id: string
+  taskId: string
+  runId: string | null
+  text: string
+  /** `next` | `interrupt` */
+  mode: string
+  appliedAt: number | null
+  createdAt: number
 }
 
 /** Canlı zolaqdakı bir icra (Faza 5A). */
@@ -477,6 +509,10 @@ export interface TaskDetail {
   memory: MemoryOpRow[]
   /** Faza 4 — alt-task ağacı. Bölünməmiş taskda boş massiv. */
   subtasks: SubtaskRow[]
+  /** Faza 5B — işçinin verdiyi suallar (cavablanmışlar da daxil). */
+  questions: QuestionRow[]
+  /** Faza 5B — istifadəçinin yazdığı rəylər. */
+  reviews: ReviewRow[]
   runs: RunRow[]
 }
 
@@ -518,6 +554,30 @@ export const api = {
 
   /** Canlı zolağın başlanğıc anlıq şəkli — WS yalnız dəyişiklikləri yayır. */
   listActiveRuns: () => request<{ runs: ActiveRunRow[] }>('/api/runs/active'),
+
+  /**
+   * Gözləyən suallar (Faza 5B) — `LiveBar` nişanı üçün.
+   *
+   * `/api/runs/active`-dən HESABLANA BİLMƏZ: sualı verən icra artıq bitib.
+   */
+  listPendingQuestions: () =>
+    request<{ questions: QuestionRow[] }>('/api/questions/pending'),
+
+  answerQuestion: (
+    taskId: string,
+    questionId: string,
+    answer: boolean | string | string[],
+  ) =>
+    request<{ ok: boolean; delivered: boolean }>(
+      `/api/tasks/${taskId}/questions/${questionId}/answer`,
+      { method: 'POST', body: JSON.stringify({ answer }) },
+    ),
+
+  createReview: (taskId: string, body: CreateReviewBody) =>
+    request<{ ok: boolean; applied: string }>(`/api/tasks/${taskId}/review`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 
   listModels: (providerId?: string) =>
     request<ModelRow[]>(

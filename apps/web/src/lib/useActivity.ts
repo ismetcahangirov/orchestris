@@ -1,5 +1,5 @@
 import type { WsServerMessage } from '@orchestris/shared'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { api, type ActiveRunRow } from './api.js'
 
@@ -13,11 +13,26 @@ import { api, type ActiveRunRow } from './api.js'
  * açılanda artıq işləyən icralar barədə heç bir mesaj gəlməzdi və zolaq
  * yalnız NÖVBƏTİ icra başlayanda dolardı.
  */
-export function useActivity(): { runs: ActiveRunRow[]; connected: boolean } {
+export function useActivity(): {
+  runs: ActiveRunRow[]
+  /**
+   * Cavab gözləyən sualların sayı (Faza 5B).
+   *
+   * `runs`-dan HESABLANA BİLMƏZ: sualı verən icra ARTIQ bitib
+   * (`status = 'succeeded'`), yəni `/api/runs/active` onu görmür.
+   */
+  pendingQuestions: number
+  connected: boolean
+} {
+  const qc = useQueryClient()
   const [runs, setRuns] = useState<ActiveRunRow[]>([])
   const [connected, setConnected] = useState(false)
 
   const snapshot = useQuery({ queryKey: ['runs', 'active'], queryFn: api.listActiveRuns })
+  const questions = useQuery({
+    queryKey: ['questions', 'pending'],
+    queryFn: api.listPendingQuestions,
+  })
 
   useEffect(() => {
     if (snapshot.data !== undefined) setRuns(snapshot.data.runs)
@@ -41,6 +56,14 @@ export function useActivity(): { runs: ActiveRunRow[]; connected: boolean } {
       } catch {
         return
       }
+      // Sual hadisəsi (Faza 5B) — sayğac serverdən yenidən oxunur. Sayı
+      // mesajdan HESABLAMIRIQ: `asked`/`answered` ardıcıllığı bağlantı
+      // kəsilməsində itə bilər və sayğac səssizcə sürüşərdi.
+      if (msg.type === 'question') {
+        void qc.invalidateQueries({ queryKey: ['questions', 'pending'] })
+        void qc.invalidateQueries({ queryKey: ['task', msg.taskId] })
+        return
+      }
       if (msg.type !== 'activity') return
 
       setRuns((prev) => {
@@ -54,7 +77,11 @@ export function useActivity(): { runs: ActiveRunRow[]; connected: boolean } {
     }
 
     return () => ws.close()
-  }, [])
+  }, [qc])
 
-  return { runs, connected }
+  return {
+    runs,
+    pendingQuestions: questions.data?.questions.length ?? 0,
+    connected,
+  }
 }
