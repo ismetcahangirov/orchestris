@@ -74,3 +74,64 @@ describe('parseLoginStatus', () => {
     expect(parseLoginStatus('NOT LOGGED IN', 0)).toBe(false)
   })
 })
+
+describe('fayl icazəsi sandbox-a çevrilir', () => {
+  it('read-only', () => {
+    const args = buildCodexArgs({
+      prompt: 'p',
+      model: 'm',
+      fileAccess: { level: 'read-only', dirs: [] },
+    })
+    expect(args[args.indexOf('--sandbox') + 1]).toBe('read-only')
+  })
+
+  it('workspace', () => {
+    const args = buildCodexArgs({
+      prompt: 'p',
+      model: 'm',
+      cwd: '/repo',
+      fileAccess: { level: 'workspace', dirs: ['/repo'] },
+    })
+    expect(args[args.indexOf('--sandbox') + 1]).toBe('workspace-write')
+  })
+
+  it('fileAccess verilməsə default read-only qalır', () => {
+    const args = buildCodexArgs({ prompt: 'p', model: 'm' })
+    expect(args[args.indexOf('--sandbox') + 1]).toBe('read-only')
+  })
+
+  it('extended səviyyəsində əlavə qovluq --add-dir ilə verilir', () => {
+    // ÖLÇÜLDÜ (`codex exec --help`): bayraq mövcuddur və mənası claude ilə
+    // eynidir — "additional directories that should be writable".
+    const args = buildCodexArgs({
+      prompt: 'p',
+      model: 'm',
+      cwd: '/repo',
+      fileAccess: { level: 'extended', dirs: ['/a', '/repo'] },
+    })
+    const dirs = args.filter((_, i) => args[i - 1] === '--add-dir')
+    // `cwd` ötürülmür — codex üçün o, onsuz da "primary workspace"-dir.
+    expect(dirs).toEqual(['/a'])
+  })
+
+  it('read-only sandbox-da --add-dir ÖTÜRÜLMÜR', () => {
+    // Bayrağın mənası "yazıla bilən qovluq"dur — yalnız-oxu rejimində ziddiyyət.
+    const args = buildCodexArgs({
+      prompt: 'p',
+      model: 'm',
+      cwd: '/repo',
+      fileAccess: { level: 'read-only', dirs: ['/a', '/repo'] },
+    })
+    expect(args).not.toContain('--add-dir')
+  })
+
+  it('prompt SON arqument olaraq qalır', () => {
+    const args = buildCodexArgs({
+      prompt: 'salam',
+      model: 'm',
+      cwd: '/repo',
+      fileAccess: { level: 'extended', dirs: ['/a', '/repo'] },
+    })
+    expect(args[args.length - 1]).toBe('salam')
+  })
+})

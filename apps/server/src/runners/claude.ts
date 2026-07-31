@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type {
   Capabilities,
   DetectResult,
+  FileAccessLevel,
   RunEvent,
   RunOptions,
   RunRequest,
@@ -37,6 +38,20 @@ export const CLAUDE_STABLE_FLAGS: readonly string[] = [
   '--exclude-dynamic-system-prompt-sections',
   '--disable-slash-commands',
 ]
+
+/**
+ * Səviyyə → `claude --permission-mode` (Faza 5A).
+ *
+ * `'read-only'` üçün `manual` DEYİL, `plan`: `-p` (print) rejimində interaktiv
+ * icazə pəncərəsi göstərilə bilmir, yəni `manual` praktikada "hər alət sorğusu
+ * rədd edilir" deməkdir — model faylı OXUYA da bilməzdi və nəticə mənasız
+ * olardı. `plan` oxumağa icazə verir, yazmağa yox — istənilən məhz budur.
+ */
+const PERMISSION_BY_LEVEL: Record<FileAccessLevel, 'plan' | 'acceptEdits'> = {
+  'read-only': 'plan',
+  workspace: 'acceptEdits',
+  extended: 'acceptEdits',
+}
 
 export interface ClaudeArgOptions {
   sessionId?: string
@@ -76,9 +91,19 @@ export function buildClaudeArgs(
     args.push('--session-id', opts.sessionId ?? randomUUID())
   }
 
-  if (req.cwd !== undefined) args.push('--add-dir', req.cwd)
-  if (opts.permissionMode !== undefined) {
-    args.push('--permission-mode', opts.permissionMode)
+  // İcazə `RunRequest`-dən gəlirsə O ÜSTÜNDÜR; konstruktor seçimi yalnız
+  // default-dur (mövcud çağırışlar və testlər sınmasın deyə).
+  if (req.fileAccess !== undefined) {
+    // Sıra `resolveFileAccess`-də bir dəfə determinist edilib — burada yenidən
+    // sıralamırıq, yoxsa iki yerdə iki fərqli qayda yaranardı və hansının
+    // keşə düşdüyü bilinməzdi.
+    for (const dir of req.fileAccess.dirs) args.push('--add-dir', dir)
+    args.push('--permission-mode', PERMISSION_BY_LEVEL[req.fileAccess.level])
+  } else {
+    if (req.cwd !== undefined) args.push('--add-dir', req.cwd)
+    if (opts.permissionMode !== undefined) {
+      args.push('--permission-mode', opts.permissionMode)
+    }
   }
   if (opts.fallbackModel !== undefined) {
     args.push('--fallback-model', opts.fallbackModel)

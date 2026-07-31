@@ -1,6 +1,7 @@
 import type {
   Capabilities,
   DetectResult,
+  FileAccessLevel,
   RunEvent,
   RunOptions,
   RunRequest,
@@ -14,6 +15,21 @@ export const CODEX_STABLE_FLAGS: readonly string[] = [
   '--json',
   '--skip-git-repo-check',
 ]
+
+/**
+ * Səviyyə → `codex --sandbox` (Faza 5A).
+ *
+ * `danger-full-access` XƏRİTƏDƏ YOXDUR, halbuki codex onu dəstəkləyir: bizim
+ * `'extended'` səviyyəmiz SEÇİLMİŞ qovluqlar deməkdir, `danger-full-access`
+ * isə bütün diski açır və claude tərəfində qarşılığı yoxdur. Qoysaydıq eyni
+ * səviyyə iki runner-də fərqli şey ifadə edərdi — məhz o asimmetriya aradan
+ * qaldırılır.
+ */
+const SANDBOX_BY_LEVEL: Record<FileAccessLevel, 'read-only' | 'workspace-write'> = {
+  'read-only': 'read-only',
+  workspace: 'workspace-write',
+  extended: 'workspace-write',
+}
 
 export interface CodexArgOptions {
   sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access'
@@ -31,7 +47,26 @@ export function buildCodexArgs(
   args.push(...CODEX_STABLE_FLAGS)
   args.push('--model', req.model)
   // Default `read-only`: yazma icazəsi yalnız açıq tələb olunanda verilir.
-  args.push('--sandbox', opts.sandbox ?? 'read-only')
+  const sandbox =
+    req.fileAccess !== undefined
+      ? SANDBOX_BY_LEVEL[req.fileAccess.level]
+      : (opts.sandbox ?? 'read-only')
+  args.push('--sandbox', sandbox)
+
+  // ÖLÇÜLDÜ (`codex exec --help`): `--add-dir <DIR>` MÖVCUDDUR —
+  // "Additional directories that should be writable alongside the primary
+  // workspace". Yəni `'extended'` səviyyəsi hər iki CLI-da EYNİ mənanı verir.
+  //
+  // İki incəlik:
+  //  - `cwd` ÖTÜRÜLMÜR: codex üçün o, artıq "primary workspace"-dir (prosesin
+  //    öz qovluğu). Təkrar versək arqument mənasız dublikat olardı.
+  //  - `read-only` sandbox-da HEÇ NƏ ötürülmür: bayrağın mənası "yazıla
+  //    bilən" qovluqdur və yalnız-oxu rejimində bu, ziddiyyətdir.
+  if (req.fileAccess !== undefined && sandbox === 'workspace-write') {
+    for (const dir of req.fileAccess.dirs) {
+      if (dir !== req.cwd) args.push('--add-dir', dir)
+    }
+  }
   if (opts.outputSchemaPath !== undefined) {
     args.push('--output-schema', opts.outputSchemaPath)
   }
