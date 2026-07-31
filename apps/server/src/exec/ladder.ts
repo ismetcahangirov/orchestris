@@ -1,4 +1,10 @@
-import { AMPLIFICATION_PROFILES, type RunEvent, type Runner } from '@orchestris/shared'
+import {
+  AMPLIFICATION_PROFILES,
+  type FileAccess,
+  type RunEvent,
+  type Runner,
+} from '@orchestris/shared'
+import { resolveFileAccess } from './file-access.js'
 import type { Db } from '../db/client.js'
 import {
   appendEvent,
@@ -192,6 +198,13 @@ export interface LadderContext {
   memoryScope?: string | null
   /** Kontekst səviyyəsində yaddaş opt-out-u. Default `true`. */
   memoryEnabled?: boolean
+  /**
+   * Fayl icazə səviyyəsi (Faza 5A). Verilməsə `resolveFileAccess` `workspace`
+   * sayır — yəni Faza 5A-dan əvvəlki davranış.
+   */
+  fileAccess?: string
+  /** `'extended'` səviyyəsində icazəli əlavə qovluqlar (JSON massiv). */
+  extraDirsJson?: string
 }
 
 export interface LadderInput {
@@ -1404,10 +1417,23 @@ export class Ladder {
    * unudulanda həmin icra izolyasiyadan KƏNARDA — istifadəçinin əsl repo-sunda —
    * işləyərdi. Belə səhv yalnız real fayl korlanmasında görünərdi.
    */
-  private where(phase: Phase): { cwd?: string; worktreePath?: string } {
+  private where(phase: Phase): {
+    cwd?: string
+    worktreePath?: string
+    fileAccess: FileAccess
+  } {
     return {
       ...(phase.cwd !== undefined ? { cwd: phase.cwd } : {}),
       ...(phase.worktree !== undefined ? { worktreePath: phase.worktree.path } : {}),
+      // İcazə FAKTİKİ qovluğa görə hesablanır: izolyasiya varsa `phase.cwd`
+      // worktree yoludur, yəni agent məhz orada işləyir. İzolyasiya icazəni
+      // ÜSTƏLƏMİR — `read-only` kontekstdə agent worktree-də də yaza bilmir,
+      // çünki `read-only` "heç nə dəyişmə" deməkdir, "başqa yerdə dəyiş" yox.
+      fileAccess: resolveFileAccess({
+        fileAccess: phase.input.context.fileAccess ?? '',
+        extraDirsJson: phase.input.context.extraDirsJson ?? '[]',
+        cwd: phase.cwd,
+      }),
     }
   }
 

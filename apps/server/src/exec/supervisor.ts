@@ -1,4 +1,4 @@
-import type { ErrorClass, RunEvent, Runner } from '@orchestris/shared'
+import type { ErrorClass, FileAccess, RunEvent, Runner } from '@orchestris/shared'
 import type { Db } from '../db/client.js'
 import {
   appendEvent,
@@ -26,6 +26,14 @@ export interface ExecuteInput {
    */
   worktreePath?: string
   resumeSessionId?: string
+  /**
+   * Kontekstin fayl icazəsi — `resolveFileAccess` nəticəsi (Faza 5A).
+   *
+   * Verilməsə runner öz konstruktor default-una düşür. Nərdivan bunu
+   * `where()`-dən BİR yerdən verir ki, çağırış yerlərindən biri unudulanda
+   * həmin icra səhv icazə ilə işləməsin.
+   */
+  fileAccess?: FileAccess
   subscriptionBilled?: boolean
   ladderRung?: number
   /** Yoxlama dövrəsində neçənci cəhd. Default 1. */
@@ -128,6 +136,7 @@ export class RunSupervisor {
           prompt: input.prompt,
           model: input.model,
           ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+          ...(input.fileAccess !== undefined ? { fileAccess: input.fileAccess } : {}),
           ...(input.resumeSessionId !== undefined
             ? { resumeSessionId: input.resumeSessionId }
             : {}),

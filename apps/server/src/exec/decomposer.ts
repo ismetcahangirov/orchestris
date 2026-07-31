@@ -19,6 +19,7 @@ import {
   shouldDecompose,
 } from './decompose.js'
 import { collectAnswerText } from './escalation.js'
+import { resolveFileAccess } from './file-access.js'
 import { RemainingBudget, type Ladder, type LadderContext, type LadderStatus } from './ladder.js'
 import { computeTaskSavings } from './savings.js'
 import type { RunSupervisor } from './supervisor.js'
@@ -220,6 +221,13 @@ export class Decomposer {
       attempt: 1,
       ladderRung: DECOMPOSE_RUNG,
       ...(input.context.cwd !== null ? { cwd: input.context.cwd } : {}),
+      // Bölgü icrası da kontekstin icazəsi ilə işləyir: başçı bölgü yazarkən
+      // repo-ya baxır və `read-only` kontekstdə ona yazmaq icazəsi verilməməlidir.
+      fileAccess: resolveFileAccess({
+        fileAccess: input.context.fileAccess ?? '',
+        extraDirsJson: input.context.extraDirsJson ?? '[]',
+        cwd: input.context.cwd ?? undefined,
+      }),
       ...(limits !== undefined ? { limits } : {}),
     })
     budget.charge(getRun(this.db, exec.runId))
