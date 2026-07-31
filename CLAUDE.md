@@ -54,6 +54,12 @@ Eyni trivial task üç konfiqurasiya ilə real ölçüldü (Haiku 4.5):
 Task-a xas heç nə sistem promptuna girmir — yalnız istifadəçi mesajına.
 Buraya yeni bayraq əlavə etmək = bütün mövcud keşlərin bir dəfəlik sınması.
 
+**DÜZƏLİŞ (Faza 5C ölçməsi):** yuxarıdakı `--safe-mode` şərhi skill-ləri də ona
+aid edirdi — SƏHVDİR. Skill-ləri söndürən `--disable-slash-commands`-dır.
+Ayrıca: bu dəst artıq YEGANƏ deyil — fərdiləşdirmə seçilmiş kontekstlər üçün
+`CLAUDE_CUSTOM_FLAGS` var (qayda 73). Bu dəst isə DƏYİŞMİR və seçim etməyən
+hər kontekst onu bayt-bayt alır.
+
 ### 2. `--bare` istifadə etmə
 
 O, OAuth və keychain oxumasını söndürür → abunəlik işləmir. Real run:
@@ -1497,6 +1503,79 @@ ilə). Sərhəd ROUTE-dadır, nərdivanda yox: nərdivanın içində "rəy varsa
 qaç" dövrəsi qursaydıq, ard-arda yazılan rəylər bir çağırışı sonsuz uzada bilər
 və büdcə hesabı mənasını itirərdi.
 
+### 73. İKİ dondurulmuş bayraq dəsti — qayda 1 dəyişmir, DƏQİQLƏŞİR
+
+Faza 5C istifadəçinin MCP/skill/plugin-lərini qoşmağı mümkün etdi. Bu, qayda
+1-i pozmur: `CLAUDE_STABLE_FLAGS` **BAYT-BAYT** eynidir və default olaraq qalır.
+Yanına ikinci dondurulmuş dəst gəldi — `CLAUDE_CUSTOM_FLAGS`.
+
+Seçim etməyən kontekstin əmr sətri DƏYİŞMİR, yəni **mövcud keşlər toxunulmur**.
+`RunRequest.customizations` `undefined`-dırsa runner köhnə dəsti işlədir.
+
+**Qayda 1-in şərhində BİR SƏHV var idi və ölçmə onu düzəldir:** skill-ləri
+söndürən `--safe-mode` DEYİL, `--disable-slash-commands`-dır. Ölçüldü:
+`--safe-mode` yerində qalıb `--disable-slash-commands` çıxarılanda 16 daxili
+skill və 45 əmr yüklənir.
+
+**Niyə iki dondurulmuş dəst, bir dinamik dəst yox:** dinamik qursaydıq, hər
+ayar kombinasiyası AYRI keş ailəsi yaradardı. İki dəst = ən çoxu iki (daxili
+skill-lərlə üç) ailə və hər ikisi ÖLÇÜLÜB.
+
+`--strict-mcp-config` HƏR İKİ dəstdədir: o, «yalnız `--mcp-config`-dəkilər»
+deməkdir, yəni istifadəçinin qlobal MCP konfiqurasiyası heç vaxt səssizcə
+sızmır.
+
+### 74. `--setting-sources ''` MCP-nin QAPISIDIR — `--safe-mode`-u sadəcə çıxarmaq fəlakətdir
+
+Ölçüldü (`claude` 2.1.220, `claude-haiku-4-5`, eyni trivial prompt, ardıcıl
+icralar):
+
+| Konfiqurasiya | `cache_read` | `cache_create` | isti xərc |
+|---|---|---|---|
+| sabit dəst (etalon) | 23,447 | 0 | **$0.0032** |
+| −`--safe-mode` + `--mcp-config` | **0** | **76,161** | $0.0084 |
+| −`--safe-mode` + `--mcp-config` + `--setting-sources ''` | 24,872 | **1,579** | **$0.0036** |
+
+`--safe-mode` MCP-ni ÜSTƏLƏYİR (marker probu: server prosesi ümumiyyətlə
+başlamır), yəni onu çıxarmaqdan başqa yol yoxdur — `--settings` və
+`--setting-sources` ilə yan keçmək ölçüldü və alınmadı.
+
+Amma onu SADƏCƏ çıxarmaq MCP-ni yox, istifadəçinin CLAUDE.md-sini, hook-larını
+və bütün plugin-lərini geri gətirir: prompt 23k → **76k** (3.2x), keş TAM sınır
+və bir dəfəlik xərc isti etalonun **48 mislidir** ($0.1528).
+
+`--setting-sources ''` bunu +3,004 tokenə (**+12.5%**) endirir və keş SINMIR —
+ilk icrada belə `cache_read` 24,872 idi. Fərdi skill/plugin `--plugin-dir` ilə
+gəlir və o da yalnız `--safe-mode` olmayanda işləyir.
+
+**Pulsuz ölçmə mexanizmi (təkrar istifadə üçün):**
+`claude -p --model <mövcud-olmayan-ad>` API sorğusu GÖNDƏRMİR
+(`total_cost_usd: 0`), amma `system/init` sətrini yazır. MCP serverinin əmri
+olaraq marker fayl yazan proses versək, serverin HƏQİQƏTƏN başladığı görünür.
+`init`-dəki `plugins`/`skills` SAYLARI isə ziddiyyətlidir — onlara güvənmək
+olmaz, yalnız davranış müşahidəsinə.
+
+### 75. MCP sirri ARGV-yə qoyulmur, FAYLA yazılır
+
+`--mcp-config` həm fayl yolu, həm JSON sətri qəbul edir. **Fayl işlədilir.**
+
+Səbəb qayda 14-ün eynidir, sadəcə başqa kanal: əmr sətri arqumentləri proses
+siyahısında (`ps`, Task Manager) maşındakı HƏR prosesə görünür. MCP serverinin
+`env`-i çox vaxt API açarı daşıyır — onu argv-yə qoymaq açarı hər lokal prosesə
+açardı.
+
+Sirlər DB-yə də yazılmır (qayda 13): `mcp_servers.secret_env_json` yalnız
+dəyişən ADLARINI saxlayır, dəyərlər OS keychain-dədir
+(`mcp:<serverId>:<VAR>`). Konfiqurasiya faylı yazılarkən oxunub içəri qoyulur.
+
+Sirri tapılmayan server konfiqurasiyaya **ÜMUMİYYƏTLƏ DÜŞMÜR** (kəsilmir —
+qayda 39 prinsipi): yarımçıq `env` ilə server ya sınar, ya da səlahiyyətsiz
+işləyər və səbəb heç yerdə görünməz.
+
+Fayl hər icradan ƏVVƏL üzərinə yazılır və `routes/tasks.ts`-də BİR DƏFƏ
+hesablanır — nərdivanın içində etsəydik, bir taskın bir neçə icrası eyni fayl
+üzərində yarışardı.
+
 ## Amplification Ladder
 
 Pillələr ucuzdan bahaya:
@@ -1641,6 +1720,23 @@ icraların ARASINDA işləyir. Suallar `contexts.questions_enabled` ilə idarə
 olunur (default açıq) və `/tasks/:id` səhifəsində checkbox / radio / bəli-xeyr
 formasında cavablandırılır; gözləyən sual `LiveBar` nişanında görünür.
 
+Səkkizinci kəsişən mexanizm — **fərdiləşdirmə** (`exec/customizations.ts`,
+Faza 5C, pillə DEYİL):
+
+```
+kontekstdə MCP/plugin/skill seçilmədi → `CLAUDE_STABLE_FLAGS` (əmr sətri
+                                        BAYT-BAYT köhnə, keş toxunulmur)
+seçim var                             → `CLAUDE_CUSTOM_FLAGS`
+                                        (`--setting-sources ''`, +12.5% ölçülmüş)
+MCP seçildi   → konfiqurasiya FAYLA yazılır (argv-yə YOX), sirlər keychain-dən
+plugin seçildi → hər biri üçün `--plugin-dir`
+daxili skill-lər → `--disable-slash-commands` çıxarılır (+3,648 token)
+cli:codex     → fərdiləşdirmə TƏTBİQ OLUNMUR (yol ölçülməyib)
+```
+
+Seçim `routes/tasks.ts`-də BİR DƏFƏ həll olunur və nərdivana hazır formada
+verilir (qayda 75).
+
 Pillə 1 axını (`routing/decide.ts`):
 
 ```
@@ -1696,15 +1792,34 @@ həqiqət mənbəyi yoxdur.
   CANLI review ötürülməsi (`task_reviews`, iki rejim, keş ləğvi, qayda 72);
   `TaskPool.yield`, `runs.cache_key`, `contexts.questions_enabled`
 
-Növbəti alt-layihə (istifadəçinin sorğusundan, hələ başlanmayıb):
-
-- **5C** — MCP / skill / plugin dəstəyi + onları əlavə etmə bölmələri. Qayda 1
-  ilə birbaşa toqquşur (ölçülmüş: tam yüklə $0.0251, onsuz $0.0085 — ~3x), ona
-  görə dizaynın mərkəzi SEÇMƏ (yalnız seçilmiş MCP-lər), kontekst başına opt-in
-  və xərcin ölçülüb göstərilməsi olmalıdır.
+- **5C** (bitdi) — MCP / skill / plugin: `mcp_servers`, `plugin_sources`,
+  kontekst başına ƏDƏD-ƏDƏD seçim, ikinci dondurulmuş bayraq dəsti
+  (`CLAUDE_CUSTOM_FLAGS`), MCP sirlərinin keychain-də saxlanması və
+  `/customizations` səhifəsi (qayda 73–75)
 
 ## Bilinən boşluqlar
 
+- **`--plugin-dir`-in QİYMƏTİ ölçülməyib** (qayda 73). Mexanizm pulsuz probe
+  ilə təsdiqləndi (öz sınaq plugin-imiz `skills` siyahısında göründü), amma bir
+  plugin-in neçə token əlavə etdiyi bilinmir — o, plugin-in ölçüsündən
+  asılıdır. UI plugin üçün rəqəm GÖSTƏRMİR və bunu açıq yazır.
+- **`codex` üçün MCP yolu ölçülməyib.** `codex mcp add` və `-c mcp_servers.…`
+  mövcuddur, amma nə işləmə, nə də qiymət yoxlanılıb. Ona görə dəstək YOXDUR və
+  UI bunu açıq yazır — bu, qayda 65-də düzəltdiyimiz asimmetriyanın
+  qayıtmasıdır, sadəcə GİZLİ deyil.
+- **`--setting-sources ''` başqa nəyi söndürür — tam bilinmir.** Ölçüldü ki, o,
+  76k partlayışının qarşısını alır və MCP qoşulur; hook-ların, `CLAUDE.md`-nin
+  və agent-lərin vəziyyəti ayrıca yoxlanılmayıb. Praktikada bu, bizim üçün
+  İSTƏNİLƏNDİR (hamısı sönülü qalmalıdır), amma təsdiqlənməyib.
+- **MCP serverinin ÖZ qiyməti serverdən asılıdır.** Ölçülən +3,004 token BİR
+  KİÇİK server üçündür (bir alət). `playwright` və ya `chrome-devtools` kimi
+  serverlər onlarla alət verir — onların qiyməti ayrıca ölçülməli və UI-da
+  server başına göstərilməlidir.
+- **MCP-nin FAYDASI ölçülməyib.** «Zəif model MCP alətləri ilə daha yaxşı
+  nəticə verirmi?» sualı sınanmayıb. Qiymət bilinir (+12.5% sabit), fayda isə
+  yox — yəni mexanizmin özünü ödəyib-ödəmədiyi AÇIQ sualdır. Ölçmə üsulu: eyni
+  task dəstini MCP ilə və onsuz qaçırıb `runs.ladder_rung` bölgüsünü
+  tutuşdurmaq.
 - **Sual mexanizminin FAYDASI ölçülməyib** (qayda 69). «Zəif model DOĞRU sual
   verirmi, yoxsa hər qeyri-müəyyənlikdə dayanırmı?» sualı real modellə
   sınanmayıb. Yanlış-müsbət burada bahalıdır: hər lazımsız sual istifadəçinin

@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
+import CustomizationPanel from '../components/CustomizationPanel.js'
 import FileAccessPanel from '../components/FileAccessPanel.js'
 import FolderPicker from '../components/FolderPicker.js'
 import { api } from '../lib/api.js'
@@ -19,6 +20,14 @@ export default function Contexts(): React.JSX.Element {
   const [picking, setPicking] = useState<string | null>(null)
 
   const { data } = useQuery({ queryKey: ['contexts'], queryFn: api.listContexts })
+  // Kataloq BİR dəfə çəkilir və bütün kontekstlərin paneli onu paylaşır —
+  // kontekst başına sorğu N+1 olardı.
+  const mcp = useQuery({ queryKey: ['mcp-servers'], queryFn: api.listMcpServers })
+  const plugins = useQuery({ queryKey: ['plugins'], queryFn: api.listPlugins })
+  const selection = useQuery({
+    queryKey: ['context-customizations'],
+    queryFn: api.listContextCustomizations,
+  })
 
   const create = useMutation({
     mutationFn: () =>
@@ -43,6 +52,7 @@ export default function Contexts(): React.JSX.Element {
       api.updateContext(input.id, input.patch),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['contexts'] })
+      void qc.invalidateQueries({ queryKey: ['context-customizations'] })
     },
   })
 
@@ -157,6 +167,16 @@ export default function Contexts(): React.JSX.Element {
 
             <FileAccessPanel
               context={c}
+              onSave={(patch) => update.mutate({ id: c.id, patch })}
+            />
+
+            <CustomizationPanel
+              contextId={c.id}
+              mcpServers={mcp.data?.servers ?? []}
+              plugins={plugins.data?.plugins ?? []}
+              selectedMcpIds={selection.data?.[c.id]?.mcpServerIds ?? []}
+              selectedPluginIds={selection.data?.[c.id]?.pluginIds ?? []}
+              builtinSkillsEnabled={c.builtinSkillsEnabled}
               onSave={(patch) => update.mutate({ id: c.id, patch })}
             />
 

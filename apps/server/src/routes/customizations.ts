@@ -12,10 +12,13 @@ import {
   deleteMcpServer,
   deletePluginSource,
   getMcpServer,
+  listContextMcpServers,
+  listContextPlugins,
   listMcpServers,
   listPluginSources,
   type McpServer,
 } from '../db/customization-repo.js'
+import { listContexts } from '../db/repo.js'
 import type { CredentialStore } from '../secrets/keychain.js'
 
 /** Keychain-dəki MCP sirrinin adı — qayda 13 ilə eyni forma. */
@@ -127,6 +130,24 @@ export function registerCustomizationRoutes(
     }
     deleteMcpServer(db, server.id)
     return { ok: true }
+  })
+
+  /**
+   * Bütün kontekstlərin seçimi — BİR sorğuda.
+   *
+   * Kontekst başına ayrıca endpoint qursaydıq, `/contexts` səhifəsi N+1 sorğu
+   * göndərərdi. Cavab yalnız İD-lərdir; serverlərin özü `/api/mcp-servers`-dən
+   * gəlir və orada bir dəfə çəkilir.
+   */
+  app.get('/api/contexts/customizations', async () => {
+    const out: Record<string, { mcpServerIds: string[]; pluginIds: string[] }> = {}
+    for (const ctx of listContexts(db)) {
+      out[ctx.id] = {
+        mcpServerIds: listContextMcpServers(db, ctx.id).map((s) => s.id),
+        pluginIds: listContextPlugins(db, ctx.id).map((p) => p.id),
+      }
+    }
+    return out
   })
 
   app.get('/api/plugins', async () => ({ plugins: listPluginSources(db) }))

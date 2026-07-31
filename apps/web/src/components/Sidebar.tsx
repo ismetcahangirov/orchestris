@@ -5,6 +5,7 @@ const LINKS = [
   { to: '/', label: 'İdarə paneli' },
   { to: '/contexts', label: 'Kontekstlər' },
   { to: '/providers', label: 'Provayderlər' },
+  { to: '/customizations', label: 'Fərdiləşdirmə' },
   { to: '/ladder', label: 'Nərdivan' },
   { to: '/workflows', label: 'Zəncirlər' },
   { to: '/history', label: 'Tarixçə' },

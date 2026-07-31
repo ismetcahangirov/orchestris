@@ -1,5 +1,7 @@
 import type {
   CreateContextBody,
+  CreateMcpServerBody,
+  CreatePluginBody,
   CreateReviewBody,
   CreateTaskBody,
   CreateScheduleBody,
@@ -124,6 +126,8 @@ export interface ContextRow {
   memoryEnabled: boolean
   /** İşçi bu kontekstdə sual verə bilirmi (Faza 5B). */
   questionsEnabled: boolean
+  /** CLI-nin daxili skill dəsti açıqdırmı (Faza 5C) — +3,648 token, ölçülmüş. */
+  builtinSkillsEnabled: boolean
   /** `'read-only'` | `'workspace'` | `'extended'` (Faza 5A). */
   fileAccess: string
   /** YALNIZ `'extended'` səviyyəsində tətbiq olunur. */
@@ -186,6 +190,42 @@ export interface ReviewRow {
   mode: string
   appliedAt: number | null
   createdAt: number
+}
+
+/**
+ * MCP serveri (Faza 5C).
+ *
+ * SİRR YOXDUR və olmamalıdır: yalnız `secretEnvNames` (adlar) və `hasSecret`
+ * gəlir — dəyərlər OS keychain-dədir (qayda 13).
+ */
+export interface McpServerRow {
+  id: string
+  name: string
+  transport: string
+  command: string | null
+  args: string[]
+  env: Record<string, string>
+  secretEnvNames: string[]
+  hasSecret: boolean
+  url: string | null
+  enabled: boolean
+  createdAt: number
+}
+
+export interface PluginRow {
+  id: string
+  name: string
+  path: string
+  createdAt: number
+}
+
+/** `~/.claude.json`-dan OXUNAN mövcud server — sirlər daxil deyil. */
+export interface AvailableMcpRow {
+  name: string
+  transport: string
+  command: string | null
+  url: string | null
+  added: boolean
 }
 
 /** Canlı zolaqdakı bir icra (Faza 5A). */
@@ -551,6 +591,32 @@ export const api = {
 
   checkDir: (path: string) =>
     request<FsCheckResponse>(`/api/fs/check?path=${encodeURIComponent(path)}`),
+
+  listMcpServers: () => request<{ servers: McpServerRow[] }>('/api/mcp-servers'),
+  listAvailableMcpServers: () =>
+    request<{ servers: AvailableMcpRow[] }>('/api/mcp-servers/available'),
+  createMcpServer: (body: CreateMcpServerBody) =>
+    request<McpServerRow>('/api/mcp-servers', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  deleteMcpServer: (id: string) =>
+    request<{ ok: boolean }>(`/api/mcp-servers/${id}`, { method: 'DELETE' }),
+
+  listPlugins: () => request<{ plugins: PluginRow[] }>('/api/plugins'),
+
+  /**
+   * Bütün kontekstlərin fərdiləşdirmə seçimi — BİR sorğuda.
+   * Kontekst başına sorğu `/contexts` səhifəsində N+1 olardı.
+   */
+  listContextCustomizations: () =>
+    request<Record<string, { mcpServerIds: string[]; pluginIds: string[] }>>(
+      '/api/contexts/customizations',
+    ),
+  createPlugin: (body: CreatePluginBody) =>
+    request<PluginRow>('/api/plugins', { method: 'POST', body: JSON.stringify(body) }),
+  deletePlugin: (id: string) =>
+    request<{ ok: boolean }>(`/api/plugins/${id}`, { method: 'DELETE' }),
 
   /** Canlı zolağın başlanğıc anlıq şəkli — WS yalnız dəyişiklikləri yayır. */
   listActiveRuns: () => request<{ runs: ActiveRunRow[] }>('/api/runs/active'),
