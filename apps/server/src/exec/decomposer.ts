@@ -75,6 +75,13 @@ export interface DecomposeInput {
    * yəni düzəltdiyimiz səhv bir səviyyə aşağıda təkrarlanardı.
    */
   worktree?: Worktree
+  /**
+   * İSTİFADƏÇİ İŞTİRAKI mümkündürmü (Faza 5B). Default `true`.
+   *
+   * Alt-tasklara OLDUĞU KİMİ ötürülür: bölgü zəncirin addımından gəlibsə orada
+   * cavab verəcək insan yoxdur və parçanın sualı zənciri əbədi dondurardı.
+   */
+  interactive?: boolean
 }
 
 export interface SubtaskOutcome {
@@ -295,6 +302,7 @@ export class Decomposer {
           : {}),
         ...(worktree !== undefined ? { worktree } : {}),
         ...(remaining !== undefined ? { limits: remaining } : {}),
+        ...(input.interactive !== undefined ? { interactive: input.interactive } : {}),
       })
 
       for (const run of listRunsForTask(this.db, row.id)) budget.charge(run)

@@ -567,6 +567,9 @@ export class WorkflowEngine {
           // ayrıca `pending` diff-də qalar və növbəti addım onu görməzdi.
           ...(session.worktree !== undefined ? { worktree: session.worktree } : {}),
           ...(remaining !== undefined ? { limits: remaining } : {}),
+          // Zəncirdə cavab verəcək insan yoxdur — parçalar da sual verməməlidir
+          // (Faza 5B), yoxsa bir alt-taskın sualı bütün zənciri dondurardı.
+          interactive: false,
         })
         if (split.decomposed) {
           return {
@@ -614,6 +617,10 @@ export class WorkflowEngine {
     return this.deps.ladder.run({
       task: { id: taskId, prompt },
       context: input.context,
+      // Zəncirdə cavab verəcək İNSAN yoxdur (Faza 5B): sual verilsə addım
+      // əbədi gözləyər və zəncir heç vaxt bitməzdi. Cədvəl üzrə icrada bu,
+      // daha pisdir — növbəti tik yeni icra başladar və gözləyənlər yığılardı.
+      interactive: false,
       // Zəncir addımları ASILIDIR — AYRICA ağac onları bir-birindən gizlədərdi.
       // Ona görə ya zəncirin ORTAQ ağacı verilir (sahibi valideyn taskdır və
       // nərdivan onu nə açır, nə bağlayır), ya da izolyasiya tamamilə söndürülür.

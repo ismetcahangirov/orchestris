@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  AnswerQuestionBody,
+  CreateReviewBody,
   CreateTaskBody,
   UpdateContextBody,
   WsClientMessage,
@@ -107,5 +109,64 @@ describe('WsClientMessage — activity abunəliyi', () => {
 
   it('unsubscribe_activity qəbul edilir', () => {
     expect(WsClientMessage.safeParse({ type: 'unsubscribe_activity' }).success).toBe(true)
+  })
+})
+
+describe('AnswerQuestionBody (Faza 5B)', () => {
+  it('boolean, sətir və massiv qəbul edir', () => {
+    for (const answer of [true, 'a', ['a', 'b']]) {
+      expect(AnswerQuestionBody.safeParse({ answer }).success).toBe(true)
+    }
+  })
+
+  it('boş massivi rədd edir', () => {
+    // Server onsuz da rədd edir; sxemdə də tutmaq UI-a erkən siqnal verir.
+    expect(AnswerQuestionBody.safeParse({ answer: [] }).success).toBe(false)
+  })
+
+  it('boş sətri rədd edir', () => {
+    expect(AnswerQuestionBody.safeParse({ answer: '' }).success).toBe(false)
+  })
+
+  it('rəqəm cavabı rədd edilir', () => {
+    expect(AnswerQuestionBody.safeParse({ answer: 5 }).success).toBe(false)
+  })
+})
+
+describe('CreateReviewBody (Faza 5B)', () => {
+  it('iki rejimi qəbul edir', () => {
+    for (const mode of ['next', 'interrupt']) {
+      expect(CreateReviewBody.safeParse({ text: 'x', mode }).success).toBe(true)
+    }
+  })
+
+  it('tanınmayan rejimi rədd edir', () => {
+    expect(CreateReviewBody.safeParse({ text: 'x', mode: 'kill' }).success).toBe(false)
+  })
+
+  it('boş mətni rədd edir', () => {
+    expect(CreateReviewBody.safeParse({ text: '', mode: 'next' }).success).toBe(false)
+  })
+})
+
+describe('WsServerMessage — question', () => {
+  it('üç növü qəbul edir', () => {
+    for (const kind of ['asked', 'answered', 'cancelled']) {
+      expect(
+        WsServerMessage.safeParse({ type: 'question', kind, taskId: 't', questionId: 'q' })
+          .success,
+      ).toBe(true)
+    }
+  })
+
+  it('tanınmayan növü rədd edir', () => {
+    expect(
+      WsServerMessage.safeParse({
+        type: 'question',
+        kind: 'pending',
+        taskId: 't',
+        questionId: 'q',
+      }).success,
+    ).toBe(false)
   })
 })

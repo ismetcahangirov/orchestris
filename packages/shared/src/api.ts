@@ -91,6 +91,13 @@ export const UpdateContextBody = z.object({
   fileAccess: z.enum(FILE_ACCESS_LEVELS).optional(),
   /** YALNIZ `'extended'` səviyyəsində tətbiq olunur (`exec/file-access.ts`). */
   extraDirs: z.array(z.string()).optional(),
+  /**
+   * İşçi bu kontekstdə istifadəçiyə sual verə bilirmi (Faza 5B).
+   *
+   * Bayraq AÇIQ olsa belə cədvəl və zəncir icralarında suallar söndürülür —
+   * orada cavab verəcək insan yoxdur.
+   */
+  questionsEnabled: z.boolean().optional(),
 })
 export type UpdateContextBody = z.infer<typeof UpdateContextBody>
 
@@ -178,6 +185,38 @@ export const ActiveRun = z.object({
 })
 export type ActiveRun = z.infer<typeof ActiveRun>
 
+export const QUESTION_KINDS = ['yes_no', 'single', 'multi'] as const
+export const REVIEW_MODES = ['next', 'interrupt'] as const
+
+/**
+ * İşçinin sualına cavab (Faza 5B).
+ *
+ * Cavabın forması `kind`-dan asılıdır: `yes_no` → boolean, `single` → string,
+ * `multi` → string[]. UYĞUNLUQ yoxlaması SERVERDƏDİR (`kind` yalnız orada,
+ * DB sətrində bilinir) — sxemi `kind`-a bağlı etsəydik klient sualın formasını
+ * da göndərməli olardı və uyğunsuz dəyər göndərə bilərdi, yəni yoxlama
+ * özü-özünü yoxlayardı.
+ */
+export const AnswerQuestionBody = z.object({
+  answer: z.union([z.boolean(), z.string().min(1), z.array(z.string().min(1)).min(1)]),
+})
+export type AnswerQuestionBody = z.infer<typeof AnswerQuestionBody>
+
+export const CreateReviewBody = z.object({
+  text: z.string().min(1).max(2000),
+  /**
+   * `next` — növbəti icrada nəzərə alınır, heç bir iş atılmır.
+   * `interrupt` — cari icra DƏRHAL kəsilir; yarımçıq işin ÇIXIŞ tokenləri
+   * ödənilib atılır (çıxış girişdən 3–5x bahadır), əvəzində cavab dərhaldır.
+   *
+   * Seçim istifadəçinindir: birini "düzgün" sayıb digərini gizlətsəydik, ya
+   * səhv yolla gedən işçi bitənə qədər gözlənilərdi, ya da hər rəy token
+   * yandırardı.
+   */
+  mode: z.enum(REVIEW_MODES),
+})
+export type CreateReviewBody = z.infer<typeof CreateReviewBody>
+
 export const WsClientMessage = z.discriminatedUnion('type', [
   z.object({ type: z.literal('subscribe'), taskId: z.string() }),
   z.object({ type: z.literal('unsubscribe'), taskId: z.string() }),
@@ -211,6 +250,19 @@ export const WsServerMessage = z.discriminatedUnion('type', [
     runId: z.string(),
     /** YALNIZ `'started'`-da olur — `'ended'` üçün `runId` kifayətdir. */
     run: ActiveRun.optional(),
+  }),
+  /**
+   * Sual hadisəsi (Faza 5B) — `activity` ilə eyni prinsip: hadisə, delta yox.
+   *
+   * HƏM qlobal, HƏM task kanalına yayılır: qlobal — `LiveBar` nişanı üçün,
+   * task kanalı — açıq `/tasks/:id` səhifəsi üçün. Birini seçsəydik ya nişan
+   * gecikərdi, ya da task səhifəsi qlobal kanala da abunə olmalı olardı.
+   */
+  z.object({
+    type: z.literal('question'),
+    kind: z.enum(['asked', 'answered', 'cancelled']),
+    taskId: z.string(),
+    questionId: z.string(),
   }),
   z.object({ type: z.literal('error'), message: z.string() }),
 ])

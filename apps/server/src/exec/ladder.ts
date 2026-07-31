@@ -239,6 +239,16 @@ export interface LadderInput {
    */
   interactive?: boolean
   /**
+   * Mövcud sessiyanı davam etdir (Faza 5B).
+   *
+   * Review route bunu ötürür: task artıq bitibsə "növbəti icra" yoxdur və
+   * yenisi başladılır — sıfırdan yox, işçinin konteksti ilə.
+   *
+   * Verildikdə icra KEŞƏ YAZILMIR: sessiyanın davamı əvvəlki dialoqdan
+   * asılıdır, açar isə onu əks etdirmir (qayda 33 prinsipi).
+   */
+  resumeSessionId?: string
+  /**
    * ÇAĞIRAN TƏRƏFİN AÇDIĞI worktree (dekompozisiya).
    *
    * Verilibsə nərdivan öz ağacını AÇMIR və verilən ağacı BAĞLAMIR — sahibi
@@ -783,7 +793,7 @@ export class Ladder {
         this.interaction?.questions !== undefined &&
         input.interactive !== false &&
         (input.context.questionsEnabled ?? true),
-      resumeSessionId: undefined,
+      resumeSessionId: input.resumeSessionId,
     }
 
     const outcome = await this.workerPhase(phase)
