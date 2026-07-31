@@ -81,3 +81,71 @@ describe('WsHub', () => {
     expect(hub.taskCount()).toBe(0)
   })
 })
+
+describe('qlobal kanal — canlı zolaq', () => {
+  const ACTIVITY = { type: 'activity', kind: 'ended', runId: 'r1' } as const
+
+  it('yalnız qlobal abunələr activity alır', () => {
+    const hub = new WsHub()
+    const globalSent: string[] = []
+    const taskSent: string[] = []
+    hub.subscribeGlobal({ send: (d: string) => globalSent.push(d) })
+    hub.subscribe('task-1', { send: (d: string) => taskSent.push(d) })
+
+    hub.broadcastGlobal(ACTIVITY)
+
+    expect(globalSent).toHaveLength(1)
+    expect(taskSent).toHaveLength(0)
+  })
+
+  it('task yayımı qlobal abunəyə GETMİR — deltalar zolağa düşməməlidir', () => {
+    const hub = new WsHub()
+    const sent: string[] = []
+    hub.subscribeGlobal({ send: (d: string) => sent.push(d) })
+
+    hub.broadcast('task-1', {
+      type: 'event',
+      taskId: 'task-1',
+      runId: 'r1',
+      seq: 1,
+      at: 1,
+      event: { t: 'text', delta: 'salam' },
+    })
+
+    expect(sent).toHaveLength(0)
+  })
+
+  it('unsubscribeGlobal abunəliyi kəsir', () => {
+    const hub = new WsHub()
+    const sent: string[] = []
+    const g = { send: (d: string) => sent.push(d) }
+    hub.subscribeGlobal(g)
+    hub.unsubscribeGlobal(g)
+    hub.broadcastGlobal(ACTIVITY)
+    expect(sent).toHaveLength(0)
+  })
+
+  it('removeSocket qlobal dəsti də təmizləyir', () => {
+    const hub = new WsHub()
+    const sent: string[] = []
+    const g = { send: (d: string) => sent.push(d) }
+    hub.subscribeGlobal(g)
+    hub.removeSocket(g)
+    hub.broadcastGlobal(ACTIVITY)
+    expect(sent).toHaveLength(0)
+    expect(hub.globalCount()).toBe(0)
+  })
+
+  it('sınıq socket digərlərini dayandırmır', () => {
+    const hub = new WsHub()
+    const ok: string[] = []
+    hub.subscribeGlobal({
+      send: () => {
+        throw new Error('bağlı')
+      },
+    })
+    hub.subscribeGlobal({ send: (d: string) => ok.push(d) })
+    hub.broadcastGlobal(ACTIVITY)
+    expect(ok).toHaveLength(1)
+  })
+})

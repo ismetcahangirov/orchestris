@@ -1,10 +1,13 @@
 import { z } from 'zod'
 import { RunEventSchema } from './events.js'
+import { FILE_ACCESS_LEVELS } from './runner.js'
 
 export const CreateContextBody = z.object({
   name: z.string().min(1).max(200),
   cwd: z.string().optional(),
   verifyCommands: z.array(z.string()).optional(),
+  fileAccess: z.enum(FILE_ACCESS_LEVELS).optional(),
+  extraDirs: z.array(z.string()).optional(),
 })
 export type CreateContextBody = z.infer<typeof CreateContextBody>
 
@@ -78,6 +81,16 @@ export const UpdateContextBody = z.object({
   budgetTokens: z.number().int().positive().nullable().optional(),
   budgetUsd: z.number().positive().nullable().optional(),
   budgetSeconds: z.number().int().positive().nullable().optional(),
+  /**
+   * İş qovluğu (Faza 5A). `null` = sil.
+   *
+   * Əvvəl bu sahə YOX İDİ — `cwd` yalnız kontekst yaradılanda verilirdi və
+   * səhv yazılmış yolu düzəltmək üçün kontekst yenidən yaradılmalı idi.
+   */
+  cwd: z.string().nullable().optional(),
+  fileAccess: z.enum(FILE_ACCESS_LEVELS).optional(),
+  /** YALNIZ `'extended'` səviyyəsində tətbiq olunur (`exec/file-access.ts`). */
+  extraDirs: z.array(z.string()).optional(),
 })
 export type UpdateContextBody = z.infer<typeof UpdateContextBody>
 
@@ -141,10 +154,37 @@ export const SetModelEnabledBody = z.object({
 export type SetModelEnabledBody = z.infer<typeof SetModelEnabledBody>
 
 /** Klientdən serverə gedən WebSocket mesajları */
+/**
+ * Hazırda işləyən bir icranın yığcam təsviri — canlı zolaq üçün (Faza 5A).
+ *
+ * Hadisə DELTALARI burada YOXDUR və bu, mərkəzi qərardır: qlobal kanal zolaq
+ * açıq olan HƏR brauzerə gedir, yəni 5 paralel icrada zolaq — ekranın ən kiçik
+ * elementi — ən böyük trafiki yaradardı. Deltalar task səhifəsinin öz
+ * abunəliyində qalır.
+ */
+export const ActiveRun = z.object({
+  runId: z.string(),
+  taskId: z.string(),
+  contextId: z.string(),
+  contextName: z.string(),
+  /** Taskın ilk sətirləri — zolaqda "nə işlənir" sualının cavabı. */
+  promptExcerpt: z.string(),
+  modelId: z.string(),
+  runnerId: z.string(),
+  /** Mənfi dəyər nərdivandan KƏNAR mexanizmdir: -1 distillə, -2 bölgü. */
+  ladderRung: z.number().int(),
+  attempt: z.number().int(),
+  startedAt: z.number().int(),
+})
+export type ActiveRun = z.infer<typeof ActiveRun>
+
 export const WsClientMessage = z.discriminatedUnion('type', [
   z.object({ type: z.literal('subscribe'), taskId: z.string() }),
   z.object({ type: z.literal('unsubscribe'), taskId: z.string() }),
   z.object({ type: z.literal('cancel'), runId: z.string() }),
+  /** Qlobal canlı zolaq abunəliyi — task-a bağlı DEYİL. */
+  z.object({ type: z.literal('subscribe_activity') }),
+  z.object({ type: z.literal('unsubscribe_activity') }),
 ])
 export type WsClientMessage = z.infer<typeof WsClientMessage>
 
@@ -157,6 +197,20 @@ export const WsServerMessage = z.discriminatedUnion('type', [
     seq: z.number().int(),
     at: z.number().int(),
     event: RunEventSchema,
+  }),
+  /**
+   * Canlı zolaq hadisəsi (Faza 5A).
+   *
+   * `kind: 'updated'` QƏSDƏN YOXDUR: pillə və cəhd nömrəsi bir icra daxilində
+   * DƏYİŞMİR — nərdivan hər pillə/cəhd üçün YENİ `runs` sətri yaradır. Belə
+   * bir növ heç vaxt emit oluna bilməzdi.
+   */
+  z.object({
+    type: z.literal('activity'),
+    kind: z.enum(['started', 'ended']),
+    runId: z.string(),
+    /** YALNIZ `'started'`-da olur — `'ended'` üçün `runId` kifayətdir. */
+    run: ActiveRun.optional(),
   }),
   z.object({ type: z.literal('error'), message: z.string() }),
 ])
