@@ -4,7 +4,14 @@ import {
   type RunEvent,
   type Runner,
 } from '@orchestris/shared'
+import { parseAsk } from './ask.js'
 import { resolveFileAccess } from './file-access.js'
+import {
+  buildAnswerPrompt,
+  buildReviewPrompt,
+  type QuestionGate,
+  type ReviewQueue,
+} from './interaction.js'
 import type { Db } from '../db/client.js'
 import {
   appendEvent,
@@ -16,6 +23,7 @@ import {
   getRun,
   listEvents,
   putCacheEntry,
+  setRunCacheKey,
   recordCacheHit,
   setTaskStatus,
   setTaskType,
@@ -52,7 +60,7 @@ import {
 import {
   buildEscalationPrompt,
   collectAnswerText,
-  ESCALATION_CONTRACT,
+  buildSignalContract,
   parseEscalation,
   type Escalation,
 } from './escalation.js'
@@ -205,6 +213,8 @@ export interface LadderContext {
   fileAccess?: string
   /** `'extended'` səviyyəsində icazəli əlavə qovluqlar (JSON massiv). */
   extraDirsJson?: string
+  /** İşçi bu kontekstdə istifadəçiyə sual verə bilirmi (Faza 5B). Default `true`. */
+  questionsEnabled?: boolean
 }
 
 export interface LadderInput {
@@ -217,6 +227,17 @@ export interface LadderInput {
   runner?: Runner
   model?: string
   limits?: BudgetLimits
+  /**
+   * İSTİFADƏÇİ İŞTİRAKI mümkündürmü (Faza 5B). Default `true`.
+   *
+   * `false` — cədvəl və zəncir icralarında: orada cavab verəcək insan yoxdur
+   * və task ƏBƏDİ gözləyərdi; üstəlik cədvəlin növbəti tiki yeni icra
+   * başladar və gözləyənlər yığılardı (qayda 57-dəki eyni mühakimə).
+   *
+   * Kontekst bayrağından (`questionsEnabled`) AYRIDIR: biri istifadəçinin
+   * seçimidir, digəri isə icranın kontekstinin obyektiv faktı.
+   */
+  interactive?: boolean
   /**
    * ÇAĞIRAN TƏRƏFİN AÇDIĞI worktree (dekompozisiya).
    *
@@ -430,6 +451,18 @@ interface Phase {
    * qədər dar qapı saxlanılır.
    */
   memorySuffix: string
+  /**
+   * Bu taskda tətbiq olunmuş rəylər (Faza 5B).
+   *
+   * Nərdivan bir taskda bir neçə icra qaçırır (yoxlama dövrəsi, best-of-N,
+   * ipucu, başçı). Rəy yalnız BİR icraya tətbiq olunsaydı, ikinci cəhd
+   * istifadəçinin göstərişini UNUDARDI — halbuki o, bütün task boyu keçərlidir.
+   */
+  reviews: string[]
+  /** Sual mexanizmi bu icrada aktivdirmi. */
+  askEnabled: boolean
+  /** Sual-cavab dövrəsində sessiyanın davamı (`--resume`). */
+  resumeSessionId: string | undefined
 }
 
 type WorkerOutcome =
@@ -501,6 +534,9 @@ export class Ladder {
   private readonly router: WorkerRouter | undefined
   private readonly worktrees: WorktreeManager | undefined
   private readonly memory: MemorySession | undefined
+  private readonly interaction:
+    | { questions?: QuestionGate; reviews?: ReviewQueue }
+    | undefined
 
   constructor(
     db: Db,
@@ -508,10 +544,15 @@ export class Ladder {
     router?: WorkerRouter,
     worktrees?: WorktreeManager,
     memory?: MemorySession,
+    interaction?: { questions?: QuestionGate; reviews?: ReviewQueue },
   ) {
     this.db = db
     this.supervisor = supervisor
     this.router = router
+    // Verilməsə insan-döngədə mexanizmləri (Faza 5B) TAMAMİLƏ söndürülür:
+    // müqavilədə sual sətri olmur, rəy növbəsi oxunmur. Testlərin əksəriyyəti
+    // onları ötürmür və davranış Faza 5A-dakı kimi qalır.
+    this.interaction = interaction
     // Verilməsə izolyasiya TAMAMİLƏ söndürülür — nərdivan Faza 1C-dəki kimi
     // birbaşa kontekstin `cwd`-sində işləyir.
     this.worktrees = worktrees
@@ -734,6 +775,15 @@ export class Ladder {
       taskType,
       template,
       memorySuffix: recalled?.suffix ?? '',
+      reviews: [],
+      // ÜÇ şərt BİRLİKDƏ: qapı ötürülüb, kontekst bayrağı açıq və İNSAN
+      // İŞTİRAKI mümkündür. Sonuncusu kontekst bayrağından ayrıdır: biri
+      // istifadəçinin seçimidir, digəri icranın obyektiv faktı (cədvəl/zəncir).
+      askEnabled:
+        this.interaction?.questions !== undefined &&
+        input.interactive !== false &&
+        (input.context.questionsEnabled ?? true),
+      resumeSessionId: undefined,
     }
 
     const outcome = await this.workerPhase(phase)
@@ -968,9 +1018,15 @@ export class Ladder {
 
     // Müqavilə (Pillə 6) SAXLANILIR: köməklə də bacarmırsa işçi yenidən
     // imtina edə bilməlidir — yoxsa o, uydurma cavab yazmağa məcbur qalardı.
-    const contractSuffix = phase.rungs.has(RUNG_SELF_ESCALATION)
-      ? `\n\n${ESCALATION_CONTRACT}`
-      : ''
+    //
+    // SUAL SƏTRİ isə burada YOXDUR: ipuculu cəhd BİRDİR (qayda 34) və sual
+    // verilsə həmin tək cəhd sual-cavaba xərclənərdi — başçının ipucusu isə
+    // onsuz da ödənilib. Ucuz siqnal yerində qalır, bahalısı təkrarlanmır.
+    const contract = buildSignalContract({
+      escalate: phase.rungs.has(RUNG_SELF_ESCALATION),
+      ask: false,
+    })
+    const contractSuffix = contract === '' ? '' : `\n\n${contract}`
     const workerExec = await this.runOnce(phase, {
       prompt: `${strategy.buildWorkerPrompt(phase.input.task.prompt, assistText)}${contractSuffix}`,
       attempt: 1,
@@ -1038,7 +1094,13 @@ export class Ladder {
 
     // Müqavilə istifadəçi mesajının SONUNA əlavə olunur — sistem promptu
     // toxunulmaz qalır (CLAUDE.md qayda 1: prefiks dəyişməsi keşi sındırır).
-    const contractSuffix = useContract ? `\n\n${ESCALATION_CONTRACT}` : ''
+    // Eskalasiya və sual VAHİD blokdadır (Faza 5B): iki ayrı blok həm ikiqat
+    // token, həm də oxşar JSON formaları ilə modeli çaşdırırdı.
+    const contract = buildSignalContract({
+      escalate: useContract,
+      ask: phase.askEnabled,
+    })
+    const contractSuffix = contract === '' ? '' : `\n\n${contract}`
 
     // Prompt distilləsi — başçının bir dəfə yazdığı təlimat. Onu tətbiq etmək
     // SIFIR əlavə başçı tokeni xərcləyir; ödəniş çoxdan olub.
@@ -1060,7 +1122,21 @@ export class Ladder {
       recordTemplateUse(this.db, phase.taskType)
     }
 
-    let prompt = `${workerPrompt}${contractSuffix}`
+    /**
+     * SIRA: task → şablon → yaddaş(ETİBARSIZ) → REVIEW → müqavilə.
+     *
+     * Review yaddaşdan SONRA gedir: o, istifadəçinin ÖZ göstərişidir —
+     * etibarlıdır, halbuki yaddaş kənar mətndir (qayda 45). Model son
+     * göstərişə daha çox əhəmiyyət verdiyi üçün etibarlı mətn sona yaxın
+     * olmalıdır. Müqavilə isə ƏN SONDA qalır — o, işçinin son göstərişidir.
+     */
+    const withReviews = (base: string): string => {
+      const block = buildReviewPrompt(phase.reviews)
+      return block === '' ? base : `${base}\n\n${block}`
+    }
+
+    this.drainReviews(phase)
+    let prompt = `${withReviews(workerPrompt)}${contractSuffix}`
     let attempts = 0
 
     while (attempts < MAX_ATTEMPTS) {
@@ -1089,6 +1165,38 @@ export class Ladder {
       // yalnız təkrarlana bilən xəta siniflərində mənalıdır — `auth` və
       // `budget_exceeded` halında yenidən cəhd etmək pul yandırmaqdır.
       if (exec.status !== 'succeeded') return { kind: 'result', result: base }
+
+      // ── Faza 5B — işçi məlumat istədi ─────────────────────────────────
+      // Eskalasiyadan ƏVVƏL yoxlanılır: sual UCUZDUR (bir cümlə), eskalasiya
+      // isə başçının icrasına aparır. Müqavilə "yalnız biri" desə də model
+      // hər ikisini yazmağa çalışa bilər — o halda UCUZ yol seçilməlidir.
+      if (phase.askEnabled && this.interaction?.questions !== undefined) {
+        const ask = parseAsk(this.answerOf(exec.runId))
+        if (ask !== null) {
+          const answer = await this.interaction.questions.ask({
+            taskId: input.task.id,
+            runId: exec.runId,
+            contextId: input.context.id,
+            maxParallel: input.context.maxParallel ?? 1,
+            question: ask.question,
+            kind: ask.kind,
+            options: ask.options,
+          })
+          if (answer === null) {
+            // Cavab gəlmədi (ləğv). Nəticə OLDUĞU KİMİ qaytarılır — mexanizmin
+            // uğursuzluğu istifadəçinin nəticəsini məhv etməməlidir (qayda 32).
+            return { kind: 'result', result: { ...base, status: 'interrupted' } }
+          }
+          // Sessiya davam etdirilir: işçinin oxuduğu fayllar və prompt keşi
+          // qorunur. Sıfırdan başlatsaydıq sual verməyin qiyməti TAM icranın
+          // qiyməti olardı — yəni mexanizm qənaət əvəzinə xərc yaradardı.
+          phase.resumeSessionId = getRun(this.db, exec.runId)?.sessionId ?? undefined
+          // `attempts` sayğacı ARTIR: `MAX_ATTEMPTS` sual dövrəsini də
+          // məhdudlaşdırır — model ard-arda sual verib dövrəyə düşə bilməz.
+          prompt = buildAnswerPrompt(ask.question, answer)
+          continue
+        }
+      }
 
       // ── Pillə 6 — işçi özü dayandı ────────────────────────────────────
       if (useContract) {
@@ -1161,7 +1269,10 @@ export class Ladder {
       // Xəta mətnini modelə geri ötürüb yenidən cəhd et. Yoxlama SIFIR token
       // xərcləyir; yalnız yeni icra xərcləyir. Şablon SAXLANILIR — o, bu tipin
       // iş üsuludur və səhv düzəlişində də keçərlidir.
-      prompt = `${workerPrompt}\n\n${buildFeedbackPrompt(
+      // Rəylər də saxlanılır və yeniləri boşaldılır: istifadəçi icra gedərkən
+      // rəy yazıbsa, növbəti cəhd onu görməlidir (Faza 5B).
+      this.drainReviews(phase)
+      prompt = `${withReviews(workerPrompt)}\n\n${buildFeedbackPrompt(
         verification.results,
       )}${contractSuffix}`
     }
@@ -1376,6 +1487,17 @@ export class Ladder {
   }
 
   /** Bir icra + büdcə uçotu. */
+  /**
+   * Yeni rəyləri götürür və fazanın siyahısına əlavə edir (Faza 5B).
+   *
+   * Boşaltma DB-də dərhal `applied_at` yazır — yoxsa review route onları hələ
+   * də "tətbiq olunmayıb" sayıb PARALEL ikinci icra başladardı.
+   */
+  private drainReviews(phase: Phase): void {
+    const fresh = this.interaction?.reviews?.drain(phase.input.task.id) ?? []
+    if (fresh.length > 0) phase.reviews.push(...fresh)
+  }
+
   private async runOnce(
     phase: Phase,
     step: {
@@ -1395,6 +1517,11 @@ export class Ladder {
       ladderRung: step.rung,
       ...(step.escalatedFromRunId !== undefined
         ? { escalatedFromRunId: step.escalatedFromRunId }
+        : {}),
+      // Sual-cavab dövrəsində sessiya davam etdirilir (Faza 5B) — işçinin
+      // oxuduğu fayllar və prompt keşi qorunur.
+      ...(phase.resumeSessionId !== undefined
+        ? { resumeSessionId: phase.resumeSessionId }
         : {}),
       ...this.where(phase),
       ...(this.limitsFor(phase) ?? {}),
@@ -1540,6 +1667,12 @@ export class Ladder {
   /** Yalnız uğurlu VƏ (varsa) yoxlamadan keçmiş İŞÇİ nəticəsi keşlənir. */
   private storeInCache(phase: Phase, runId: string): void {
     if (phase.cacheKey === null) return
+    // Sual-cavab və rəy icraları KEŞLƏNMİR (qayda 33 prinsipi): açar nə sualı,
+    // nə də rəyi əks etdirir — onları adi icranın açarı altında saxlamaq
+    // girişi YALANÇI edərdi və sonrakı adi task səhv cavab alardı. Rəy halında
+    // bu, xüsusilə pisdir: rəy "əvvəlki cavab səhvdir" deməkdir.
+    if (phase.resumeSessionId !== undefined || phase.reviews.length > 0) return
+
     const events: RunEvent[] = listEvents(this.db, runId).map((s) => s.event)
     putCacheEntry(this.db, {
       hash: phase.cacheKey,
@@ -1547,6 +1680,9 @@ export class Ladder {
       runnerId: phase.runner.id,
       events,
     })
+    // Açar icra sətrinə də yazılır ki, review route onu YENİDƏN HESABLAMADAN
+    // silə bilsin (bax `runs.cache_key`).
+    setRunCacheKey(this.db, runId, phase.cacheKey)
   }
 
   /**

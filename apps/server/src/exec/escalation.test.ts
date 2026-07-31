@@ -4,7 +4,6 @@ import {
   buildEscalationPrompt,
   buildSignalContract,
   collectAnswerText,
-  ESCALATION_CONTRACT,
   parseEscalation,
 } from './escalation.js'
 
@@ -78,7 +77,7 @@ describe('parseEscalation', () => {
   })
 
   it('müqavilənin öz mətnini təkrarlayan cavab eskalasiya deyil', () => {
-    expect(parseEscalation(ESCALATION_CONTRACT)).toBeNull()
+    expect(parseEscalation(buildSignalContract({ escalate: true, ask: true }))).toBeNull()
   })
 
   it('yarımçıq JSON eskalasiya deyil', () => {

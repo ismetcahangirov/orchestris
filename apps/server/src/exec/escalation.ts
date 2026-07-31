@@ -13,25 +13,6 @@ import type { RunEvent } from '@orchestris/shared'
  */
 
 /**
- * İşçinin promptuna əlavə olunan müqavilə.
- *
- * DİQQƏT: bu mətn İSTİFADƏÇİ MESAJINA əlavə olunur, sistem promptuna YOX.
- * CLAUDE.md qayda 1-də ölçülüb: `claude` CLI-nın sistem prompt prefiksini
- * dəyişmək Anthropic prompt-cache-ini sındırır və eyni task 5x bahalaşır.
- * Müqavilə mesajın SONUNA düşür — prefiks toxunulmaz qalır.
- */
-export const ESCALATION_CONTRACT = [
-  '---',
-  'ƏMİNLİK MÜQAVİLƏSİ (məcburi):',
-  'Əgər bu taskı əminliklə həll edə bilmirsənsə, cəhd etməyi DAYANDIR və',
-  'cavab olaraq YALNIZ bu JSON-u qaytar (başqa heç nə yazma):',
-  '{"escalate": true, "reason": "niyə əmin deyilsən", "partial": "əldə etdiyin qismən nəticə (ola bilər boş)"}',
-  'Səhv cavab verməkdənsə eskalasiya etmək daha yaxşıdır — task avtomatik',
-  'daha güclü modelə ötürüləcək. Həll edə bilirsənsə bu JSON-u YAZMA, sadəcə',
-  'taskı normal şəkildə həll et.',
-].join('\n')
-
-/**
  * Vahid siqnal müqaviləsi (Faza 5B).
  *
  * Eskalasiya və sual AYRI bloklar kimi verilmir. İki səbəb:
