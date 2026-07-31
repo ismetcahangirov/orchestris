@@ -494,3 +494,20 @@ export function listActiveRuns(db: Db): ActiveRun[] {
 export function getActiveRun(db: Db, runId: string): ActiveRun | undefined {
   return listActiveRuns(db).find((r) => r.runId === runId)
 }
+
+/**
+ * Keş sətrini SİLİR — review yazılanda (Faza 5B).
+ *
+ * İstifadəçi rəy yazırsa, deməli cavab səhv idi; amma o cavab Pillə 0 keşinə
+ * ARTIQ düşüb və eyni prompt bir daha göndəriləndə qaytarılardı. Silməsəydik,
+ * istifadəçi düzəltdiyini sandığı səhvi bir daha alardı və səbəbini heç yerdə
+ * görməzdi.
+ */
+export function deleteCacheEntry(db: Db, hash: string): void {
+  db.delete(cacheEntries).where(eq(cacheEntries.hash, hash)).run()
+}
+
+/** `storeInCache` yazdığı açarı icra sətrinə də yazır — bax `runs.cache_key`. */
+export function setRunCacheKey(db: Db, runId: string, cacheKey: string): void {
+  db.update(runs).set({ cacheKey }).where(eq(runs.id, runId)).run()
+}

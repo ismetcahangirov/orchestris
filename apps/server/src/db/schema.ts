@@ -63,6 +63,20 @@ export const contexts = sqliteTable('contexts', {
    * `verify_commands_json` ilə eyni formadır.
    */
   extraDirsJson: text('extra_dirs_json').notNull().default('[]'),
+  /**
+   * İşçi bu kontekstdə İSTİFADƏÇİYƏ sual verə bilirmi (Faza 5B).
+   *
+   * Default AÇIQ: müqavilə bağlı olduqca mexanizm heç vaxt özünü göstərməz və
+   * istifadəçi onun mövcud olduğunu bilməz. Qiyməti ~40 tokendir — eskalasiya
+   * müqaviləsi ilə eyni ölçüdə.
+   *
+   * Bayraq AÇIQ olsa belə CƏDVƏL və ZƏNCİR icralarında suallar SÖNDÜRÜLÜR:
+   * orada cavab verəcək insan yoxdur və task əbədi gözləyərdi
+   * (`LadderInput.interactive`).
+   */
+  questionsEnabled: integer('questions_enabled', { mode: 'boolean' })
+    .notNull()
+    .default(true),
   createdAt: integer('created_at').notNull(),
   archivedAt: integer('archived_at'),
 })
@@ -131,6 +145,20 @@ export const runs = sqliteTable(
     escalatedFromRunId: text('escalated_from_run_id'),
     sessionId: text('session_id'),
     worktreePath: text('worktree_path'),
+    /**
+     * Bu icranın cavabı hansı keş açarı altında saxlanıldı (Faza 5B).
+     *
+     * NİYƏ LAZIMDIR: review yazılanda həmin keş sətri SİLİNMƏLİDİR —
+     * istifadəçi rəy yazırsa, deməli cavab səhv idi, amma o cavab Pillə 0
+     * keşinə ARTIQ düşüb və eyni prompt bir daha göndəriləndə qaytarılardı.
+     *
+     * Açarı route-da yenidən hesablamaq OLMAZ: o, model, runner, şablon və
+     * yaddaş digest-indən asılıdır (`cache-key.ts`) və hesablamanı iki yerdə
+     * təkrarlamaq səssiz uyğunsuzluq mənbəyidir. Sütun `tasks`-da deyil
+     * `runs`-dadır, çünki bir taskda bir neçə icra olur (yoxlama dövrəsi,
+     * best-of-N) və keşə hansının düşdüyü məhz İCRA faktıdır.
+     */
+    cacheKey: text('cache_key'),
     startedAt: integer('started_at').notNull(),
     endedAt: integer('ended_at'),
     errorClass: text('error_class'),
@@ -708,3 +736,61 @@ export const runsRelations = relations(runs, ({ one, many }) => ({
   events: many(runEvents),
   verifications: many(verificationRuns),
 }))
+
+/**
+ * İşçinin istifadəçiyə verdiyi suallar (Faza 5B).
+ *
+ * `runs`-da SAXLANILA BİLMƏZDİ: sual bir icranın NƏTİCƏSİDİR, cavab isə
+ * BAŞQA icraya aiddir — bir sətirdə ikisini birləşdirsək "hansı icra
+ * gözləyir" sualının cavabı itərdi.
+ */
+export const taskQuestions = sqliteTable(
+  'task_questions',
+  {
+    id: text('id').primaryKey(),
+    taskId: text('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    /** Sualı VERƏN icra. */
+    runId: text('run_id').notNull(),
+    question: text('question').notNull(),
+    /** `yes_no` | `single` | `multi` */
+    kind: text('kind').notNull(),
+    optionsJson: text('options_json').notNull().default('[]'),
+    /** NULL = hələ cavab yoxdur. */
+    answerJson: text('answer_json'),
+    /** `pending` | `answered` | `cancelled` */
+    status: text('status').notNull().default('pending'),
+    askedAt: integer('asked_at').notNull(),
+    answeredAt: integer('answered_at'),
+  },
+  (t) => [
+    index('questions_task_idx').on(t.taskId, t.askedAt),
+    // "Gözləyən suallar" sorğusu `LiveBar` nişanı üçün hər açılışda qaçır.
+    index('questions_status_idx').on(t.status),
+  ],
+)
+
+/**
+ * İstifadəçinin işləyən icraya yazdığı rəy (Faza 5B).
+ *
+ * `applied_at` NULL olduqca rəy "tətbiq olunmayıb" sayılır: nərdivan onu
+ * növbəti icrada boşaldır, route isə icra işləmirsə yeni icra başladır.
+ */
+export const taskReviews = sqliteTable(
+  'task_reviews',
+  {
+    id: text('id').primaryKey(),
+    taskId: text('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    /** Rəy yazılanda işləyən icra; yoxdursa NULL. */
+    runId: text('run_id'),
+    text: text('text').notNull(),
+    /** `next` | `interrupt` */
+    mode: text('mode').notNull(),
+    appliedAt: integer('applied_at'),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [index('reviews_task_idx').on(t.taskId, t.createdAt)],
+)

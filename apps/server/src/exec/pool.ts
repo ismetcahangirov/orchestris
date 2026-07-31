@@ -37,6 +37,38 @@ export class TaskPool {
    * yeni task boş slot görüb keçər və limit səssizcə bir vahid aşılardı.
    */
   async run<T>(key: string, limit: number, fn: () => Promise<T>): Promise<T> {
+    await this.acquire(key, limit)
+    try {
+      return await fn()
+    } finally {
+      // `this.lane(key)` — SAXLANILMIŞ istinad YOX: `yield` aralıqda slotu
+      // buraxıb sətri silmiş və yenisini yaratmış ola bilər. Köhnə obyekti
+      // buraxsaydıq sayğac yanlış lane-də azalardı.
+      this.release(key, this.lane(key))
+    }
+  }
+
+  /**
+   * Slotu MÜVƏQQƏTİ buraxıb `fn`-i gözləyir, sonra yenidən növbəyə girir.
+   *
+   * NİYƏ LAZIMDIR (Faza 5B): işçi istifadəçidən sual soruşanda task cavabı
+   * gözləyir. Slotu saxlasaydıq, `max_parallel = 1` olan kontekstdə bir
+   * cavabsız sual BÜTÜN iş sahəsini kilidlərdi və istifadəçi səbəbini heç
+   * yerdə görməzdi.
+   *
+   * Cavabdan sonra task ADİ qaydada növbəyə düşür — cavab vermək "növbədən
+   * kənar keçid" vermir, yoxsa uzun növbədə gözləyənlər əbədi geri atılardı.
+   */
+  async yield<T>(key: string, limit: number, fn: () => Promise<T>): Promise<T> {
+    this.release(key, this.lane(key))
+    try {
+      return await fn()
+    } finally {
+      await this.acquire(key, limit)
+    }
+  }
+
+  private async acquire(key: string, limit: number): Promise<void> {
     const lane = this.lane(key)
     lane.limit = Math.max(1, Math.floor(limit))
 
@@ -48,12 +80,6 @@ export class TaskPool {
     } else {
       // Oyandıran tərəf sayğacı ARTIQ artırıb — burada təkrar artırmaq limiti aşardı.
       await new Promise<void>((resolve) => lane.waiting.push(resolve))
-    }
-
-    try {
-      return await fn()
-    } finally {
-      this.release(key, lane)
     }
   }
 
