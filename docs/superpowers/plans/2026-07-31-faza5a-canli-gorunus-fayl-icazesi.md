@@ -73,11 +73,27 @@ cəhd nömrəsi bir icra daxilində DƏYİŞMİR — nərdivan hər pillə/cəhd
 `runs` sətri yaradır (`supervisor.execute` → `createRun`). Yəni `'updated'` heç
 vaxt emit oluna bilməzdi. Yalnız `'started'` və `'ended'` qalır.
 
-**2. codex-in `extended` səviyyəsi ölçmə ilə təsdiqlənir.**
-`codex exec`-in əlavə yazıla bilən qovluq bayrağı olub-olmadığı BİLİNMİR.
-Task 3-də `codex exec --help` qaçırılır (pulsuz əmr) və nəticə qeyd edilir.
-Bayraq yoxdursa `extended` səviyyəsindəki əlavə qovluqlar YALNIZ claude-a
-tətbiq olunur və UI bunu açıq yazır — uydurma bayraq yazılmır (qayda 50).
+**2. codex-in `extended` səviyyəsi — ÖLÇÜLDÜ, bayraq MÖVCUDDUR.**
+Plan yazılarkən `codex exec`-in əlavə yazıla bilən qovluq bayrağı BİLİNMİRDİ və
+Task 3 Addım 1-də `codex exec --help` ilə ölçülməsi nəzərdə tutulmuşdu.
+
+Nəticə (ölçülmüş, `codex exec --help`):
+
+```
+--add-dir <DIR>
+    Additional directories that should be writable alongside the primary workspace
+```
+
+Yəni bayraq VAR və adı da, mənası da claude ilə eynidir. Buradan iki dəyişiklik:
+
+- `extended` səviyyəsi hər iki CLI-da EYNİ işləyir — planda ehtimal edilən
+  asimmetriya yaranmadı.
+- `FileAccessPanel`-dəki «əlavə qovluqlar yalnız claude-da tətbiq olunur»
+  xəbərdarlığı LAZIM DEYİL və yazılmadı (Task 13-dəki müvafiq test də silindi).
+
+İki incəlik tətbiqdə qeyd olunub: `cwd` codex-ə ÖTÜRÜLMÜR (onun üçün o, onsuz
+da "primary workspace"-dir) və `read-only` sandbox-da bayraq ümumiyyətlə
+verilmir (mənası "yazıla bilən qovluq"dur — yalnız-oxu ilə ziddiyyət).
 
 ---
 

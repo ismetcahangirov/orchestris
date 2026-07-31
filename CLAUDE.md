@@ -1277,6 +1277,127 @@ gələcək klient səhvini səssizcə keçirərdi — qayda 50 ilə eyni fəlsə
   KATEQORİYADIR ("Bad Request"); səbəb `message`-dədir. Tərsi UI-da
   "Səbəb: Bad Request" yazırdı — səbəbin yerində heç nə.
 
+### 65. Fayl icazəsi KONTEKST başınadır və hər iki CLI-a EYNİ mənanı verir
+
+Əvvəl `main.ts` `permissionMode: 'acceptEdits'`-i konstruktorda DONDURURDU,
+`CodexCliRunner` isə arqumentsiz qurulduğu üçün `--sandbox read-only` qalırdı.
+Nəticə: eyni task claude-a düşsə faylı dəyişirdi, codex-ə düşsə səssizcə
+dəyişmirdi — və router hansı runner-in seçildiyini onsuz da gizlədir, yəni fərq
+TƏSADÜFİ görünürdü. Üstəlik "bu iş sahəsi yalnız-oxu olsun" demək ÜMUMİYYƏTLƏ
+mümkün deyildi.
+
+İndi `contexts.file_access` (`read-only` | `workspace` | `extended`) və
+`contexts.extra_dirs_json` var; `exec/file-access.ts` → `resolveFileAccess`
+(saf funksiya, **0 token**) onları `{ level, dirs }` formasına çevirir.
+
+**Paylaşılan müqavilə NİYYƏT daşıyır, bayraq adı yox.** `RunRequest.fileAccess`
+`claudePermissionMode` / `codexSandbox` DEYİL: həmin tip `ApiRunner`-də də
+işlədilir və orada `--permission-mode` anlayışı ümumiyyətlə yoxdur. Konkret
+bayraqları ora yazsaydıq, bir CLI-ın əmr sətri detalları bütün runner-lərə
+sızardı və hər yeni CLI üçün paylaşılan paket dəyişməli olardı.
+
+| Səviyyə | `claude --permission-mode` | `codex --sandbox` |
+|---|---|---|
+| `read-only` | `plan` | `read-only` |
+| `workspace` | `acceptEdits` | `workspace-write` |
+| `extended` | `acceptEdits` | `workspace-write` + `--add-dir` |
+
+Dörd ölçülmüş qərar:
+
+- **`read-only` → `plan`, `manual` YOX.** `-p` (print) rejimində interaktiv
+  icazə pəncərəsi göstərilə bilmir, yəni `manual` praktikada "hər alət sorğusu
+  rədd edilir" deməkdir — model faylı OXUYA da bilməzdi.
+- **`codex exec --add-dir` MÖVCUDDUR** (ölçülmüş: `codex exec --help` →
+  *"Additional directories that should be writable alongside the primary
+  workspace"*). Yəni `extended` hər iki CLI-da eyni işləyir. `cwd` codex-ə
+  ötürülmür — o, onsuz da "primary workspace"-dir; `read-only` sandbox-da isə
+  bayraq ümumiyyətlə verilmir (mənası "yazıla bilən qovluq"dur).
+- **`danger-full-access` xəritədə YOXDUR.** Bizim `extended` SEÇİLMİŞ qovluqlar
+  deməkdir; o isə bütün diski açır və claude-da qarşılığı yoxdur — qoysaydıq
+  eyni səviyyə iki runner-də fərqli şey ifadə edərdi.
+- **`CLAUDE_STABLE_FLAGS` TOXUNULMUR** (qayda 1). `--permission-mode` və
+  `--add-dir` onsuz da o dəstin xaricindədir. `dirs` DETERMİNİST sıralanır
+  (`resolveFileAccess`-də bir dəfə): sıralamasaydıq eyni qovluq dəsti fərqli
+  sıra ilə fərqli əmr sətri verər və prompt-cache lazımsız yerə sınardı.
+
+İzolyasiya icazəni ÜSTƏLƏMİR: `read-only` kontekstdə agent worktree-də də yaza
+bilmir. `read-only` "heç nə dəyişmə" deməkdir, "başqa yerdə dəyiş" yox.
+
+Miqrasiya 0010 default `'workspace'` yazır, `'read-only'` YOX — və bu, qayda
+43-ün ƏKS istiqamətidir. Orada köhnə `max_parallel = 1` istifadəçinin seçimi
+deyildi (dəyişdirmək üçün API yox idi). Burada isə `acceptEdits` FAKTİKİ
+davranışdır: istifadəçi ona güvənərək task göndərib. Seçilməmiş default-u
+dəyişmək olar; işləyən davranışı yox.
+
+### 66. Qlobal WS kanalına DELTA düşmür
+
+Canlı zolaq (`LiveBar`) Sidebar-dadır, yəni HƏR səhifədə mount olunur. Hadisə
+deltalarını qlobal kanala yaysaydıq, 5 paralel icrada zolaq — ekranın ən kiçik
+elementi — ən böyük trafiki yaradardı. `WsHub` iki ayrı dəst saxlayır (`byTask`,
+`globalSockets`) və `activity` yalnız ikincisinə gedir.
+
+**`kind: 'updated'` YOXDUR.** Pillə və cəhd nömrəsi bir icra daxilində DƏYİŞMİR
+— nərdivan hər pillə/cəhd üçün YENİ `runs` sətri yaradır (`supervisor.execute`
+→ `createRun`). Belə bir növ heç vaxt emit oluna bilməzdi.
+
+Zolağın başlanğıc vəziyyəti `GET /api/runs/active`-dən gəlir, polling-dən yox:
+WS yalnız dəyişiklikləri yayır, yəni səhifə açılanda artıq işləyən icralar
+barədə heç bir mesaj gəlməzdi. Keçən vaxt BRAUZERDƏ hesablanır (`startedAt`-dan)
+— hər saniyə server mesajı göndərmək eyni məlumatı şəbəkədən keçirməkdir.
+
+Orkestrasiya icraları (klassifikator, distillə `-1`, bölgü `-2`) zolaqda
+GÖRÜNÜR: onlar da pul yandırır (qayda 22, 37, 51) və "niyə hələ gözləyirəm?"
+sualının cavabı çox vaxt məhz onlardır. Mənfi nömrə rəqəm kimi göstərilmir —
+ad işlədilir (`distillə`, `bölgü`), çünki "Pillə -1" heç nə demir.
+
+### 67. Brauzer qovluğun MÜTLƏQ yolunu vermir — seçici SERVERDƏN qurulur
+
+İki brauzer yolu var və hər ikisi bu iş üçün yararsızdır:
+
+| Yol | Nə qaytarır | Niyə yararsızdır |
+|---|---|---|
+| `showDirectoryPicker()` | `FileSystemDirectoryHandle` — yalnız `.name` | Mütləq yol QƏSDƏN gizlədilir; üstəlik yalnız Chromium |
+| `<input webkitdirectory>` | `webkitRelativePath` | Nisbi yol; üstəlik qovluğun BÜTÜN fayllarını sadalayır — `node_modules` olan repoda donma |
+
+Bizə isə `cwd` və `--add-dir` üçün məhz mütləq yol lazımdır. Ona görə
+`GET /api/fs/list` var: bir səviyyə, yalnız qovluqlar, fayl MƏZMUNU heç vaxt,
+rekursiya heç vaxt. Nativ OS dialoqu (PowerShell `FolderBrowserDialog`) rədd
+edildi — Windows-a bağlıdır, desktop olmayan mühitdə test edilə bilmir və
+seçim anında lazım olan məlumatı (git repo? yazıla bilir?) VERMİR.
+
+`isRepo` `.git`-i FAYL və ya QOVLUQ kimi axtarır: worktree-də o, bir FAYLDIR
+(qayda 44) və yalnız qovluğu yoxlasaydıq sistem ÖZ yaratdığı ağacları "repo
+deyil" sayardı. Nöqtə ilə başlayan qovluqlar `hidden` İŞARƏLƏNİR, server
+tərəfdə SÜZÜLMÜR — qərar UI-ındır və istifadəçi `.config` seçmək istəyə bilər.
+
+Yol üzərində ağ siyahı QOYULMUR: seçicinin bütün mənası istənilən qovluğu seçə
+bilməkdir və ağ siyahı ehtiyacı elə özü aradan qaldırardı. Endpoint
+autentifikasiyasızdır — yeganə qoruma `127.0.0.1` bind-ıdır (qayda 16). Bu,
+gizlədilmir: C fazasında (MCP) autentifikasiya sualı qalxanda bu endpoint də
+yenidən nəzərdən keçirilməlidir.
+
+### 68. Yazıla bilmə HƏR SƏTİRDƏ göstərilmir — real prob, yalnız seçilmiş qovluqda
+
+Node-un `fs.access(dir, W_OK)` yoxlaması **Windows-da ACL-ləri görmür** (Node
+sənədi bunu açıq yazır) — qovluq üçün praktiki olaraq həmişə "yazılır" deyir.
+Yəni siyahının hər sətrindəki belə işarə YALAN olardı.
+
+Dürüst yoxlama real yazma probudur (müvəqqəti fayl yarat → sil), onu isə 50
+sətrin hamısına tətbiq etmək bir naviqasiyada 50 disk əməliyyatı deməkdi. Ona
+görə bölgü belədir:
+
+| Məlumat | Harada | Necə |
+|---|---|---|
+| `isRepo` | hər sətirdə | bir ucuz `stat` |
+| yazıla bilmə | yalnız SEÇİLMİŞ qovluq | `GET /api/fs/check` → real prob |
+
+Prob faylı `finally` blokunda HƏR HALDA silinir — yoxsa istifadəçinin
+qovluğunda zibil qalardı.
+
+`/api/fs/check` mövcud olmayan yol üçün **404 DEYİL, `exists: false`** qaytarır:
+seçicidə hələ yazılmaqda olan yol da yoxlanılır və 404 UI-da xəta kimi
+görünərdi, halbuki cavab sadəcə "hələ yoxdur"dur.
+
 ## Amplification Ladder
 
 Pillələr ucuzdan bahaya:
@@ -1446,9 +1567,49 @@ həqiqət mənbəyi yoxdur.
   zəncir icrasının sintetik valideyn taskı (`workflow_runs.root_task_id`) —
   ortaq worktree və `git apply` baxış qapısı (issue #36); cədvəlin disk tavanı
   (`schedules.max_pending_diffs`, `workflow_runs.schedule_id`, issue #38)
+- **5A** (bitdi) — kontekst başına fayl icazəsi (`contexts.file_access`,
+  `contexts.extra_dirs_json`, `exec/file-access.ts`, qayda 65), canlı icra
+  zolağı (`GET /api/runs/active`, `WsHub` qlobal kanalı, `activity` mesajı,
+  `LiveBar`, qayda 66) və server əsaslı qovluq seçicisi (`GET /api/fs/list`,
+  `GET /api/fs/check`, `FolderPicker`, qayda 67–68); `cwd` artıq
+  `PATCH /api/contexts/:id` ilə dəyişdirilə bilir
+
+Növbəti alt-layihələr (istifadəçinin sorğusundan, hələ başlanmayıb):
+
+- **5B** — insan-döngədə: agentin SUAL verməsi (checkbox / bəli-xeyr, task
+  cavabı gözləyir) və işləyən icraya CANLI review ötürülməsi. Hər ikisi eyni
+  mexanizmi paylaşır: işləyən taskı dayandırıb mətn ötürmək və davam etdirmək.
+- **5C** — MCP / skill / plugin dəstəyi + onları əlavə etmə bölmələri. Qayda 1
+  ilə birbaşa toqquşur (ölçülmüş: tam yüklə $0.0251, onsuz $0.0085 — ~3x), ona
+  görə dizaynın mərkəzi SEÇMƏ (yalnız seçilmiş MCP-lər), kontekst başına opt-in
+  və xərcin ölçülüb göstərilməsi olmalıdır.
 
 ## Bilinən boşluqlar
 
+- **Yazma probu ŞƏBƏKƏ disklərində ölçülməyib** (qayda 68). Lokal SSD-də
+  ölçülüb və ucuzdur: `GET /api/fs/check` → **1.2–2.7 ms** (real server, Windows
+  11). Doğruluğu da təsdiqlənib — `C:\Windows\System32\config` üçün
+  `writable: false` qaytarır, halbuki `fs.access(W_OK)` orada "yazılır"
+  deyərdi. Şəbəkə diskləri və aqressiv antivirus filtri olan qovluqlar
+  ÖLÇÜLMƏYİB; yavaşdırsa nəticə keşlənməli və ya təxirə salınmalıdır.
+- **Çoxlu `--add-dir`-in prompt keşinə təsiri ölçülməyib** (qayda 65). Nəzəri
+  olaraq bayraq sistem prompt prefiksinə girmir (qayda 1 ölçməsi `--safe-mode`
+  üzərində aparılıb), amma `extended` səviyyəsi ilk dəfə işlədiləndə
+  `cache_read` rəqəmi bayraqsız icra ilə tutuşdurulmalıdır. Fərq varsa
+  `extended`-in xərci UI-da göstərilməlidir.
+- **`read-only` səviyyəsinin cavab keyfiyyətinə təsiri ölçülməyib.** `plan`
+  rejimində alət dəsti daralır, prompt isə dəyişmir — nəzəri olaraq keyfiyyət
+  eyni qalmalıdır, amma `plan` rejiminin claude-ın öz sistem promptuna nə
+  əlavə etdiyi ölçülməyib.
+- **Canlı zolağın davranışı çoxlu paralel icrada sınanmayıb.** `max_parallel`
+  yuxarı həddi 4-dür (qayda 43), yəni adi halda zolaqda ən çox 4 sətir olur —
+  amma dekompozisiya və zəncir icraları bunun üstünə alt-tasklar qoyur. Sətir
+  sayı praktikada nə qədər olur, ölçülməlidir; çoxdursa zolaq yığıla bilən
+  (collapsible) olmalıdır.
+- **Qlobal WS-in tab sayına həssaslığı ölçülməyib.** Zolaq hər açıq tabda
+  mount olunur, yəni 5 tab = 5 qlobal abunəlik və hər `activity` mesajı 5 dəfə
+  serializasiya olunur. Lokal serverdə bu əhəmiyyətsiz görünür, amma yayım
+  sayı tab sayına DÜZ mütənasibdir.
 - **Dekompozisiyanın faydası ölçülməyib.** `FakeRunner` ilə hər yol örtülüb,
   amma "zəif model 4 kiçik parçanı bir böyük taskdan yaxşı həll edirmi?" sualı
   real modellə sınanmayıb. Ölçmə üsulu var: eyni task dəstini `decompose: true`
