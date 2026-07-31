@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type {
   Capabilities,
   DetectResult,
+  FileAccessLevel,
   RunEvent,
   RunOptions,
   RunRequest,
@@ -38,6 +39,60 @@ export const CLAUDE_STABLE_FLAGS: readonly string[] = [
   '--disable-slash-commands',
 ]
 
+/**
+ * İKİNCİ dondurulmuş dəst — fərdiləşdirmə (MCP/plugin/skill) seçilmiş
+ * kontekstlər üçün (Faza 5C).
+ *
+ * `CLAUDE_STABLE_FLAGS` DƏYİŞMİR və default olaraq qalır: seçim etməyən
+ * kontekstin əmr sətri BAYT-BAYT köhnə qalır, yəni mövcud keşlər sınmır.
+ *
+ * ÖLÇÜLMÜŞ (claude 2.1.220, `claude-haiku-4-5`, eyni prompt, ardıcıl icralar):
+ *
+ * | Konfiqurasiya | cache_read | cache_create | isti xərc |
+ * |---|---|---|---|
+ * | sabit dəst (etalon) | 23,447 | 0 | $0.0032 |
+ * | −`--safe-mode` +MCP | **0** | **76,161** | $0.0084 |
+ * | −`--safe-mode` +MCP +`--setting-sources ''` | 24,872 | 1,579 | **$0.0036** |
+ *
+ * `--safe-mode`-u SADƏCƏ çıxarmaq fəlakətdir: o, MCP-ni yox, istifadəçinin
+ * CLAUDE.md-sini, hook-larını və bütün plugin-lərini geri gətirir — prompt
+ * 23k → 76k, keş TAM sınır və bir dəfəlik xərc isti etalonun 48 mislidir
+ * ($0.1528). `--setting-sources ''` bunu +3,004 tokenə (+12.5%) endirir.
+ *
+ * `--strict-mcp-config` HƏR İKİ dəstdə qalır: o, "yalnız `--mcp-config`-dəkilər"
+ * deməkdir, yəni istifadəçinin qlobal MCP konfiqurasiyası heç vaxt səssizcə
+ * sızmır.
+ *
+ * `--disable-slash-commands` burada YOXDUR — o, şərtə görə əlavə olunur.
+ * ÖLÇÜLDÜ ki, skill-ləri söndürən məhz odur, `--safe-mode` deyil: onu
+ * çıxaranda 16 daxili skill və 45 əmr gəlir, qiyməti +3,648 token.
+ */
+export const CLAUDE_CUSTOM_FLAGS: readonly string[] = [
+  '--output-format',
+  'stream-json',
+  '--verbose',
+  // `--safe-mode`-un YERİNƏ: fərdiləşdirmə qapısını açır, amma istifadəçinin
+  // bütün ayar mənbələrini (CLAUDE.md, hook, plugin) BAĞLI saxlayır.
+  '--setting-sources',
+  '',
+  '--strict-mcp-config',
+  '--exclude-dynamic-system-prompt-sections',
+]
+
+/**
+ * Səviyyə → `claude --permission-mode` (Faza 5A).
+ *
+ * `'read-only'` üçün `manual` DEYİL, `plan`: `-p` (print) rejimində interaktiv
+ * icazə pəncərəsi göstərilə bilmir, yəni `manual` praktikada "hər alət sorğusu
+ * rədd edilir" deməkdir — model faylı OXUYA da bilməzdi və nəticə mənasız
+ * olardı. `plan` oxumağa icazə verir, yazmağa yox — istənilən məhz budur.
+ */
+const PERMISSION_BY_LEVEL: Record<FileAccessLevel, 'plan' | 'acceptEdits'> = {
+  'read-only': 'plan',
+  workspace: 'acceptEdits',
+  extended: 'acceptEdits',
+}
+
 export interface ClaudeArgOptions {
   sessionId?: string
   permissionMode?: 'acceptEdits' | 'plan' | 'dontAsk' | 'manual'
@@ -64,7 +119,25 @@ export function buildClaudeArgs(
   req: RunRequest,
   opts: ClaudeArgOptions = {},
 ): string[] {
-  const args: string[] = ['-p', req.prompt, ...CLAUDE_STABLE_FLAGS]
+  // Fərdiləşdirmə seçilibsə İKİNCİ dondurulmuş dəst işlədilir (Faza 5C).
+  // Seçilməyibsə dəst BAYT-BAYT köhnədir — mövcud keşlər sınmır (qayda 1).
+  const custom = req.customizations
+  const args: string[] = [
+    '-p',
+    req.prompt,
+    ...(custom === undefined ? CLAUDE_STABLE_FLAGS : CLAUDE_CUSTOM_FLAGS),
+  ]
+
+  if (custom !== undefined) {
+    // Daxili 16 skill YALNIZ açıq istənəndə gəlir (+3,648 token, ölçülmüş).
+    if (!custom.builtinSkills) args.push('--disable-slash-commands')
+    if (custom.mcpConfigPath !== undefined) {
+      args.push('--mcp-config', custom.mcpConfigPath)
+    }
+    // Sıra `resolveCustomizations`-da bir dəfə determinist edilib — burada
+    // yenidən sıralamırıq (eyni prinsip: `--add-dir`, qayda 65).
+    for (const dir of custom.pluginDirs) args.push('--plugin-dir', dir)
+  }
 
   if (opts.partialMessages !== false) args.push('--include-partial-messages')
 
@@ -76,9 +149,19 @@ export function buildClaudeArgs(
     args.push('--session-id', opts.sessionId ?? randomUUID())
   }
 
-  if (req.cwd !== undefined) args.push('--add-dir', req.cwd)
-  if (opts.permissionMode !== undefined) {
-    args.push('--permission-mode', opts.permissionMode)
+  // İcazə `RunRequest`-dən gəlirsə O ÜSTÜNDÜR; konstruktor seçimi yalnız
+  // default-dur (mövcud çağırışlar və testlər sınmasın deyə).
+  if (req.fileAccess !== undefined) {
+    // Sıra `resolveFileAccess`-də bir dəfə determinist edilib — burada yenidən
+    // sıralamırıq, yoxsa iki yerdə iki fərqli qayda yaranardı və hansının
+    // keşə düşdüyü bilinməzdi.
+    for (const dir of req.fileAccess.dirs) args.push('--add-dir', dir)
+    args.push('--permission-mode', PERMISSION_BY_LEVEL[req.fileAccess.level])
+  } else {
+    if (req.cwd !== undefined) args.push('--add-dir', req.cwd)
+    if (opts.permissionMode !== undefined) {
+      args.push('--permission-mode', opts.permissionMode)
+    }
   }
   if (opts.fallbackModel !== undefined) {
     args.push('--fallback-model', opts.fallbackModel)

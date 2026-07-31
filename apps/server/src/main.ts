@@ -17,7 +17,12 @@ const db = openDb()
 const credentials = new KeyringStore()
 
 const runners = new Map<string, Runner>([
-  ['cli:claude', new ClaudeCliRunner({ permissionMode: 'acceptEdits' })],
+  // İcazə artıq KONTEKST BAŞINADIR (`contexts.file_access`) və hər icrada
+  // `RunRequest.fileAccess` ilə ötürülür (Faza 5A). Konstruktorda sabit dəyər
+  // saxlamaq onu bütün kontekstlər üçün dondurardı — və codex arqumentsiz
+  // qurulduğu üçün eyni task hansı runner-ə düşdüyünə görə faylı dəyişir və
+  // ya dəyişmirdi.
+  ['cli:claude', new ClaudeCliRunner()],
   ['cli:codex', new CodexCliRunner()],
   ...createApiRunners({ db, credentials }).runners,
 ])

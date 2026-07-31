@@ -54,6 +54,12 @@ Eyni trivial task üç konfiqurasiya ilə real ölçüldü (Haiku 4.5):
 Task-a xas heç nə sistem promptuna girmir — yalnız istifadəçi mesajına.
 Buraya yeni bayraq əlavə etmək = bütün mövcud keşlərin bir dəfəlik sınması.
 
+**DÜZƏLİŞ (Faza 5C ölçməsi):** yuxarıdakı `--safe-mode` şərhi skill-ləri də ona
+aid edirdi — SƏHVDİR. Skill-ləri söndürən `--disable-slash-commands`-dır.
+Ayrıca: bu dəst artıq YEGANƏ deyil — fərdiləşdirmə seçilmiş kontekstlər üçün
+`CLAUDE_CUSTOM_FLAGS` var (qayda 73). Bu dəst isə DƏYİŞMİR və seçim etməyən
+hər kontekst onu bayt-bayt alır.
+
 ### 2. `--bare` istifadə etmə
 
 O, OAuth və keychain oxumasını söndürür → abunəlik işləmir. Real run:
@@ -1277,6 +1283,299 @@ gələcək klient səhvini səssizcə keçirərdi — qayda 50 ilə eyni fəlsə
   KATEQORİYADIR ("Bad Request"); səbəb `message`-dədir. Tərsi UI-da
   "Səbəb: Bad Request" yazırdı — səbəbin yerində heç nə.
 
+### 65. Fayl icazəsi KONTEKST başınadır və hər iki CLI-a EYNİ mənanı verir
+
+Əvvəl `main.ts` `permissionMode: 'acceptEdits'`-i konstruktorda DONDURURDU,
+`CodexCliRunner` isə arqumentsiz qurulduğu üçün `--sandbox read-only` qalırdı.
+Nəticə: eyni task claude-a düşsə faylı dəyişirdi, codex-ə düşsə səssizcə
+dəyişmirdi — və router hansı runner-in seçildiyini onsuz da gizlədir, yəni fərq
+TƏSADÜFİ görünürdü. Üstəlik "bu iş sahəsi yalnız-oxu olsun" demək ÜMUMİYYƏTLƏ
+mümkün deyildi.
+
+İndi `contexts.file_access` (`read-only` | `workspace` | `extended`) və
+`contexts.extra_dirs_json` var; `exec/file-access.ts` → `resolveFileAccess`
+(saf funksiya, **0 token**) onları `{ level, dirs }` formasına çevirir.
+
+**Paylaşılan müqavilə NİYYƏT daşıyır, bayraq adı yox.** `RunRequest.fileAccess`
+`claudePermissionMode` / `codexSandbox` DEYİL: həmin tip `ApiRunner`-də də
+işlədilir və orada `--permission-mode` anlayışı ümumiyyətlə yoxdur. Konkret
+bayraqları ora yazsaydıq, bir CLI-ın əmr sətri detalları bütün runner-lərə
+sızardı və hər yeni CLI üçün paylaşılan paket dəyişməli olardı.
+
+| Səviyyə | `claude --permission-mode` | `codex --sandbox` |
+|---|---|---|
+| `read-only` | `plan` | `read-only` |
+| `workspace` | `acceptEdits` | `workspace-write` |
+| `extended` | `acceptEdits` | `workspace-write` + `--add-dir` |
+
+Dörd ölçülmüş qərar:
+
+- **`read-only` → `plan`, `manual` YOX.** `-p` (print) rejimində interaktiv
+  icazə pəncərəsi göstərilə bilmir, yəni `manual` praktikada "hər alət sorğusu
+  rədd edilir" deməkdir — model faylı OXUYA da bilməzdi.
+- **`codex exec --add-dir` MÖVCUDDUR** (ölçülmüş: `codex exec --help` →
+  *"Additional directories that should be writable alongside the primary
+  workspace"*). Yəni `extended` hər iki CLI-da eyni işləyir. `cwd` codex-ə
+  ötürülmür — o, onsuz da "primary workspace"-dir; `read-only` sandbox-da isə
+  bayraq ümumiyyətlə verilmir (mənası "yazıla bilən qovluq"dur).
+- **`danger-full-access` xəritədə YOXDUR.** Bizim `extended` SEÇİLMİŞ qovluqlar
+  deməkdir; o isə bütün diski açır və claude-da qarşılığı yoxdur — qoysaydıq
+  eyni səviyyə iki runner-də fərqli şey ifadə edərdi.
+- **`CLAUDE_STABLE_FLAGS` TOXUNULMUR** (qayda 1). `--permission-mode` və
+  `--add-dir` onsuz da o dəstin xaricindədir. `dirs` DETERMİNİST sıralanır
+  (`resolveFileAccess`-də bir dəfə): sıralamasaydıq eyni qovluq dəsti fərqli
+  sıra ilə fərqli əmr sətri verər və prompt-cache lazımsız yerə sınardı.
+
+İzolyasiya icazəni ÜSTƏLƏMİR: `read-only` kontekstdə agent worktree-də də yaza
+bilmir. `read-only` "heç nə dəyişmə" deməkdir, "başqa yerdə dəyiş" yox.
+
+Miqrasiya 0010 default `'workspace'` yazır, `'read-only'` YOX — və bu, qayda
+43-ün ƏKS istiqamətidir. Orada köhnə `max_parallel = 1` istifadəçinin seçimi
+deyildi (dəyişdirmək üçün API yox idi). Burada isə `acceptEdits` FAKTİKİ
+davranışdır: istifadəçi ona güvənərək task göndərib. Seçilməmiş default-u
+dəyişmək olar; işləyən davranışı yox.
+
+### 66. Qlobal WS kanalına DELTA düşmür
+
+Canlı zolaq (`LiveBar`) Sidebar-dadır, yəni HƏR səhifədə mount olunur. Hadisə
+deltalarını qlobal kanala yaysaydıq, 5 paralel icrada zolaq — ekranın ən kiçik
+elementi — ən böyük trafiki yaradardı. `WsHub` iki ayrı dəst saxlayır (`byTask`,
+`globalSockets`) və `activity` yalnız ikincisinə gedir.
+
+**`kind: 'updated'` YOXDUR.** Pillə və cəhd nömrəsi bir icra daxilində DƏYİŞMİR
+— nərdivan hər pillə/cəhd üçün YENİ `runs` sətri yaradır (`supervisor.execute`
+→ `createRun`). Belə bir növ heç vaxt emit oluna bilməzdi.
+
+Zolağın başlanğıc vəziyyəti `GET /api/runs/active`-dən gəlir, polling-dən yox:
+WS yalnız dəyişiklikləri yayır, yəni səhifə açılanda artıq işləyən icralar
+barədə heç bir mesaj gəlməzdi. Keçən vaxt BRAUZERDƏ hesablanır (`startedAt`-dan)
+— hər saniyə server mesajı göndərmək eyni məlumatı şəbəkədən keçirməkdir.
+
+Orkestrasiya icraları (klassifikator, distillə `-1`, bölgü `-2`) zolaqda
+GÖRÜNÜR: onlar da pul yandırır (qayda 22, 37, 51) və "niyə hələ gözləyirəm?"
+sualının cavabı çox vaxt məhz onlardır. Mənfi nömrə rəqəm kimi göstərilmir —
+ad işlədilir (`distillə`, `bölgü`), çünki "Pillə -1" heç nə demir.
+
+### 67. Brauzer qovluğun MÜTLƏQ yolunu vermir — seçici SERVERDƏN qurulur
+
+İki brauzer yolu var və hər ikisi bu iş üçün yararsızdır:
+
+| Yol | Nə qaytarır | Niyə yararsızdır |
+|---|---|---|
+| `showDirectoryPicker()` | `FileSystemDirectoryHandle` — yalnız `.name` | Mütləq yol QƏSDƏN gizlədilir; üstəlik yalnız Chromium |
+| `<input webkitdirectory>` | `webkitRelativePath` | Nisbi yol; üstəlik qovluğun BÜTÜN fayllarını sadalayır — `node_modules` olan repoda donma |
+
+Bizə isə `cwd` və `--add-dir` üçün məhz mütləq yol lazımdır. Ona görə
+`GET /api/fs/list` var: bir səviyyə, yalnız qovluqlar, fayl MƏZMUNU heç vaxt,
+rekursiya heç vaxt. Nativ OS dialoqu (PowerShell `FolderBrowserDialog`) rədd
+edildi — Windows-a bağlıdır, desktop olmayan mühitdə test edilə bilmir və
+seçim anında lazım olan məlumatı (git repo? yazıla bilir?) VERMİR.
+
+`isRepo` `.git`-i FAYL və ya QOVLUQ kimi axtarır: worktree-də o, bir FAYLDIR
+(qayda 44) və yalnız qovluğu yoxlasaydıq sistem ÖZ yaratdığı ağacları "repo
+deyil" sayardı. Nöqtə ilə başlayan qovluqlar `hidden` İŞARƏLƏNİR, server
+tərəfdə SÜZÜLMÜR — qərar UI-ındır və istifadəçi `.config` seçmək istəyə bilər.
+
+Yol üzərində ağ siyahı QOYULMUR: seçicinin bütün mənası istənilən qovluğu seçə
+bilməkdir və ağ siyahı ehtiyacı elə özü aradan qaldırardı. Endpoint
+autentifikasiyasızdır — yeganə qoruma `127.0.0.1` bind-ıdır (qayda 16). Bu,
+gizlədilmir: C fazasında (MCP) autentifikasiya sualı qalxanda bu endpoint də
+yenidən nəzərdən keçirilməlidir.
+
+### 68. Yazıla bilmə HƏR SƏTİRDƏ göstərilmir — real prob, yalnız seçilmiş qovluqda
+
+Node-un `fs.access(dir, W_OK)` yoxlaması **Windows-da ACL-ləri görmür** (Node
+sənədi bunu açıq yazır) — qovluq üçün praktiki olaraq həmişə "yazılır" deyir.
+Yəni siyahının hər sətrindəki belə işarə YALAN olardı.
+
+Dürüst yoxlama real yazma probudur (müvəqqəti fayl yarat → sil), onu isə 50
+sətrin hamısına tətbiq etmək bir naviqasiyada 50 disk əməliyyatı deməkdi. Ona
+görə bölgü belədir:
+
+| Məlumat | Harada | Necə |
+|---|---|---|
+| `isRepo` | hər sətirdə | bir ucuz `stat` |
+| yazıla bilmə | yalnız SEÇİLMİŞ qovluq | `GET /api/fs/check` → real prob |
+
+Prob faylı `finally` blokunda HƏR HALDA silinir — yoxsa istifadəçinin
+qovluğunda zibil qalardı.
+
+`/api/fs/check` mövcud olmayan yol üçün **404 DEYİL, `exists: false`** qaytarır:
+seçicidə hələ yazılmaqda olan yol da yoxlanılır və 404 UI-da xəta kimi
+görünərdi, halbuki cavab sadəcə "hələ yoxdur"dur.
+
+### 69. Sual siqnalı da cavabın BÜTÜNÜ olmalıdır — və müqavilə BİRLƏŞDİRİLİB
+
+Qayda 28-in ailəsindən, amma nəticəsi daha pisdir. Yanlış-müsbət eskalasiya
+bahalı bir icra doğurur; yanlış-müsbət SUAL isə taskı **ƏBƏDİ DONDURUR** —
+istifadəçi heç vaxt cavab verməyəcəyi bir suala baxar. Bu sistemin öz sənədini
+və ya müqaviləsini izah edən HƏR task `{"ask": …}` nümunəsini sitat gətirir,
+yəni `includes` qaydası ilə hər belə task gözləmə vəziyyətinə düşərdi.
+
+`parseAsk` (`exec/ask.ts`) JSON-u yalnız cavabın TAMI olanda qəbul edir (ən
+çoxu bir kod çərçivəsi içində) və `kind` məhz üç dəyərdən biri olmalıdır.
+
+**Müqavilə eskalasiya ilə VAHİD blokdadır** (`buildSignalContract`), iki ayrı
+blok kimi YOX. İki səbəb: hər blok ~40 token və HƏR işçi icrasında ödənilir
+(ortaq mətn bir dəfə yazılır); iki oxşar JSON forması ardıcıl verilsə model
+onları qarışdırır — halbuki ikisi eyni sinifdəndir, "dayan və siqnal ver".
+Bloklar müstəqil qapılanır (Pillə 6 / `questions_enabled`).
+
+Uzun və ya çox variantlı sual **RƏDD edilir, KƏSİLMİR** (qayda 39/52
+prinsipi): yarımçıq kəsilmiş sual istifadəçini yanıldar və o, səhv cavab verib
+pulu İKİ dəfə yandırar. Rədd halında mexanizm SƏSSİZCƏ geri çəkilir — cavab adi
+mətn kimi qəbul edilir (qayda 32).
+
+Sual **eskalasiyadan ƏVVƏL** yoxlanılır: sual bir cümlədir, eskalasiya isə
+başçının icrasına aparır. Müqavilə "yalnız biri" desə də model hər ikisini
+yazmağa çalışa bilər — o halda UCUZ yol seçilməlidir.
+
+### 70. Gözləyən task hovuz slotunu SAXLAMIR — və timeout YOXDUR
+
+`max_parallel = 1` olan kontekstdə cavab gözləyən task slotu tutub qalsaydı,
+həmin iş sahəsi TAM KİLİDLƏNƏRDİ: bir cavabsız sual bütün növbəni dondurar və
+istifadəçi səbəbini heç yerdə görməzdi. `TaskPool.yield` slotu buraxır və
+cavabdan sonra ADİ növbəyə qaytarır (cavab vermək "növbədən kənar keçid"
+vermir).
+
+**Timeout YOXDUR** və bu şüurlu qərardır. Avtomatik davam etmək iki pis
+variantdan birini seçmək olardı: modelə "cavab yoxdur" deyib təxmin etdirmək
+(o, məhz bunun qarşısını almaq üçün soruşdu), ya da taskı uğursuz sayıb
+görülmüş işi atmaq. Slot onsuz da buraxıldığı üçün gözləmənin qiyməti sıfırdır.
+
+Cavab `--resume` ilə çatdırılır: işçinin oxuduğu fayllar və prompt keşi
+qorunur. Sıfırdan başlatsaydıq sual verməyin qiyməti TAM icranın qiyməti olardı
+— mexanizm qənaət əvəzinə xərc yaradardı. `MAX_ATTEMPTS` sual dövrəsini də
+məhdudlaşdırır: model ard-arda soruşub dövrəyə düşə bilməz.
+
+Server çökəndə gözləyən suallar başlanğıcda `cancelled` işarələnir
+(`cancelOrphanQuestions`, `markOrphanedRunsInterrupted` yanında) və bağlanmada
+`cancelAll` çağırılır — gözləyən `Promise` prosesi asılı saxlayardı və
+`SIGINT`-dən sonra server bağlanmazdı.
+
+### 71. Suallar AVTOMATİK icralarda söndürülür
+
+Cədvəl və zəncir icralarında (`LadderInput.interactive: false`) sual mexanizmi
+işə düşmür: orada cavab verəcək insan yoxdur və task əbədi gözləyərdi. Cədvəldə
+bu daha pisdir — növbəti tik yeni icra başladar və gözləyənlər YIĞILARDI (qayda
+57-dəki eyni mühakimə).
+
+İki ayrı qapı var və hər ikisi lazımdır: `contexts.questions_enabled`
+istifadəçinin SEÇİMİDİR (default açıq — bağlı olsa mexanizm heç vaxt özünü
+göstərməz), `interactive` isə icranın obyektiv FAKTIDIR. Birini digərinə
+qatsaydıq, istifadəçi bayrağı açanda cədvəl icraları da donardı.
+
+Dekompozisiya `interactive`-i alt-tasklara OLDUĞU KİMİ ötürür: zəncirin
+addımından doğan parçanın sualı bütün zənciri dondurardı.
+
+### 72. Review KEŞ SƏTRİNİ ləğv edir
+
+İstifadəçi rəy yazırsa, deməli əvvəlki cavab SƏHV idi — amma o cavab Pillə 0
+keşinə ARTIQ yazılıb. Ləğv etməsəydik, eyni prompt bir daha göndəriləndə məhz
+düzəldilməsini istədiyiniz səhv cavab qaytarılardı və istifadəçi bunu heç yerdə
+görməzdi.
+
+Açar route-da YENİDƏN HESABLANMIR: o, model, runner, şablon və yaddaş
+digest-indən asılıdır (`cache-key.ts`) və hesablamanı iki yerdə təkrarlamaq
+səssiz uyğunsuzluq mənbəyidir. `storeInCache` açarı `runs.cache_key` sütununa da
+yazır; review route taskın icralarını gəzib həmin sətirləri silir. Sütun
+`tasks`-da DEYİL: bir taskda bir neçə icra olur (yoxlama dövrəsi, best-of-N) və
+keşə hansının düşdüyü məhz İCRA faktıdır.
+
+Rəyli və sual-cavablı icralar keşə YAZILMIR və keşdən OXUMUR (qayda 33
+prinsipi). Ona görə review keş açarına da girmir — açar heç vaxt yoxlanılmır,
+yəni onu dəyişməyin mənası yoxdur və mövcud açarların forması toxunulmaz qalır.
+
+**İki rejim var və seçim istifadəçinindir:** `next` heç nə atmır, `interrupt`
+prosesi öldürür (qayda 6) və yarımçıq işin ÇIXIŞ tokenlərini yandırır (çıxış
+girişdən 3–5x bahadır). Birini "düzgün" sayıb digərini gizlətsəydik, ya səhv
+yolla gedən işçi bitənə qədər gözlənilərdi, ya da hər rəy token yandırardı.
+Qiymət UI-da açıq yazılır.
+
+Rəy BÜTÜN sonrakı icralara qoşulur (bir icraya yox): yoxlama dövrəsinin ikinci
+cəhdi istifadəçinin göstərişini unutmamalıdır. Prompt sırası bir addım genişlənir
+— **task → şablon → yaddaş(ETİBARSIZ) → REVIEW → müqavilə**: review istifadəçinin
+ÖZ göstərişidir (etibarlıdır, yaddaşdan fərqli), ona görə sona yaxındır; müqavilə
+isə ən sonda qalır (qayda 45).
+
+İcra işləmirsə "növbəti icra" yoxdur və route YENİSİNİ başladır (`--resume`
+ilə). Sərhəd ROUTE-dadır, nərdivanda yox: nərdivanın içində "rəy varsa bir daha
+qaç" dövrəsi qursaydıq, ard-arda yazılan rəylər bir çağırışı sonsuz uzada bilər
+və büdcə hesabı mənasını itirərdi.
+
+### 73. İKİ dondurulmuş bayraq dəsti — qayda 1 dəyişmir, DƏQİQLƏŞİR
+
+Faza 5C istifadəçinin MCP/skill/plugin-lərini qoşmağı mümkün etdi. Bu, qayda
+1-i pozmur: `CLAUDE_STABLE_FLAGS` **BAYT-BAYT** eynidir və default olaraq qalır.
+Yanına ikinci dondurulmuş dəst gəldi — `CLAUDE_CUSTOM_FLAGS`.
+
+Seçim etməyən kontekstin əmr sətri DƏYİŞMİR, yəni **mövcud keşlər toxunulmur**.
+`RunRequest.customizations` `undefined`-dırsa runner köhnə dəsti işlədir.
+
+**Qayda 1-in şərhində BİR SƏHV var idi və ölçmə onu düzəldir:** skill-ləri
+söndürən `--safe-mode` DEYİL, `--disable-slash-commands`-dır. Ölçüldü:
+`--safe-mode` yerində qalıb `--disable-slash-commands` çıxarılanda 16 daxili
+skill və 45 əmr yüklənir.
+
+**Niyə iki dondurulmuş dəst, bir dinamik dəst yox:** dinamik qursaydıq, hər
+ayar kombinasiyası AYRI keş ailəsi yaradardı. İki dəst = ən çoxu iki (daxili
+skill-lərlə üç) ailə və hər ikisi ÖLÇÜLÜB.
+
+`--strict-mcp-config` HƏR İKİ dəstdədir: o, «yalnız `--mcp-config`-dəkilər»
+deməkdir, yəni istifadəçinin qlobal MCP konfiqurasiyası heç vaxt səssizcə
+sızmır.
+
+### 74. `--setting-sources ''` MCP-nin QAPISIDIR — `--safe-mode`-u sadəcə çıxarmaq fəlakətdir
+
+Ölçüldü (`claude` 2.1.220, `claude-haiku-4-5`, eyni trivial prompt, ardıcıl
+icralar):
+
+| Konfiqurasiya | `cache_read` | `cache_create` | isti xərc |
+|---|---|---|---|
+| sabit dəst (etalon) | 23,447 | 0 | **$0.0032** |
+| −`--safe-mode` + `--mcp-config` | **0** | **76,161** | $0.0084 |
+| −`--safe-mode` + `--mcp-config` + `--setting-sources ''` | 24,872 | **1,579** | **$0.0036** |
+
+`--safe-mode` MCP-ni ÜSTƏLƏYİR (marker probu: server prosesi ümumiyyətlə
+başlamır), yəni onu çıxarmaqdan başqa yol yoxdur — `--settings` və
+`--setting-sources` ilə yan keçmək ölçüldü və alınmadı.
+
+Amma onu SADƏCƏ çıxarmaq MCP-ni yox, istifadəçinin CLAUDE.md-sini, hook-larını
+və bütün plugin-lərini geri gətirir: prompt 23k → **76k** (3.2x), keş TAM sınır
+və bir dəfəlik xərc isti etalonun **48 mislidir** ($0.1528).
+
+`--setting-sources ''` bunu +3,004 tokenə (**+12.5%**) endirir və keş SINMIR —
+ilk icrada belə `cache_read` 24,872 idi. Fərdi skill/plugin `--plugin-dir` ilə
+gəlir və o da yalnız `--safe-mode` olmayanda işləyir.
+
+**Pulsuz ölçmə mexanizmi (təkrar istifadə üçün):**
+`claude -p --model <mövcud-olmayan-ad>` API sorğusu GÖNDƏRMİR
+(`total_cost_usd: 0`), amma `system/init` sətrini yazır. MCP serverinin əmri
+olaraq marker fayl yazan proses versək, serverin HƏQİQƏTƏN başladığı görünür.
+`init`-dəki `plugins`/`skills` SAYLARI isə ziddiyyətlidir — onlara güvənmək
+olmaz, yalnız davranış müşahidəsinə.
+
+### 75. MCP sirri ARGV-yə qoyulmur, FAYLA yazılır
+
+`--mcp-config` həm fayl yolu, həm JSON sətri qəbul edir. **Fayl işlədilir.**
+
+Səbəb qayda 14-ün eynidir, sadəcə başqa kanal: əmr sətri arqumentləri proses
+siyahısında (`ps`, Task Manager) maşındakı HƏR prosesə görünür. MCP serverinin
+`env`-i çox vaxt API açarı daşıyır — onu argv-yə qoymaq açarı hər lokal prosesə
+açardı.
+
+Sirlər DB-yə də yazılmır (qayda 13): `mcp_servers.secret_env_json` yalnız
+dəyişən ADLARINI saxlayır, dəyərlər OS keychain-dədir
+(`mcp:<serverId>:<VAR>`). Konfiqurasiya faylı yazılarkən oxunub içəri qoyulur.
+
+Sirri tapılmayan server konfiqurasiyaya **ÜMUMİYYƏTLƏ DÜŞMÜR** (kəsilmir —
+qayda 39 prinsipi): yarımçıq `env` ilə server ya sınar, ya da səlahiyyətsiz
+işləyər və səbəb heç yerdə görünməz.
+
+Fayl hər icradan ƏVVƏL üzərinə yazılır və `routes/tasks.ts`-də BİR DƏFƏ
+hesablanır — nərdivanın içində etsəydik, bir taskın bir neçə icrası eyni fayl
+üzərində yarışardı.
+
 ## Amplification Ladder
 
 Pillələr ucuzdan bahaya:
@@ -1403,6 +1702,41 @@ Dörd tavanın hər biri ayrı sızma yolunu bağlayır (qayda 57) və hamısı
 MƏCBURİDİR; sonuncusu pulu deyil, DİSKİ qoruyur (qayda 59). Taymer yalnız
 `main.ts`-də qurulur; `Scheduler.tick(now)` saatı parametr alır.
 
+Yeddinci kəsişən mexanizm — **insan-döngədə** (`exec/ask.ts`,
+`exec/question-gate.ts`, `exec/review-queue.ts`, Faza 5B):
+
+```
+işçi məlumat istədi   → task `waiting_input`, HOVUZ SLOTU BURAXILIR (timeout YOX)
+istifadəçi cavab verdi → `--resume` ilə davam; sessiya və prompt keşi qorunur
+istifadəçi rəy yazdı   → növbəyə düşür; `interrupt` rejimində proses ÖLDÜRÜLÜR
+rəy yazıldı            → taskın KEŞ sətri SİLİNİR (`runs.cache_key`)
+icra işləmir + rəy     → route `--resume` ilə YENİ icra başladır
+cədvəl/zəncir icrası   → suallar SÖNDÜRÜLÜR (cavab verəcək insan yoxdur)
+```
+
+İşləyən CLI prosesinə mətn ötürmək MÜMKÜN DEYİL (`claude -p` argv-dən oxuyur,
+`codex exec` stdin bağlı işləyir — qayda 7), ona görə hər iki mexanizm
+icraların ARASINDA işləyir. Suallar `contexts.questions_enabled` ilə idarə
+olunur (default açıq) və `/tasks/:id` səhifəsində checkbox / radio / bəli-xeyr
+formasında cavablandırılır; gözləyən sual `LiveBar` nişanında görünür.
+
+Səkkizinci kəsişən mexanizm — **fərdiləşdirmə** (`exec/customizations.ts`,
+Faza 5C, pillə DEYİL):
+
+```
+kontekstdə MCP/plugin/skill seçilmədi → `CLAUDE_STABLE_FLAGS` (əmr sətri
+                                        BAYT-BAYT köhnə, keş toxunulmur)
+seçim var                             → `CLAUDE_CUSTOM_FLAGS`
+                                        (`--setting-sources ''`, +12.5% ölçülmüş)
+MCP seçildi   → konfiqurasiya FAYLA yazılır (argv-yə YOX), sirlər keychain-dən
+plugin seçildi → hər biri üçün `--plugin-dir`
+daxili skill-lər → `--disable-slash-commands` çıxarılır (+3,648 token)
+cli:codex     → fərdiləşdirmə TƏTBİQ OLUNMUR (yol ölçülməyib)
+```
+
+Seçim `routes/tasks.ts`-də BİR DƏFƏ həll olunur və nərdivana hazır formada
+verilir (qayda 75).
+
 Pillə 1 axını (`routing/decide.ts`):
 
 ```
@@ -1446,9 +1780,92 @@ həqiqət mənbəyi yoxdur.
   zəncir icrasının sintetik valideyn taskı (`workflow_runs.root_task_id`) —
   ortaq worktree və `git apply` baxış qapısı (issue #36); cədvəlin disk tavanı
   (`schedules.max_pending_diffs`, `workflow_runs.schedule_id`, issue #38)
+- **5A** (bitdi) — kontekst başına fayl icazəsi (`contexts.file_access`,
+  `contexts.extra_dirs_json`, `exec/file-access.ts`, qayda 65), canlı icra
+  zolağı (`GET /api/runs/active`, `WsHub` qlobal kanalı, `activity` mesajı,
+  `LiveBar`, qayda 66) və server əsaslı qovluq seçicisi (`GET /api/fs/list`,
+  `GET /api/fs/check`, `FolderPicker`, qayda 67–68); `cwd` artıq
+  `PATCH /api/contexts/:id` ilə dəyişdirilə bilir
+
+- **5B** (bitdi) — insan-döngədə: agentin SUAL verməsi (`task_questions`,
+  `exec/ask.ts`, checkbox / radio / bəli-xeyr, qayda 69–71) və işləyən icraya
+  CANLI review ötürülməsi (`task_reviews`, iki rejim, keş ləğvi, qayda 72);
+  `TaskPool.yield`, `runs.cache_key`, `contexts.questions_enabled`
+
+- **5C** (bitdi) — MCP / skill / plugin: `mcp_servers`, `plugin_sources`,
+  kontekst başına ƏDƏD-ƏDƏD seçim, ikinci dondurulmuş bayraq dəsti
+  (`CLAUDE_CUSTOM_FLAGS`), MCP sirlərinin keychain-də saxlanması və
+  `/customizations` səhifəsi (qayda 73–75)
 
 ## Bilinən boşluqlar
 
+- **`--plugin-dir`-in QİYMƏTİ ölçülməyib** (qayda 73). Mexanizm pulsuz probe
+  ilə təsdiqləndi (öz sınaq plugin-imiz `skills` siyahısında göründü), amma bir
+  plugin-in neçə token əlavə etdiyi bilinmir — o, plugin-in ölçüsündən
+  asılıdır. UI plugin üçün rəqəm GÖSTƏRMİR və bunu açıq yazır.
+- **`codex` üçün MCP yolu ölçülməyib.** `codex mcp add` və `-c mcp_servers.…`
+  mövcuddur, amma nə işləmə, nə də qiymət yoxlanılıb. Ona görə dəstək YOXDUR və
+  UI bunu açıq yazır — bu, qayda 65-də düzəltdiyimiz asimmetriyanın
+  qayıtmasıdır, sadəcə GİZLİ deyil.
+- **`--setting-sources ''` başqa nəyi söndürür — tam bilinmir.** Ölçüldü ki, o,
+  76k partlayışının qarşısını alır və MCP qoşulur; hook-ların, `CLAUDE.md`-nin
+  və agent-lərin vəziyyəti ayrıca yoxlanılmayıb. Praktikada bu, bizim üçün
+  İSTƏNİLƏNDİR (hamısı sönülü qalmalıdır), amma təsdiqlənməyib.
+- **MCP serverinin ÖZ qiyməti serverdən asılıdır.** Ölçülən +3,004 token BİR
+  KİÇİK server üçündür (bir alət). `playwright` və ya `chrome-devtools` kimi
+  serverlər onlarla alət verir — onların qiyməti ayrıca ölçülməli və UI-da
+  server başına göstərilməlidir.
+- **MCP-nin FAYDASI ölçülməyib.** «Zəif model MCP alətləri ilə daha yaxşı
+  nəticə verirmi?» sualı sınanmayıb. Qiymət bilinir (+12.5% sabit), fayda isə
+  yox — yəni mexanizmin özünü ödəyib-ödəmədiyi AÇIQ sualdır. Ölçmə üsulu: eyni
+  task dəstini MCP ilə və onsuz qaçırıb `runs.ladder_rung` bölgüsünü
+  tutuşdurmaq.
+- **Sual mexanizminin FAYDASI ölçülməyib** (qayda 69). «Zəif model DOĞRU sual
+  verirmi, yoxsa hər qeyri-müəyyənlikdə dayanırmı?» sualı real modellə
+  sınanmayıb. Yanlış-müsbət burada bahalıdır: hər lazımsız sual istifadəçinin
+  diqqətini tələb edir və task gözləyir. Ölçmə üsulu: `task_questions`
+  sətirlərinin sayını taskların sayına nisbətlə izləmək; nisbət yüksəkdirsə
+  müqavilə sərtləşdirilməlidir («yalnız cavabsız qala biləcək məlumat üçün
+  soruş»).
+- **`QUESTION_CHAR_LIMIT` (500) və `MAX_QUESTION_OPTIONS` (8) mühakimə ilə
+  seçilib.** İlk real suallardan sonra rədd nisbəti (`parseAsk` → `null`)
+  izlənilməlidir — hər rədd bir işçi icrasının siqnalının itməsidir.
+- **Review-un iqtisadi faydası ölçülməyib** (qayda 72). `interrupt` çıxış
+  tokenləri yandırır; `next` isə səhv işin bitməsini gözləyir. Hansının ucuz
+  olduğu taskın uzunluğundan asılıdır. Ölçmə üsulu: eyni rəy mətni ilə iki
+  rejimi qaçırıb `savings_ledger`-dəki `actual_cost_usd` tutuşdurmaq.
+- **`--resume`-un prompt keşinə təsiri ölçülməyib.** Nəzəri olaraq sessiyanın
+  davamı keşi qoruyur (prefiks dəyişmir), amma ölçülməyib. Qayda 1-dəki
+  metodika ilə: eyni sual-cavab dövrəsini `--resume` ilə və onsuz qaçırıb
+  `cache_read` rəqəmlərini tutuşdurmaq.
+- **Server çökməsindən sonra sessiya davamı sınanmayıb.** `runs.session_id`
+  saxlanılır, amma çökmədən sonra CLI-nin həmin sessiyanı hələ də tanıyıb
+  tanımadığı yoxlanılmayıb. Tanımırsa `--resume` sınacaq və icra uğursuz
+  olacaq — mexanizm bunu hazırda AYIRD ETMİR.
+- **Yazma probu ŞƏBƏKƏ disklərində ölçülməyib** (qayda 68). Lokal SSD-də
+  ölçülüb və ucuzdur: `GET /api/fs/check` → **1.2–2.7 ms** (real server, Windows
+  11). Doğruluğu da təsdiqlənib — `C:\Windows\System32\config` üçün
+  `writable: false` qaytarır, halbuki `fs.access(W_OK)` orada "yazılır"
+  deyərdi. Şəbəkə diskləri və aqressiv antivirus filtri olan qovluqlar
+  ÖLÇÜLMƏYİB; yavaşdırsa nəticə keşlənməli və ya təxirə salınmalıdır.
+- **Çoxlu `--add-dir`-in prompt keşinə təsiri ölçülməyib** (qayda 65). Nəzəri
+  olaraq bayraq sistem prompt prefiksinə girmir (qayda 1 ölçməsi `--safe-mode`
+  üzərində aparılıb), amma `extended` səviyyəsi ilk dəfə işlədiləndə
+  `cache_read` rəqəmi bayraqsız icra ilə tutuşdurulmalıdır. Fərq varsa
+  `extended`-in xərci UI-da göstərilməlidir.
+- **`read-only` səviyyəsinin cavab keyfiyyətinə təsiri ölçülməyib.** `plan`
+  rejimində alət dəsti daralır, prompt isə dəyişmir — nəzəri olaraq keyfiyyət
+  eyni qalmalıdır, amma `plan` rejiminin claude-ın öz sistem promptuna nə
+  əlavə etdiyi ölçülməyib.
+- **Canlı zolağın davranışı çoxlu paralel icrada sınanmayıb.** `max_parallel`
+  yuxarı həddi 4-dür (qayda 43), yəni adi halda zolaqda ən çox 4 sətir olur —
+  amma dekompozisiya və zəncir icraları bunun üstünə alt-tasklar qoyur. Sətir
+  sayı praktikada nə qədər olur, ölçülməlidir; çoxdursa zolaq yığıla bilən
+  (collapsible) olmalıdır.
+- **Qlobal WS-in tab sayına həssaslığı ölçülməyib.** Zolaq hər açıq tabda
+  mount olunur, yəni 5 tab = 5 qlobal abunəlik və hər `activity` mesajı 5 dəfə
+  serializasiya olunur. Lokal serverdə bu əhəmiyyətsiz görünür, amma yayım
+  sayı tab sayına DÜZ mütənasibdir.
 - **Dekompozisiyanın faydası ölçülməyib.** `FakeRunner` ilə hər yol örtülüb,
   amma "zəif model 4 kiçik parçanı bir böyük taskdan yaxşı həll edirmi?" sualı
   real modellə sınanmayıb. Ölçmə üsulu var: eyni task dəstini `decompose: true`

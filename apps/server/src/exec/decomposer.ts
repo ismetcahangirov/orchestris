@@ -19,6 +19,7 @@ import {
   shouldDecompose,
 } from './decompose.js'
 import { collectAnswerText } from './escalation.js'
+import { resolveFileAccess } from './file-access.js'
 import { RemainingBudget, type Ladder, type LadderContext, type LadderStatus } from './ladder.js'
 import { computeTaskSavings } from './savings.js'
 import type { RunSupervisor } from './supervisor.js'
@@ -74,6 +75,13 @@ export interface DecomposeInput {
    * yəni düzəltdiyimiz səhv bir səviyyə aşağıda təkrarlanardı.
    */
   worktree?: Worktree
+  /**
+   * İSTİFADƏÇİ İŞTİRAKI mümkündürmü (Faza 5B). Default `true`.
+   *
+   * Alt-tasklara OLDUĞU KİMİ ötürülür: bölgü zəncirin addımından gəlibsə orada
+   * cavab verəcək insan yoxdur və parçanın sualı zənciri əbədi dondurardı.
+   */
+  interactive?: boolean
 }
 
 export interface SubtaskOutcome {
@@ -220,6 +228,13 @@ export class Decomposer {
       attempt: 1,
       ladderRung: DECOMPOSE_RUNG,
       ...(input.context.cwd !== null ? { cwd: input.context.cwd } : {}),
+      // Bölgü icrası da kontekstin icazəsi ilə işləyir: başçı bölgü yazarkən
+      // repo-ya baxır və `read-only` kontekstdə ona yazmaq icazəsi verilməməlidir.
+      fileAccess: resolveFileAccess({
+        fileAccess: input.context.fileAccess ?? '',
+        extraDirsJson: input.context.extraDirsJson ?? '[]',
+        cwd: input.context.cwd ?? undefined,
+      }),
       ...(limits !== undefined ? { limits } : {}),
     })
     budget.charge(getRun(this.db, exec.runId))
@@ -287,6 +302,7 @@ export class Decomposer {
           : {}),
         ...(worktree !== undefined ? { worktree } : {}),
         ...(remaining !== undefined ? { limits: remaining } : {}),
+        ...(input.interactive !== undefined ? { interactive: input.interactive } : {}),
       })
 
       for (const run of listRunsForTask(this.db, row.id)) budget.charge(run)

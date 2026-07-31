@@ -1,10 +1,13 @@
 import { z } from 'zod'
 import { RunEventSchema } from './events.js'
+import { FILE_ACCESS_LEVELS } from './runner.js'
 
 export const CreateContextBody = z.object({
   name: z.string().min(1).max(200),
   cwd: z.string().optional(),
   verifyCommands: z.array(z.string()).optional(),
+  fileAccess: z.enum(FILE_ACCESS_LEVELS).optional(),
+  extraDirs: z.array(z.string()).optional(),
 })
 export type CreateContextBody = z.infer<typeof CreateContextBody>
 
@@ -78,6 +81,36 @@ export const UpdateContextBody = z.object({
   budgetTokens: z.number().int().positive().nullable().optional(),
   budgetUsd: z.number().positive().nullable().optional(),
   budgetSeconds: z.number().int().positive().nullable().optional(),
+  /**
+   * İş qovluğu (Faza 5A). `null` = sil.
+   *
+   * Əvvəl bu sahə YOX İDİ — `cwd` yalnız kontekst yaradılanda verilirdi və
+   * səhv yazılmış yolu düzəltmək üçün kontekst yenidən yaradılmalı idi.
+   */
+  cwd: z.string().nullable().optional(),
+  fileAccess: z.enum(FILE_ACCESS_LEVELS).optional(),
+  /** YALNIZ `'extended'` səviyyəsində tətbiq olunur (`exec/file-access.ts`). */
+  extraDirs: z.array(z.string()).optional(),
+  /**
+   * İşçi bu kontekstdə istifadəçiyə sual verə bilirmi (Faza 5B).
+   *
+   * Bayraq AÇIQ olsa belə cədvəl və zəncir icralarında suallar söndürülür —
+   * orada cavab verəcək insan yoxdur.
+   */
+  questionsEnabled: z.boolean().optional(),
+  /**
+   * Fərdiləşdirmə seçimi (Faza 5C) — TAM ƏVƏZLƏMƏ.
+   *
+   * UI checkbox siyahısı onsuz da bütöv vəziyyət göndərir; qismən yeniləmə
+   * "hansı silindi?" sualını klientə yükləyərdi.
+   */
+  mcpServerIds: z.array(z.string()).optional(),
+  pluginIds: z.array(z.string()).optional(),
+  /**
+   * CLI-nin DAXİLİ skill dəsti (hamısı-birdən — ədəd-ədəd bayraq YOXDUR).
+   * Ölçülmüş qiymət: +3,648 token / icra.
+   */
+  builtinSkillsEnabled: z.boolean().optional(),
 })
 export type UpdateContextBody = z.infer<typeof UpdateContextBody>
 
@@ -141,10 +174,108 @@ export const SetModelEnabledBody = z.object({
 export type SetModelEnabledBody = z.infer<typeof SetModelEnabledBody>
 
 /** Klientdən serverə gedən WebSocket mesajları */
+/**
+ * Hazırda işləyən bir icranın yığcam təsviri — canlı zolaq üçün (Faza 5A).
+ *
+ * Hadisə DELTALARI burada YOXDUR və bu, mərkəzi qərardır: qlobal kanal zolaq
+ * açıq olan HƏR brauzerə gedir, yəni 5 paralel icrada zolaq — ekranın ən kiçik
+ * elementi — ən böyük trafiki yaradardı. Deltalar task səhifəsinin öz
+ * abunəliyində qalır.
+ */
+export const ActiveRun = z.object({
+  runId: z.string(),
+  taskId: z.string(),
+  contextId: z.string(),
+  contextName: z.string(),
+  /** Taskın ilk sətirləri — zolaqda "nə işlənir" sualının cavabı. */
+  promptExcerpt: z.string(),
+  modelId: z.string(),
+  runnerId: z.string(),
+  /** Mənfi dəyər nərdivandan KƏNAR mexanizmdir: -1 distillə, -2 bölgü. */
+  ladderRung: z.number().int(),
+  attempt: z.number().int(),
+  startedAt: z.number().int(),
+})
+export type ActiveRun = z.infer<typeof ActiveRun>
+
+export const QUESTION_KINDS = ['yes_no', 'single', 'multi'] as const
+export const REVIEW_MODES = ['next', 'interrupt'] as const
+
+/**
+ * İşçinin sualına cavab (Faza 5B).
+ *
+ * Cavabın forması `kind`-dan asılıdır: `yes_no` → boolean, `single` → string,
+ * `multi` → string[]. UYĞUNLUQ yoxlaması SERVERDƏDİR (`kind` yalnız orada,
+ * DB sətrində bilinir) — sxemi `kind`-a bağlı etsəydik klient sualın formasını
+ * da göndərməli olardı və uyğunsuz dəyər göndərə bilərdi, yəni yoxlama
+ * özü-özünü yoxlayardı.
+ */
+export const AnswerQuestionBody = z.object({
+  answer: z.union([z.boolean(), z.string().min(1), z.array(z.string().min(1)).min(1)]),
+})
+export type AnswerQuestionBody = z.infer<typeof AnswerQuestionBody>
+
+export const CreateReviewBody = z.object({
+  text: z.string().min(1).max(2000),
+  /**
+   * `next` — növbəti icrada nəzərə alınır, heç bir iş atılmır.
+   * `interrupt` — cari icra DƏRHAL kəsilir; yarımçıq işin ÇIXIŞ tokenləri
+   * ödənilib atılır (çıxış girişdən 3–5x bahadır), əvəzində cavab dərhaldır.
+   *
+   * Seçim istifadəçinindir: birini "düzgün" sayıb digərini gizlətsəydik, ya
+   * səhv yolla gedən işçi bitənə qədər gözlənilərdi, ya da hər rəy token
+   * yandırardı.
+   */
+  mode: z.enum(REVIEW_MODES),
+})
+export type CreateReviewBody = z.infer<typeof CreateReviewBody>
+
+export const MCP_TRANSPORTS = ['stdio', 'http', 'sse'] as const
+
+/**
+ * MCP serverinin əlavə edilməsi (Faza 5C).
+ *
+ * `secretEnv` DƏYƏRLƏRİ daşıyır və onlar YALNIZ bu istiqamətdə hərəkət edir:
+ * brauzer → server → OS keychain (qayda 13). Heç bir cavab sxemində sirr
+ * sahəsi YOXDUR və olmamalıdır.
+ */
+export const CreateMcpServerBody = z
+  .object({
+    name: z
+      .string()
+      .min(1)
+      .max(80)
+      // Ad MCP konfiqurasiyasında AÇAR olur və alət adlarına düşür
+      // (`mcp__<ad>__<alət>`) — boşluq və xüsusi simvol orada sınar.
+      .regex(/^[a-zA-Z0-9_-]+$/, 'Yalnız hərf, rəqəm, `-` və `_`'),
+    transport: z.enum(MCP_TRANSPORTS),
+    command: z.string().min(1).optional(),
+    args: z.array(z.string()).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+    /** Ad → dəyər. Dəyərlər keychain-ə gedir, DB-yə YOX. */
+    secretEnv: z.record(z.string(), z.string()).optional(),
+    url: z.string().url().optional(),
+  })
+  .refine(
+    (b) => (b.transport === 'stdio' ? b.command !== undefined : b.url !== undefined),
+    { message: 'stdio `command`, http/sse isə `url` tələb edir' },
+  )
+export type CreateMcpServerBody = z.infer<typeof CreateMcpServerBody>
+
+export const CreatePluginBody = z.object({
+  name: z.string().min(1).max(80),
+  /** Qovluq və ya `.zip` faylının MÜTLƏQ yolu. */
+  path: z.string().min(1),
+})
+export type CreatePluginBody = z.infer<typeof CreatePluginBody>
+
 export const WsClientMessage = z.discriminatedUnion('type', [
   z.object({ type: z.literal('subscribe'), taskId: z.string() }),
   z.object({ type: z.literal('unsubscribe'), taskId: z.string() }),
   z.object({ type: z.literal('cancel'), runId: z.string() }),
+  /** Qlobal canlı zolaq abunəliyi — task-a bağlı DEYİL. */
+  z.object({ type: z.literal('subscribe_activity') }),
+  z.object({ type: z.literal('unsubscribe_activity') }),
 ])
 export type WsClientMessage = z.infer<typeof WsClientMessage>
 
@@ -157,6 +288,33 @@ export const WsServerMessage = z.discriminatedUnion('type', [
     seq: z.number().int(),
     at: z.number().int(),
     event: RunEventSchema,
+  }),
+  /**
+   * Canlı zolaq hadisəsi (Faza 5A).
+   *
+   * `kind: 'updated'` QƏSDƏN YOXDUR: pillə və cəhd nömrəsi bir icra daxilində
+   * DƏYİŞMİR — nərdivan hər pillə/cəhd üçün YENİ `runs` sətri yaradır. Belə
+   * bir növ heç vaxt emit oluna bilməzdi.
+   */
+  z.object({
+    type: z.literal('activity'),
+    kind: z.enum(['started', 'ended']),
+    runId: z.string(),
+    /** YALNIZ `'started'`-da olur — `'ended'` üçün `runId` kifayətdir. */
+    run: ActiveRun.optional(),
+  }),
+  /**
+   * Sual hadisəsi (Faza 5B) — `activity` ilə eyni prinsip: hadisə, delta yox.
+   *
+   * HƏM qlobal, HƏM task kanalına yayılır: qlobal — `LiveBar` nişanı üçün,
+   * task kanalı — açıq `/tasks/:id` səhifəsi üçün. Birini seçsəydik ya nişan
+   * gecikərdi, ya da task səhifəsi qlobal kanala da abunə olmalı olardı.
+   */
+  z.object({
+    type: z.literal('question'),
+    kind: z.enum(['asked', 'answered', 'cancelled']),
+    taskId: z.string(),
+    questionId: z.string(),
   }),
   z.object({ type: z.literal('error'), message: z.string() }),
 ])

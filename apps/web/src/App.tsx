@@ -1,6 +1,7 @@
 import { Route, Routes } from 'react-router-dom'
 import Sidebar from './components/Sidebar.js'
 import Contexts from './pages/Contexts.js'
+import Customizations from './pages/Customizations.js'
 import Dashboard from './pages/Dashboard.js'
 import History from './pages/History.js'
 import Ladder from './pages/Ladder.js'
@@ -17,6 +18,7 @@ export default function App(): React.JSX.Element {
           <Route path="/" element={<Dashboard />} />
           <Route path="/contexts" element={<Contexts />} />
           <Route path="/providers" element={<Providers />} />
+          <Route path="/customizations" element={<Customizations />} />
           <Route path="/ladder" element={<Ladder />} />
           <Route path="/workflows" element={<Workflows />} />
           <Route path="/history" element={<History />} />

@@ -2,10 +2,13 @@ import { WsClientMessage, type Runner } from '@orchestris/shared'
 import websocket from '@fastify/websocket'
 import Fastify, { type FastifyInstance } from 'fastify'
 import type { Db } from './db/client.js'
+import { cancelOrphanQuestions } from './db/interaction-repo.js'
 import { getRunTaskId, getTask, markOrphanedRunsInterrupted } from './db/repo.js'
 import { Decomposer } from './exec/decomposer.js'
 import { Ladder } from './exec/ladder.js'
 import { TaskPool } from './exec/pool.js'
+import { DbQuestionGate } from './exec/question-gate.js'
+import { DbReviewQueue } from './exec/review-queue.js'
 import { Scheduler, SCHEDULER_TICK_MS } from './exec/scheduler.js'
 import { WorkflowEngine } from './exec/workflow-engine.js'
 import { RunSupervisor } from './exec/supervisor.js'
@@ -14,12 +17,15 @@ import { NullProvider, type MemoryProvider } from './memory/provider.js'
 import { MemorySession } from './memory/session.js'
 import type { Catalog } from './registry/models-dev.js'
 import { registerContextRoutes } from './routes/contexts.js'
+import { registerCustomizationRoutes } from './routes/customizations.js'
 import { registerMemoryRoutes } from './routes/memory.js'
 import {
   defaultCatalog,
   registerProviderRoutes,
   seedProviders,
 } from './routes/providers.js'
+import { registerFsRoutes } from './routes/fs.js'
+import { registerRunRoutes } from './routes/runs.js'
 import { registerStatsRoutes } from './routes/stats.js'
 import { registerTaskRoutes } from './routes/tasks.js'
 import { registerWorkflowRoutes } from './routes/workflows.js'
@@ -101,6 +107,10 @@ export function buildOrchestris(input: BuildAppInput): OrchestrisApp {
   // Server çökdükdən sonra qalan yetim icraları təmizlə. Hadisə jurnalı itmir.
   const orphans = markOrphanedRunsInterrupted(db)
   if (orphans > 0) app.log.warn(`${orphans} yetim icra interrupted işarələndi`)
+  // Gözləyən suallar da yetimdir: cavabı gözləyən PROSES yoxdur, yəni cavab
+  // heç yerə çatmayacaq. Təmizləməsəydik UI əbədi "cavab gözləyir" göstərərdi.
+  const orphanQuestions = cancelOrphanQuestions(db)
+  if (orphanQuestions > 0) app.log.warn(`${orphanQuestions} yetim sual ləğv edildi`)
 
   const hub = new WsHub()
   const supervisor = new RunSupervisor(db)
@@ -118,13 +128,35 @@ export function buildOrchestris(input: BuildAppInput): OrchestrisApp {
   const memoryProvider = input.memory ?? new NullProvider()
   const memory =
     input.memory === undefined ? undefined : new MemorySession(db, memoryProvider)
-  const ladder = new Ladder(db, supervisor, router, input.worktrees, memory)
+  // Kontekst başına paralellik. Limit hər task göndərişində oxunur, ona görə
+  // istifadəçi ayarı dəyişəndə server yenidən başladılmır.
+  //
+  // Nərdivandan ƏVVƏL qurulur: sual qapısı (Faza 5B) gözləyərkən slotu
+  // buraxmaq üçün hovuza ehtiyac duyur.
+  const pool = new TaskPool()
+  // İnsan-döngədə (Faza 5B). Sual hadisəsi HƏR İKİ kanala yayılır: qlobal —
+  // `LiveBar` nişanı üçün, task kanalı — açıq `/tasks/:id` səhifəsi üçün.
+  const questionGate = new DbQuestionGate({
+    db,
+    pool,
+    broadcast: (e) => {
+      const msg = {
+        type: 'question' as const,
+        kind: e.kind,
+        taskId: e.taskId,
+        questionId: e.questionId,
+      }
+      hub.broadcastGlobal(msg)
+      hub.broadcast(e.taskId, msg)
+    },
+  })
+  const ladder = new Ladder(db, supervisor, router, input.worktrees, memory, {
+    questions: questionGate,
+    reviews: new DbReviewQueue(db),
+  })
   // Task dekompozisiyası (Faza 4) — nərdivanın ÜSTÜNDƏ oturur və yalnız
   // `POST /api/tasks` gövdəsində `decompose: true` verildikdə işə düşür.
   const decomposer = new Decomposer(db, supervisor, ladder, router, input.worktrees)
-  // Kontekst başına paralellik. Limit hər task göndərişində oxunur, ona görə
-  // istifadəçi ayarı dəyişəndə server yenidən başladılmır.
-  const pool = new TaskPool()
   // Workflow zəncirləri (Faza 4). Xarici HTTP addımları FAIL-CLOSED-dur: icazə
   // yalnız `ORCHESTRIS_WORKFLOW_HTTP_ALLOW` ilə verilir (`workflow-http.ts`).
   // `worktrees` ötürülür ki, zəncirin kod addımları da baxış qapısından keçsin
@@ -157,6 +189,16 @@ export function buildOrchestris(input: BuildAppInput): OrchestrisApp {
     })
   })
 
+  // Canlı zolaq — YALNIZ həyat dövrü, delta YOX (bax `WsHub.broadcastGlobal`).
+  supervisor.onActivity((msg) => {
+    hub.broadcastGlobal({
+      type: 'activity',
+      kind: msg.kind,
+      runId: msg.runId,
+      ...(msg.run !== undefined ? { run: msg.run } : {}),
+    })
+  })
+
   app.get('/api/health', async () => ({ ok: true, runners: [...runners.keys()] }))
 
   // Provayder cədvəli kataloqdan doldurulur — istifadəçi açar əlavə etməzdən
@@ -167,6 +209,11 @@ export function buildOrchestris(input: BuildAppInput): OrchestrisApp {
   seedCliProviders(db, runners, catalog)
 
   registerContextRoutes(app, db)
+  registerCustomizationRoutes(app, { db, credentials })
+  registerRunRoutes(app, db)
+  // Qovluq seçicisi (Faza 5A). `db` LAZIM DEYİL — bu route-lar yalnız fayl
+  // sistemini oxuyur və heç nə saxlamır.
+  registerFsRoutes(app)
   registerStatsRoutes(app, db)
   registerMemoryRoutes(app, { provider: memoryProvider, active: memory !== undefined })
   registerWorkflowRoutes(app, { db, engine: workflowEngine })
@@ -178,6 +225,10 @@ export function buildOrchestris(input: BuildAppInput): OrchestrisApp {
     readiness,
     pool,
     decomposer,
+    questions: questionGate,
+    // MCP sirlərinin oxunması üçün (Faza 5C) — eyni nüsxə, `/api/mcp-servers`
+    // ilə paylaşılır ki, yazma və oxuma eyni anbara getsin.
+    credentials,
     ...(input.worktrees !== undefined ? { worktrees: input.worktrees } : {}),
   })
   registerProviderRoutes(app, {
@@ -207,16 +258,31 @@ export function buildOrchestris(input: BuildAppInput): OrchestrisApp {
           return
         }
 
-        if (msg.type === 'subscribe') {
-          if (getTask(db, msg.taskId) === undefined) {
-            socket.send(JSON.stringify({ type: 'error', message: 'Task tapılmadı' }))
+        // `switch` — `if/else` zənciri deyil: köhnə `else` budağı BÜTÜN
+        // naməlum mesajları `cancel` sayırdı. Faza 5A iki yeni mesaj tipi
+        // əlavə edir və o davranışla `subscribe_activity` icra ləğvi kimi
+        // oxunardı.
+        switch (msg.type) {
+          case 'subscribe': {
+            if (getTask(db, msg.taskId) === undefined) {
+              socket.send(JSON.stringify({ type: 'error', message: 'Task tapılmadı' }))
+              return
+            }
+            hub.subscribe(msg.taskId, socket)
             return
           }
-          hub.subscribe(msg.taskId, socket)
-        } else if (msg.type === 'unsubscribe') {
-          hub.unsubscribe(msg.taskId, socket)
-        } else {
-          supervisor.cancel(msg.runId)
+          case 'unsubscribe':
+            hub.unsubscribe(msg.taskId, socket)
+            return
+          case 'subscribe_activity':
+            hub.subscribeGlobal(socket)
+            return
+          case 'unsubscribe_activity':
+            hub.unsubscribeGlobal(socket)
+            return
+          case 'cancel':
+            supervisor.cancel(msg.runId)
+            return
         }
       })
 
@@ -241,6 +307,9 @@ export function buildOrchestris(input: BuildAppInput): OrchestrisApp {
 
   app.addHook('onClose', async () => {
     supervisor.cancelAll()
+    // Gözləyən sual `Promise`-ləri prosesi ASILI SAXLAYARDI və `SIGINT`-dən
+    // sonra server bağlanmazdı — istifadəçi onu `kill` etməli olardı.
+    questionGate.cancelAll()
     if (timer !== undefined) clearInterval(timer)
   })
 

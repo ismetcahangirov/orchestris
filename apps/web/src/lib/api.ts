@@ -1,5 +1,8 @@
 import type {
   CreateContextBody,
+  CreateMcpServerBody,
+  CreatePluginBody,
+  CreateReviewBody,
   CreateTaskBody,
   CreateScheduleBody,
   CreateWorkflowBody,
@@ -121,7 +124,123 @@ export interface ContextRow {
   /** `null` = avtomatik (kontekstin öz `id`-si). */
   memoryScope: string | null
   memoryEnabled: boolean
+  /** İşçi bu kontekstdə sual verə bilirmi (Faza 5B). */
+  questionsEnabled: boolean
+  /** CLI-nin daxili skill dəsti açıqdırmı (Faza 5C) — +3,648 token, ölçülmüş. */
+  builtinSkillsEnabled: boolean
+  /** `'read-only'` | `'workspace'` | `'extended'` (Faza 5A). */
+  fileAccess: string
+  /** YALNIZ `'extended'` səviyyəsində tətbiq olunur. */
+  extraDirsJson: string
   createdAt: number
+}
+
+export interface FsEntry {
+  name: string
+  path: string
+  /** `.git` FAYL və ya QOVLUQ kimi mövcuddur (worktree halı — qayda 44). */
+  isRepo: boolean
+  hidden: boolean
+}
+
+export interface FsListResponse {
+  path: string
+  parent: string | null
+  drives: string[]
+  entries: FsEntry[]
+}
+
+/**
+ * Yazıla bilmə YALNIZ burada gəlir, siyahıda yox: `fs.access(W_OK)` Windows-da
+ * ACL görmür, ona görə server real yazma probu edir və onu hər sətrə tətbiq
+ * etmək bir naviqasiyada onlarla disk əməliyyatı deməkdi.
+ */
+export interface FsCheckResponse {
+  path: string
+  exists: boolean
+  isDirectory: boolean
+  isRepo: boolean
+  writable: boolean
+}
+
+/** İşçinin istifadəçiyə verdiyi sual (Faza 5B). */
+export interface QuestionRow {
+  id: string
+  taskId: string
+  runId: string
+  question: string
+  /** `yes_no` | `single` | `multi` */
+  kind: string
+  /** Serverdə `options_json`-dan AÇILIR — UI xam JSON oxumamalıdır. */
+  options: string[]
+  answerJson: string | null
+  /** `pending` | `answered` | `cancelled` */
+  status: string
+  askedAt: number
+  answeredAt: number | null
+}
+
+/** İstifadəçinin işləyən icraya yazdığı rəy (Faza 5B). */
+export interface ReviewRow {
+  id: string
+  taskId: string
+  runId: string | null
+  text: string
+  /** `next` | `interrupt` */
+  mode: string
+  appliedAt: number | null
+  createdAt: number
+}
+
+/**
+ * MCP serveri (Faza 5C).
+ *
+ * SİRR YOXDUR və olmamalıdır: yalnız `secretEnvNames` (adlar) və `hasSecret`
+ * gəlir — dəyərlər OS keychain-dədir (qayda 13).
+ */
+export interface McpServerRow {
+  id: string
+  name: string
+  transport: string
+  command: string | null
+  args: string[]
+  env: Record<string, string>
+  secretEnvNames: string[]
+  hasSecret: boolean
+  url: string | null
+  enabled: boolean
+  createdAt: number
+}
+
+export interface PluginRow {
+  id: string
+  name: string
+  path: string
+  createdAt: number
+}
+
+/** `~/.claude.json`-dan OXUNAN mövcud server — sirlər daxil deyil. */
+export interface AvailableMcpRow {
+  name: string
+  transport: string
+  command: string | null
+  url: string | null
+  added: boolean
+}
+
+/** Canlı zolaqdakı bir icra (Faza 5A). */
+export interface ActiveRunRow {
+  runId: string
+  taskId: string
+  contextId: string
+  contextName: string
+  promptExcerpt: string
+  modelId: string
+  runnerId: string
+  /** Mənfi dəyər nərdivandan KƏNAR mexanizmdir: -1 distillə, -2 bölgü. */
+  ladderRung: number
+  attempt: number
+  startedAt: number
 }
 
 /**
@@ -430,6 +549,10 @@ export interface TaskDetail {
   memory: MemoryOpRow[]
   /** Faza 4 — alt-task ağacı. Bölünməmiş taskda boş massiv. */
   subtasks: SubtaskRow[]
+  /** Faza 5B — işçinin verdiyi suallar (cavablanmışlar da daxil). */
+  questions: QuestionRow[]
+  /** Faza 5B — istifadəçinin yazdığı rəylər. */
+  reviews: ReviewRow[]
   runs: RunRow[]
 }
 
@@ -454,6 +577,73 @@ export const api = {
   createContext: (body: CreateContextBody) =>
     request<ContextRow>('/api/contexts', { method: 'POST', body: JSON.stringify(body) }),
   listProviders: () => request<ProvidersResponse>('/api/providers'),
+
+  /**
+   * Qovluq brauzeri (Faza 5A) — bir səviyyə, yalnız qovluqlar.
+   *
+   * Brauzerin öz seçiciləri bu iş üçün yararsızdır: `showDirectoryPicker()`
+   * mütləq yolu QƏSDƏN gizlədir, `<input webkitdirectory>` isə nisbi yol verir.
+   */
+  listDir: (path?: string) =>
+    request<FsListResponse>(
+      path === undefined ? '/api/fs/list' : `/api/fs/list?path=${encodeURIComponent(path)}`,
+    ),
+
+  checkDir: (path: string) =>
+    request<FsCheckResponse>(`/api/fs/check?path=${encodeURIComponent(path)}`),
+
+  listMcpServers: () => request<{ servers: McpServerRow[] }>('/api/mcp-servers'),
+  listAvailableMcpServers: () =>
+    request<{ servers: AvailableMcpRow[] }>('/api/mcp-servers/available'),
+  createMcpServer: (body: CreateMcpServerBody) =>
+    request<McpServerRow>('/api/mcp-servers', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  deleteMcpServer: (id: string) =>
+    request<{ ok: boolean }>(`/api/mcp-servers/${id}`, { method: 'DELETE' }),
+
+  listPlugins: () => request<{ plugins: PluginRow[] }>('/api/plugins'),
+
+  /**
+   * Bütün kontekstlərin fərdiləşdirmə seçimi — BİR sorğuda.
+   * Kontekst başına sorğu `/contexts` səhifəsində N+1 olardı.
+   */
+  listContextCustomizations: () =>
+    request<Record<string, { mcpServerIds: string[]; pluginIds: string[] }>>(
+      '/api/contexts/customizations',
+    ),
+  createPlugin: (body: CreatePluginBody) =>
+    request<PluginRow>('/api/plugins', { method: 'POST', body: JSON.stringify(body) }),
+  deletePlugin: (id: string) =>
+    request<{ ok: boolean }>(`/api/plugins/${id}`, { method: 'DELETE' }),
+
+  /** Canlı zolağın başlanğıc anlıq şəkli — WS yalnız dəyişiklikləri yayır. */
+  listActiveRuns: () => request<{ runs: ActiveRunRow[] }>('/api/runs/active'),
+
+  /**
+   * Gözləyən suallar (Faza 5B) — `LiveBar` nişanı üçün.
+   *
+   * `/api/runs/active`-dən HESABLANA BİLMƏZ: sualı verən icra artıq bitib.
+   */
+  listPendingQuestions: () =>
+    request<{ questions: QuestionRow[] }>('/api/questions/pending'),
+
+  answerQuestion: (
+    taskId: string,
+    questionId: string,
+    answer: boolean | string | string[],
+  ) =>
+    request<{ ok: boolean; delivered: boolean }>(
+      `/api/tasks/${taskId}/questions/${questionId}/answer`,
+      { method: 'POST', body: JSON.stringify({ answer }) },
+    ),
+
+  createReview: (taskId: string, body: CreateReviewBody) =>
+    request<{ ok: boolean; applied: string }>(`/api/tasks/${taskId}/review`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 
   listModels: (providerId?: string) =>
     request<ModelRow[]>(

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { and, asc, eq, gt, inArray, sql } from 'drizzle-orm'
-import type { ErrorClass, RunEvent } from '@orchestris/shared'
+import type { ActiveRun, ErrorClass, RunEvent } from '@orchestris/shared'
 import type { Db } from './client.js'
 import { cacheEntries, contexts, runEvents, runs, tasks, verificationRuns } from './schema.js'
 
@@ -19,7 +19,13 @@ function required<T>(row: T | undefined, what: string): T {
 
 export function createContext(
   db: Db,
-  input: { name: string; cwd?: string; verifyCommands?: readonly string[] },
+  input: {
+    name: string
+    cwd?: string
+    verifyCommands?: readonly string[]
+    fileAccess?: string
+    extraDirs?: readonly string[]
+  },
 ): Context {
   const id = randomUUID()
   db.insert(contexts)
@@ -28,6 +34,10 @@ export function createContext(
       name: input.name,
       cwd: input.cwd ?? null,
       verifyCommandsJson: JSON.stringify(input.verifyCommands ?? []),
+      ...(input.fileAccess !== undefined ? { fileAccess: input.fileAccess } : {}),
+      ...(input.extraDirs !== undefined
+        ? { extraDirsJson: JSON.stringify(input.extraDirs) }
+        : {}),
       createdAt: now(),
     })
     .run()
@@ -60,6 +70,19 @@ export interface ContextUpdate {
   budgetTokens?: number | null | undefined
   budgetUsd?: number | null | undefined
   budgetSeconds?: number | null | undefined
+  /**
+   * İş qovluğu. `null` = sil.
+   *
+   * Əvvəl bu sahə YOX İDİ — `cwd` yalnız kontekst yaradılanda verilirdi və
+   * səhv yazılmış yolu düzəltmək üçün kontekst yenidən yaradılmalı idi.
+   */
+  cwd?: string | null | undefined
+  fileAccess?: string | undefined
+  /** YALNIZ `'extended'` səviyyəsində tətbiq olunur (`exec/file-access.ts`). */
+  extraDirs?: readonly string[] | undefined
+  questionsEnabled?: boolean | undefined
+  /** CLI-nin daxili skill dəsti (Faza 5C) — hamısı-birdən. */
+  builtinSkillsEnabled?: boolean | undefined
 }
 
 /**
@@ -87,6 +110,17 @@ export function updateContext(db: Db, id: string, input: ContextUpdate): Context
     ...(input.budgetTokens !== undefined ? { budgetTokens: input.budgetTokens } : {}),
     ...(input.budgetUsd !== undefined ? { budgetUsd: input.budgetUsd } : {}),
     ...(input.budgetSeconds !== undefined ? { budgetSeconds: input.budgetSeconds } : {}),
+    ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+    ...(input.fileAccess !== undefined ? { fileAccess: input.fileAccess } : {}),
+    ...(input.extraDirs !== undefined
+      ? { extraDirsJson: JSON.stringify(input.extraDirs) }
+      : {}),
+    ...(input.questionsEnabled !== undefined
+      ? { questionsEnabled: input.questionsEnabled }
+      : {}),
+    ...(input.builtinSkillsEnabled !== undefined
+      ? { builtinSkillsEnabled: input.builtinSkillsEnabled }
+      : {}),
   }
 
   if (Object.keys(values).length > 0) {
@@ -416,4 +450,73 @@ export function listVerifications(db: Db, runId: string): VerificationRun[] {
     .where(eq(verificationRuns.runId, runId))
     .orderBy(asc(verificationRuns.id))
     .all()
+}
+
+/** Zolaqda göstərilən prompt parçasının uzunluğu. */
+const PROMPT_EXCERPT_CHARS = 60
+
+function excerpt(prompt: string): string {
+  // Sətir sonları BİRLƏŞDİRİLİR: zolaq bir sətirlikdir və xam `\n` orada
+  // sadəcə boşluq kimi görünərdi, amma uzunluq hesabını korlayardı.
+  const oneLine = prompt.replace(/\s+/g, ' ').trim()
+  return oneLine.length > PROMPT_EXCERPT_CHARS
+    ? `${oneLine.slice(0, PROMPT_EXCERPT_CHARS)}…`
+    : oneLine
+}
+
+/**
+ * Hazırda işləyən icralar — canlı zolaq üçün (Faza 5A).
+ *
+ * `status = 'running'` filtri kifayətdir: `finishRun` hər terminal halda
+ * statusu dəyişir, server çökməsindən sonra qalanları isə başlanğıcdakı
+ * `markOrphanedRunsInterrupted` təmizləyir.
+ *
+ * Mənfi pillələr (distillə -1, bölgü -2) SÜZÜLMÜR: onlar da pul yandırır və
+ * "niyə hələ gözləyirəm?" sualının cavabı çox vaxt məhz onlardır. Gizlətsək
+ * istifadəçi boş zolağa baxıb sistemi donmuş sayardı.
+ */
+export function listActiveRuns(db: Db): ActiveRun[] {
+  const rows = db
+    .select({
+      runId: runs.id,
+      taskId: runs.taskId,
+      contextId: tasks.contextId,
+      contextName: contexts.name,
+      prompt: tasks.prompt,
+      modelId: runs.modelId,
+      runnerId: runs.runnerId,
+      ladderRung: runs.ladderRung,
+      attempt: runs.attempt,
+      startedAt: runs.startedAt,
+    })
+    .from(runs)
+    .innerJoin(tasks, eq(runs.taskId, tasks.id))
+    .innerJoin(contexts, eq(tasks.contextId, contexts.id))
+    .where(eq(runs.status, 'running'))
+    .orderBy(asc(runs.startedAt))
+    .all()
+
+  return rows.map(({ prompt, ...r }) => ({ ...r, promptExcerpt: excerpt(prompt) }))
+}
+
+/** Tək icra — `activity` yayımında `'started'` yükü üçün. */
+export function getActiveRun(db: Db, runId: string): ActiveRun | undefined {
+  return listActiveRuns(db).find((r) => r.runId === runId)
+}
+
+/**
+ * Keş sətrini SİLİR — review yazılanda (Faza 5B).
+ *
+ * İstifadəçi rəy yazırsa, deməli cavab səhv idi; amma o cavab Pillə 0 keşinə
+ * ARTIQ düşüb və eyni prompt bir daha göndəriləndə qaytarılardı. Silməsəydik,
+ * istifadəçi düzəltdiyini sandığı səhvi bir daha alardı və səbəbini heç yerdə
+ * görməzdi.
+ */
+export function deleteCacheEntry(db: Db, hash: string): void {
+  db.delete(cacheEntries).where(eq(cacheEntries.hash, hash)).run()
+}
+
+/** `storeInCache` yazdığı açarı icra sətrinə də yazır — bax `runs.cache_key`. */
+export function setRunCacheKey(db: Db, runId: string, cacheKey: string): void {
+  db.update(runs).set({ cacheKey }).where(eq(runs.id, runId)).run()
 }

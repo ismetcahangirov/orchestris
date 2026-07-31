@@ -1,10 +1,18 @@
-import type { ErrorClass, RunEvent, Runner } from '@orchestris/shared'
+import type {
+  ActiveRun,
+  ErrorClass,
+  FileAccess,
+  RunCustomizations,
+  RunEvent,
+  Runner,
+} from '@orchestris/shared'
 import type { Db } from '../db/client.js'
 import {
   appendEvent,
   applyUsageToRun,
   createRun,
   finishRun,
+  getActiveRun,
   setTaskStatus,
   type StoredEvent,
 } from '../db/repo.js'
@@ -26,6 +34,21 @@ export interface ExecuteInput {
    */
   worktreePath?: string
   resumeSessionId?: string
+  /**
+   * Kontekstin fayl icazəsi — `resolveFileAccess` nəticəsi (Faza 5A).
+   *
+   * Verilməsə runner öz konstruktor default-una düşür. Nərdivan bunu
+   * `where()`-dən BİR yerdən verir ki, çağırış yerlərindən biri unudulanda
+   * həmin icra səhv icazə ilə işləməsin.
+   */
+  fileAccess?: FileAccess
+  /**
+   * MCP / plugin / daxili skill seçimi (Faza 5C).
+   *
+   * Verilməsə runner ÖZ DEFAULT bayraq dəstini işlədir və əmr sətri bayt-bayt
+   * köhnə qalır — mövcud keşlər sınmır.
+   */
+  customizations?: RunCustomizations
   subscriptionBilled?: boolean
   ladderRung?: number
   /** Yoxlama dövrəsində neçənci cəhd. Default 1. */
@@ -44,6 +67,16 @@ export interface ExecuteResult {
 
 export type EventListener = (runId: string, stored: StoredEvent) => void
 
+/** Canlı zolaq üçün icra həyat dövrü mesajı (Faza 5A). */
+export interface ActivityMessage {
+  kind: 'started' | 'ended'
+  runId: string
+  /** YALNIZ `'started'`-da olur — `'ended'` üçün `runId` kifayətdir. */
+  run?: ActiveRun
+}
+
+export type ActivityListener = (msg: ActivityMessage) => void
+
 /** Vaxt limiti bu intervalda yoxlanılır (ms). */
 const CLOCK_CHECK_INTERVAL_MS = 250
 
@@ -55,6 +88,7 @@ const CLOCK_CHECK_INTERVAL_MS = 250
  */
 export class RunSupervisor {
   private readonly listeners = new Set<EventListener>()
+  private readonly activityListeners = new Set<ActivityListener>()
   private readonly active = new Map<string, AbortController>()
   private readonly db: Db
 
@@ -66,6 +100,30 @@ export class RunSupervisor {
     this.listeners.add(listener)
     return () => {
       this.listeners.delete(listener)
+    }
+  }
+
+  /**
+   * Canlı zolaq üçün icra HƏYAT DÖVRÜ hadisələri (Faza 5A).
+   *
+   * `onEvent`-dən AYRIDIR: ora hər delta düşür və onları qlobal kanala
+   * yaysaydıq, zolaq açıq olan hər brauzer bütün icraların hərf-hərf axınını
+   * alardı.
+   */
+  onActivity(listener: ActivityListener): () => void {
+    this.activityListeners.add(listener)
+    return () => {
+      this.activityListeners.delete(listener)
+    }
+  }
+
+  private emitActivity(msg: ActivityMessage): void {
+    for (const l of this.activityListeners) {
+      try {
+        l(msg)
+      } catch {
+        // Bir dinləyicinin xətası icranı dayandırmamalıdır.
+      }
     }
   }
 
@@ -102,6 +160,14 @@ export class RunSupervisor {
     })
     setTaskStatus(this.db, input.taskId, 'running')
 
+    // Zolaq üçün yük DB-dən oxunur, əl ilə qurulmur: kontekst adı və prompt
+    // parçası orada onsuz da var və iki yerdə iki fərqli formalaşdırma
+    // yaratmaq `/api/runs/active` ilə WS arasında səssiz uyğunsuzluq verərdi.
+    const active = getActiveRun(this.db, run.id)
+    if (active !== undefined) {
+      this.emitActivity({ kind: 'started', runId: run.id, run: active })
+    }
+
     const ac = new AbortController()
     this.active.set(run.id, ac)
 
@@ -128,6 +194,10 @@ export class RunSupervisor {
           prompt: input.prompt,
           model: input.model,
           ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+          ...(input.fileAccess !== undefined ? { fileAccess: input.fileAccess } : {}),
+          ...(input.customizations !== undefined
+            ? { customizations: input.customizations }
+            : {}),
           ...(input.resumeSessionId !== undefined
             ? { resumeSessionId: input.resumeSessionId }
             : {}),
@@ -201,6 +271,7 @@ export class RunSupervisor {
       input.taskId,
       terminal.status === 'succeeded' ? 'succeeded' : 'failed',
     )
+    this.emitActivity({ kind: 'ended', runId: run.id })
 
     return {
       runId: run.id,

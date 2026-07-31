@@ -1,10 +1,30 @@
-import { AMPLIFICATION_PROFILES, CreateTaskBody, type Runner } from '@orchestris/shared'
+import {
+  AMPLIFICATION_PROFILES,
+  AnswerQuestionBody,
+  CreateReviewBody,
+  CreateTaskBody,
+  type Runner,
+} from '@orchestris/shared'
 import type { FastifyInstance } from 'fastify'
 import { getDiffArtifact, listArtifacts, resolveArtifact } from '../db/artifact-repo.js'
 import type { Db } from '../db/client.js'
+import {
+  answerQuestion,
+  createReview,
+  getQuestion,
+  listPendingQuestions,
+  listQuestions,
+  listReviews,
+  type Question,
+} from '../db/interaction-repo.js'
+import {
+  listContextMcpServers,
+  listContextPlugins,
+} from '../db/customization-repo.js'
 import { listMemoryOps } from '../db/memory-repo.js'
 import {
   createTask,
+  deleteCacheEntry,
   getContext,
   getTask,
   listEvents,
@@ -16,14 +36,26 @@ import { latestRoutingDecision, listRoutingDecisions } from '../db/routing-repo.
 import { listTemplates } from '../db/template-repo.js'
 import type { BudgetLimits } from '../exec/budget.js'
 import type { Decomposer } from '../exec/decomposer.js'
-import { activeRungs, type Ladder } from '../exec/ladder.js'
+import { activeRungs, type Ladder, type LadderContext } from '../exec/ladder.js'
 import type { TaskPool } from '../exec/pool.js'
+import type { DbQuestionGate } from '../exec/question-gate.js'
+import { answerProblem } from '../exec/ask.js'
+import {
+  buildMcpConfig,
+  pluginDirsOf,
+  resolveCustomizations,
+  writeMcpConfig,
+  type Customizations,
+} from '../exec/customizations.js'
+import { mcpSecretRef } from './customizations.js'
 import type { RunSupervisor } from '../exec/supervisor.js'
 import {
   detectBinaryFiles,
   resolveMaxParallel,
   type WorktreeManager,
 } from '../exec/worktree.js'
+import { mcpConfigDir } from '../paths.js'
+import type { CredentialStore } from '../secrets/keychain.js'
 import type { RunnerReadiness } from '../routing/readiness.js'
 import { BUILTIN_RULES } from '../routing/rules.js'
 
@@ -44,6 +76,88 @@ export interface TaskRouteDeps {
    * deyil (eyni prinsip: worktree izolyasiyası, qayda 41).
    */
   decomposer?: Decomposer
+  /**
+   * Sual qapısı (Faza 5B). Verilməsə cavab DB-yə yazılır, amma gözləyən icraya
+   * ÇATMIR — cavab `delivered: false` qaytarır və istifadəçi bunu görür.
+   */
+  questions?: DbQuestionGate
+  /**
+   * MCP sirlərinin oxunması üçün (Faza 5C). Verilməsə sirli serverlər
+   * konfiqurasiyaya DÜŞMÜR — yarımçıq `env` ilə server sınardı.
+   */
+  credentials?: CredentialStore
+}
+
+/**
+ * Kontekstin fərdiləşdirməsini BİR DƏFƏ həll edir və MCP faylını yazır.
+ *
+ * Nərdivanın İÇİNDƏ etmirik: o, bir taskda bir neçə icra qaçırır və hər
+ * birində faylı yenidən yazsaydıq paralel icralar eyni fayl üzərində yarışardı.
+ *
+ * `undefined` qaytarırsa runner köhnə bayraq dəstini işlədir və əmr sətri
+ * bayt-bayt dəyişməz qalır (qayda 1).
+ */
+async function resolveContextCustomizations(
+  db: Db,
+  contextId: string,
+  builtinSkills: boolean,
+  credentials: CredentialStore | undefined,
+): Promise<Customizations | undefined> {
+  const servers = listContextMcpServers(db, contextId)
+  const plugins = listContextPlugins(db, contextId)
+
+  let mcpConfigPath: string | undefined
+  if (servers.length > 0) {
+    const secrets = new Map<string, string>()
+    for (const s of servers) {
+      for (const name of JSON.parse(s.secretEnvJson) as string[]) {
+        const value = await credentials?.get(mcpSecretRef(s.id, name))
+        if (value !== null && value !== undefined) {
+          secrets.set(`${s.id}:${name}`, value)
+        }
+      }
+    }
+    const { config } = buildMcpConfig(servers, (id, name) => secrets.get(`${id}:${name}`))
+    if (config !== null) {
+      mcpConfigPath = writeMcpConfig(mcpConfigDir(), contextId, config)
+    }
+  }
+
+  return resolveCustomizations({
+    mcpConfigPath,
+    pluginDirs: pluginDirsOf(plugins),
+    builtinSkills,
+  })
+}
+
+/** Kontekst sətrindən nərdivanın gözlədiyi obyekti qurur — BİR yerdə. */
+function toLadderContext(ctx: {
+  id: string
+  cwd: string | null
+  verifyCommandsJson: string
+  amplificationProfile: string
+  defaultWorkerModelId: string | null
+  maxParallel: number
+  memoryScope: string | null
+  memoryEnabled: boolean
+  fileAccess: string
+  extraDirsJson: string
+  questionsEnabled: boolean
+}, customizations?: Customizations): LadderContext {
+  return {
+    id: ctx.id,
+    cwd: ctx.cwd,
+    verifyCommandsJson: ctx.verifyCommandsJson,
+    amplificationProfile: ctx.amplificationProfile,
+    defaultWorkerModelId: ctx.defaultWorkerModelId,
+    maxParallel: ctx.maxParallel,
+    memoryScope: ctx.memoryScope,
+    memoryEnabled: ctx.memoryEnabled,
+    fileAccess: ctx.fileAccess,
+    extraDirsJson: ctx.extraDirsJson,
+    questionsEnabled: ctx.questionsEnabled,
+    ...(customizations !== undefined ? { customizations } : {}),
+  }
 }
 
 export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): void {
@@ -133,16 +247,15 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
           : {}),
     }
 
-    const ladderContext = {
-      id: ctx.id,
-      cwd: ctx.cwd,
-      verifyCommandsJson: ctx.verifyCommandsJson,
-      amplificationProfile: ctx.amplificationProfile,
-      defaultWorkerModelId: ctx.defaultWorkerModelId,
-      maxParallel: ctx.maxParallel,
-      memoryScope: ctx.memoryScope,
-      memoryEnabled: ctx.memoryEnabled,
-    }
+    const ladderContext = toLadderContext(
+      ctx,
+      await resolveContextCustomizations(
+        db,
+        ctx.id,
+        ctx.builtinSkillsEnabled,
+        deps.credentials,
+      ),
+    )
     // Hər ikisi birlikdə verilir və ya heç biri — Ladder bunu "əl ilə seçim"
     // və ya "Auto" kimi oxuyur.
     const manual =
@@ -220,6 +333,11 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
       // endpoint kimi YOX: task səhifəsi onsuz da bu cavabı çəkir və ikinci
       // sorğu eyni məlumatın iki mənbəyini yaradardı.
       memory: listMemoryOps(db, task.id),
+      // Sual və rəylər (Faza 5B). Ayrıca endpoint kimi YOX: task səhifəsi
+      // onsuz da bu cavabı çəkir və ikinci sorğu eyni məlumatın iki mənbəyini
+      // yaradardı (eyni mühakimə: `subtasks`, `memory`).
+      questions: listQuestions(db, task.id).map(withOptions),
+      reviews: listReviews(db, task.id),
       runs: listRunsForTask(db, task.id).map((r) => ({
         ...r,
         events: listEvents(db, r.id),
@@ -320,6 +438,126 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
       .filter((r) => supervisor.cancel(r.id))
       .map((r) => r.id)
 
+    // Gözləyən suallar da bağlanır (Faza 5B): task dayandırılırsa cavab heç
+    // yerə çatmayacaq və UI əbədi "cavab gözləyir" göstərərdi.
+    for (const q of listQuestions(db, task.id)) {
+      if (q.status === 'pending') deps.questions?.cancel(q.id)
+    }
+
     return { cancelled }
   })
+
+  app.get('/api/questions/pending', async () => ({
+    questions: listPendingQuestions(db).map(withOptions),
+  }))
+
+  app.post<{ Params: { id: string; qid: string } }>(
+    '/api/tasks/:id/questions/:qid/answer',
+    async (req, reply) => {
+      const parsed = AnswerQuestionBody.safeParse(req.body)
+      if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues })
+
+      const question = getQuestion(db, req.params.qid)
+      if (question === undefined || question.taskId !== req.params.id) {
+        return reply.code(404).send({ error: 'Sual tapılmadı' })
+      }
+      if (question.status !== 'pending') {
+        // 409, 400 YOX: cavab GECİKDİ — istifadəçi səhv etməyib, sual artıq
+        // bağlanıb. 400 yazsaydıq o, öz göndərişini səhv sayardı.
+        return reply.code(409).send({ error: 'Sual artıq bağlanıb' })
+      }
+
+      const answer = parsed.data.answer
+      // Forma yoxlaması BURADADIR, zod sxemində yox: `kind` yalnız serverdə,
+      // DB sətrində bilinir.
+      const problem = answerProblem(
+        question.kind,
+        JSON.parse(question.optionsJson) as string[],
+        answer,
+      )
+      if (problem !== null) return reply.code(400).send({ error: problem })
+
+      answerQuestion(db, question.id, answer)
+      // `delivered: false` = gözləyən proses YOXDUR (server yenidən
+      // başladılıb). Cavab DB-yə yazılır, amma icra davam etməyəcək —
+      // istifadəçi bunu bilməlidir, yoxsa boş yerə gözləyərdi.
+      const delivered = deps.questions?.resolve(question.id, answer) ?? false
+      return { ok: true, delivered }
+    },
+  )
+
+  app.post<{ Params: { id: string } }>('/api/tasks/:id/review', async (req, reply) => {
+    const parsed = CreateReviewBody.safeParse(req.body)
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues })
+
+    const task = getTask(db, req.params.id)
+    if (task === undefined) return reply.code(404).send({ error: 'Task tapılmadı' })
+    const ctx = getContext(db, task.contextId)
+    if (ctx === undefined) return reply.code(404).send({ error: 'Kontekst tapılmadı' })
+
+    const runs = listRunsForTask(db, task.id)
+    const active = runs.filter((r) => r.status === 'running')
+
+    createReview(db, {
+      taskId: task.id,
+      runId: active[0]?.id ?? null,
+      text: parsed.data.text,
+      mode: parsed.data.mode,
+    })
+
+    // Review KEŞ SƏTRİNİ LƏĞV EDİR: istifadəçi rəy yazırsa cavab səhv idi,
+    // amma o cavab Pillə 0 keşinə ARTIQ düşüb və eyni prompt bir daha
+    // göndəriləndə qaytarılardı. Açar `runs.cache_key`-dədir — burada YENİDƏN
+    // HESABLANMIR, çünki o, model, runner, şablon və yaddaş digest-indən
+    // asılıdır və hesablamanı iki yerdə təkrarlamaq səssiz uyğunsuzluq
+    // mənbəyidir.
+    for (const run of runs) {
+      if (run.cacheKey !== null) deleteCacheEntry(db, run.cacheKey)
+    }
+
+    if (active.length > 0) {
+      if (parsed.data.mode === 'interrupt') {
+        // Proses ağacı öldürülür (qayda 6). Yarımçıq işin çıxış tokenləri
+        // ödənilib atılır — bu, istifadəçinin AÇIQ seçimidir.
+        for (const r of active) supervisor.cancel(r.id)
+      }
+      return { ok: true, applied: 'queued' }
+    }
+
+    // İcra işləmir — "növbəti icra" yoxdur, ona görə route YENİSİNİ başladır.
+    // Sərhəd BURADADIR, nərdivanda yox: nərdivanın içində "rəy varsa bir daha
+    // qaç" dövrəsi qursaydıq, ard-arda yazılan rəylər bir çağırışı sonsuz uzada
+    // bilər və büdcə hesabı (`RemainingBudget`) mənasını itirərdi.
+    const resumeSessionId = [...runs].reverse().find((r) => r.sessionId !== null)?.sessionId
+    const restartCustomizations = await resolveContextCustomizations(
+      db,
+      ctx.id,
+      ctx.builtinSkillsEnabled,
+      deps.credentials,
+    )
+    const restart = (): Promise<unknown> =>
+      ladder.run({
+        task: { id: task.id, prompt: task.prompt },
+        context: toLadderContext(
+          ctx,
+          restartCustomizations,
+        ),
+        ...(resumeSessionId != null ? { resumeSessionId } : {}),
+      })
+
+    const queued =
+      deps.pool === undefined
+        ? restart()
+        : deps.pool.run(ctx.id, resolveMaxParallel(ctx.maxParallel), restart)
+    void queued.catch((err: unknown) => {
+      app.log.error({ err }, 'review yenidən başlatması tutulmamış xəta')
+    })
+
+    return { ok: true, applied: 'restarted' }
+  })
+}
+
+/** `options_json` sətrini massivə açır — UI xam JSON oxumamalıdır. */
+function withOptions(q: Question): Question & { options: string[] } {
+  return { ...q, options: JSON.parse(q.optionsJson) as string[] }
 }

@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { RunEvent } from '@orchestris/shared'
 import {
   buildEscalationPrompt,
+  buildSignalContract,
   collectAnswerText,
-  ESCALATION_CONTRACT,
   parseEscalation,
 } from './escalation.js'
 
@@ -77,7 +77,7 @@ describe('parseEscalation', () => {
   })
 
   it('müqavilənin öz mətnini təkrarlayan cavab eskalasiya deyil', () => {
-    expect(parseEscalation(ESCALATION_CONTRACT)).toBeNull()
+    expect(parseEscalation(buildSignalContract({ escalate: true, ask: true }))).toBeNull()
   })
 
   it('yarımçıq JSON eskalasiya deyil', () => {
@@ -109,5 +109,40 @@ describe('buildEscalationPrompt', () => {
   it('çox uzun qismən nəticə kəsilir', () => {
     const p = buildEscalationPrompt('X', { reason: 'r', partial: 'a'.repeat(10_000) })
     expect(p.length).toBeLessThan(5000)
+  })
+})
+
+describe('buildSignalContract (Faza 5B)', () => {
+  it('heç bir siqnal aktiv deyilsə boş sətir verir', () => {
+    expect(buildSignalContract({ escalate: false, ask: false })).toBe('')
+  })
+
+  it('yalnız eskalasiya', () => {
+    const c = buildSignalContract({ escalate: true, ask: false })
+    expect(c).toContain('"escalate"')
+    expect(c).not.toContain('"ask"')
+  })
+
+  it('yalnız sual', () => {
+    const c = buildSignalContract({ escalate: false, ask: true })
+    expect(c).toContain('"ask"')
+    expect(c).not.toContain('"escalate"')
+  })
+
+  it('hər ikisi BİR blokda verilir', () => {
+    const c = buildSignalContract({ escalate: true, ask: true })
+    expect(c).toContain('"escalate"')
+    expect(c).toContain('"ask"')
+    // İki ayrı başlıq YOX — ortaq mətn bir dəfə yazılır (qiymət və aydınlıq).
+    expect(c.match(/SİQNAL MÜQAVİLƏSİ/g)).toHaveLength(1)
+  })
+
+  it('hər iki siqnalla belə 900 simvoldan qısadır', () => {
+    // Müqavilə HƏR işçi icrasında ödənilir — uzunluğu daimi vergidir.
+    expect(buildSignalContract({ escalate: true, ask: true }).length).toBeLessThan(900)
+  })
+
+  it('cavabın TAMI olma şərtini daşıyır — qayda 28/69', () => {
+    expect(buildSignalContract({ escalate: true, ask: true })).toContain('cavabın TAMI')
   })
 })

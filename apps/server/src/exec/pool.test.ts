@@ -120,3 +120,68 @@ describe('TaskPool', () => {
     await Promise.all([second, third])
   })
 })
+
+describe('yield — gözləyərkən slot buraxılır (Faza 5B)', () => {
+  it('cavab gözləyən task limiti TUTMUR', async () => {
+    // MEXANİZMİN BÜTÜN MƏNASI: `max_parallel = 1` olan kontekstdə cavab
+    // gözləyən task slotu saxlasaydı, iş sahəsi TAM kilidlənərdi.
+    const pool = new TaskPool()
+    let secondRan = false
+    let release!: () => void
+    const gate = new Promise<void>((r) => {
+      release = r
+    })
+
+    const first = pool.run('ctx', 1, async () => {
+      await pool.yield('ctx', 1, () => gate)
+      return 'birinci'
+    })
+    const second = pool.run('ctx', 1, async () => {
+      secondRan = true
+      return 'ikinci'
+    })
+
+    expect(await second).toBe('ikinci')
+    expect(secondRan).toBe(true)
+    release()
+    expect(await first).toBe('birinci')
+  })
+
+  it('yield-dən sonra slot YENİDƏN alınır — limit aşılmır', async () => {
+    const pool = new TaskPool()
+    let peak = 0
+    let active = 0
+    const track = async (): Promise<void> => {
+      active += 1
+      peak = Math.max(peak, active)
+      await Promise.resolve()
+      active -= 1
+    }
+
+    await Promise.all([
+      pool.run('ctx', 1, async () => {
+        await pool.yield('ctx', 1, async () => undefined)
+        await track()
+      }),
+      pool.run('ctx', 1, track),
+    ])
+    expect(peak).toBe(1)
+  })
+
+  it('yield içindəki xəta slotu geri qaytarır', async () => {
+    const pool = new TaskPool()
+    await expect(
+      pool.run('ctx', 1, () =>
+        pool.yield('ctx', 1, () => Promise.reject(new Error('sındı'))),
+      ),
+    ).rejects.toThrow('sındı')
+    expect(pool.activeCount('ctx')).toBe(0)
+  })
+
+  it('yield-dən sonra sayğac sıfıra qayıdır', async () => {
+    const pool = new TaskPool()
+    await pool.run('ctx', 2, () => pool.yield('ctx', 2, async () => undefined))
+    expect(pool.activeCount('ctx')).toBe(0)
+    expect(pool.waitingCount('ctx')).toBe(0)
+  })
+})

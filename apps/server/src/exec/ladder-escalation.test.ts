@@ -188,7 +188,7 @@ describe('Ladder — Pillə 6 self-escalation', () => {
 
     await ladder.run({ task: newTask(), context: ctx })
 
-    expect(spy.mock.calls[0]?.[0].prompt).toContain('ƏMİNLİK MÜQAVİLƏSİ')
+    expect(spy.mock.calls[0]?.[0].prompt).toContain('SİQNAL MÜQAVİLƏSİ')
   })
 
   it('`cheap` profilində müqavilə GÖNDƏRİLMİR — o profil eskalasiyasızdır', async () => {
@@ -197,7 +197,7 @@ describe('Ladder — Pillə 6 self-escalation', () => {
 
     await ladder.run({ task: newTask(), context: ctx })
 
-    expect(spy.mock.calls[0]?.[0].prompt).not.toContain('ƏMİNLİK MÜQAVİLƏSİ')
+    expect(spy.mock.calls[0]?.[0].prompt).not.toContain('SİQNAL MÜQAVİLƏSİ')
   })
 
   it('işçi imtina edəndə başçı işə düşür və nəticə onundur', async () => {

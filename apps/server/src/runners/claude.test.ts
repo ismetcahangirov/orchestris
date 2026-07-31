@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildClaudeArgs, CLAUDE_STABLE_FLAGS } from './claude.js'
+import { buildClaudeArgs, CLAUDE_CUSTOM_FLAGS, CLAUDE_STABLE_FLAGS } from './claude.js'
 
 describe('CLAUDE_STABLE_FLAGS', () => {
   it('--verbose daxildir — stream-json bunsuz xəta verir', () => {
@@ -130,5 +130,137 @@ describe('buildClaudeArgs — hərf-hərf axın', () => {
     )
     // Fərq YALNIZ bir bayraqdır — başqa heç nə sürüşmür.
     expect(withFlag.filter((a) => a !== '--include-partial-messages')).toEqual(without)
+  })
+})
+
+describe('fayl icazəsi arqumentləri', () => {
+  it('read-only səviyyəsi plan rejimi verir', () => {
+    const args = buildClaudeArgs({
+      prompt: 'p',
+      model: 'm',
+      cwd: '/repo',
+      fileAccess: { level: 'read-only', dirs: ['/repo'] },
+    })
+    expect(args[args.indexOf('--permission-mode') + 1]).toBe('plan')
+  })
+
+  it('workspace səviyyəsi acceptEdits verir', () => {
+    const args = buildClaudeArgs({
+      prompt: 'p',
+      model: 'm',
+      cwd: '/repo',
+      fileAccess: { level: 'workspace', dirs: ['/repo'] },
+    })
+    expect(args[args.indexOf('--permission-mode') + 1]).toBe('acceptEdits')
+  })
+
+  it('hər qovluq üçün ayrıca --add-dir verilir', () => {
+    const args = buildClaudeArgs({
+      prompt: 'p',
+      model: 'm',
+      cwd: '/repo',
+      fileAccess: { level: 'extended', dirs: ['/a', '/repo'] },
+    })
+    const dirs = args.filter((_, i) => args[i - 1] === '--add-dir')
+    expect(dirs).toEqual(['/a', '/repo'])
+  })
+
+  it('fileAccess verilməsə köhnə davranış qalır', () => {
+    const args = buildClaudeArgs(
+      { prompt: 'p', model: 'm', cwd: '/repo' },
+      { permissionMode: 'acceptEdits' },
+    )
+    expect(args[args.indexOf('--add-dir') + 1]).toBe('/repo')
+    expect(args[args.indexOf('--permission-mode') + 1]).toBe('acceptEdits')
+  })
+
+  it('CLAUDE_STABLE_FLAGS DƏYİŞMİR — qayda 1', () => {
+    // Qəsdən sərt test: dəstə bir bayraq əlavə etmək bütün mövcud prompt
+    // keşlərini bir dəfəlik sındırır (ölçülmüş: $0.0085 → $0.0444).
+    expect([...CLAUDE_STABLE_FLAGS]).toEqual([
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--safe-mode',
+      '--strict-mcp-config',
+      '--exclude-dynamic-system-prompt-sections',
+      '--disable-slash-commands',
+    ])
+  })
+})
+
+describe('CLAUDE_CUSTOM_FLAGS — fərdiləşdirmə dəsti (Faza 5C)', () => {
+  it('--safe-mode DAŞIMIR, --setting-sources daşıyır', () => {
+    // ÖLÇÜLDÜ: `--safe-mode`-u sadəcə çıxarmaq promptu 23k → 76k edir və keşi
+    // TAM sındırır ($0.1528). `--setting-sources ''` bunu +12.5%-ə endirir.
+    expect(CLAUDE_CUSTOM_FLAGS).not.toContain('--safe-mode')
+    expect(CLAUDE_CUSTOM_FLAGS).toContain('--setting-sources')
+  })
+
+  it('--strict-mcp-config HƏR İKİ dəstdə qalır', () => {
+    // İstifadəçinin qlobal MCP konfiqurasiyası heç vaxt səssizcə sızmamalıdır.
+    expect(CLAUDE_STABLE_FLAGS).toContain('--strict-mcp-config')
+    expect(CLAUDE_CUSTOM_FLAGS).toContain('--strict-mcp-config')
+  })
+
+  it('--disable-slash-commands SABİT dəstdədir, fərdi dəstdə YOX', () => {
+    expect(CLAUDE_STABLE_FLAGS).toContain('--disable-slash-commands')
+    expect(CLAUDE_CUSTOM_FLAGS).not.toContain('--disable-slash-commands')
+  })
+
+  it('customizations YOXDURSA əmr sətri SABİT dəstlə qurulur', () => {
+    const args = buildClaudeArgs({ prompt: 'p', model: 'm' })
+    expect(args).toContain('--safe-mode')
+    expect(args).not.toContain('--setting-sources')
+    expect(args).not.toContain('--mcp-config')
+  })
+
+  it('customizations VARSA safe-mode getmir, mcp-config gəlir', () => {
+    const args = buildClaudeArgs({
+      prompt: 'p',
+      model: 'm',
+      customizations: { mcpConfigPath: '/cfg.json', pluginDirs: [], builtinSkills: false },
+    })
+    expect(args).not.toContain('--safe-mode')
+    expect(args[args.indexOf('--mcp-config') + 1]).toBe('/cfg.json')
+  })
+
+  it('hər plugin üçün ayrıca --plugin-dir', () => {
+    const args = buildClaudeArgs({
+      prompt: 'p',
+      model: 'm',
+      customizations: { pluginDirs: ['/a', '/b'], builtinSkills: false },
+    })
+    expect(args.filter((_, i) => args[i - 1] === '--plugin-dir')).toEqual(['/a', '/b'])
+  })
+
+  it('builtinSkills true olanda --disable-slash-commands OLMUR', () => {
+    const args = buildClaudeArgs({
+      prompt: 'p',
+      model: 'm',
+      customizations: { pluginDirs: [], builtinSkills: true },
+    })
+    expect(args).not.toContain('--disable-slash-commands')
+  })
+
+  it('builtinSkills false olanda --disable-slash-commands QALIR', () => {
+    const args = buildClaudeArgs({
+      prompt: 'p',
+      model: 'm',
+      customizations: { pluginDirs: [], builtinSkills: false },
+    })
+    expect(args).toContain('--disable-slash-commands')
+  })
+
+  it('fayl icazəsi ilə birlikdə işləyir', () => {
+    const args = buildClaudeArgs({
+      prompt: 'p',
+      model: 'm',
+      cwd: '/repo',
+      fileAccess: { level: 'workspace', dirs: ['/repo'] },
+      customizations: { pluginDirs: [], builtinSkills: true },
+    })
+    expect(args[args.indexOf('--permission-mode') + 1]).toBe('acceptEdits')
+    expect(args).not.toContain('--safe-mode')
   })
 })

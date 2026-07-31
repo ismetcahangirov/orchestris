@@ -63,3 +63,66 @@ describe('request başlıqları (issue #50)', () => {
     expect(headerOf(calls[0]?.init, 'Content-Type')).toBeUndefined()
   })
 })
+
+describe('fs endpoint-ləri (Faza 5A)', () => {
+  it('listDir gövdəsiz GET-dir və content-type QOYMUR — qayda 64', async () => {
+    const calls = captureFetch({ path: '/', parent: null, drives: ['/'], entries: [] })
+    await api.listDir('/repo')
+    expect(calls[0]?.init?.body).toBeUndefined()
+    expect(headerOf(calls[0]?.init, 'Content-Type')).toBeUndefined()
+  })
+
+  it('listDir yolu sorğu parametrinə kodlayır', async () => {
+    const calls = captureFetch({ path: '/', parent: null, drives: [], entries: [] })
+    await api.listDir('C:\\Users\\a b')
+    expect(calls[0]?.url).toBe(`/api/fs/list?path=${encodeURIComponent('C:\\Users\\a b')}`)
+  })
+
+  it('listDir yolsuz çağırıla bilir — server ev qovluğundan başlayır', async () => {
+    const calls = captureFetch({ path: '/', parent: null, drives: [], entries: [] })
+    await api.listDir()
+    expect(calls[0]?.url).toBe('/api/fs/list')
+  })
+
+  it('checkDir yolu kodlayır', async () => {
+    const calls = captureFetch({ path: '/a', exists: true })
+    await api.checkDir('/a b')
+    expect(calls[0]?.url).toBe(`/api/fs/check?path=${encodeURIComponent('/a b')}`)
+  })
+
+  it('listActiveRuns gövdəsiz GET-dir', async () => {
+    const calls = captureFetch({ runs: [] })
+    await api.listActiveRuns()
+    expect(calls[0]?.url).toBe('/api/runs/active')
+    expect(headerOf(calls[0]?.init, 'Content-Type')).toBeUndefined()
+  })
+})
+
+describe('insan-döngədə endpoint-ləri (Faza 5B)', () => {
+  it('listPendingQuestions gövdəsiz GET-dir — content-type qoymur (qayda 64)', async () => {
+    const calls = captureFetch({ questions: [] })
+    await api.listPendingQuestions()
+    expect(calls[0]?.url).toBe('/api/questions/pending')
+    expect(calls[0]?.init?.body).toBeUndefined()
+    expect(headerOf(calls[0]?.init, 'Content-Type')).toBeUndefined()
+  })
+
+  it('answerQuestion gövdə ilə POST-dur və content-type QOYUR', async () => {
+    const calls = captureFetch({ ok: true, delivered: true })
+    await api.answerQuestion('t1', 'q1', ['a', 'b'])
+    expect(calls[0]?.url).toBe('/api/tasks/t1/questions/q1/answer')
+    expect(calls[0]?.init?.method).toBe('POST')
+    expect(headerOf(calls[0]?.init, 'Content-Type')).toBe('application/json')
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ answer: ['a', 'b'] })
+  })
+
+  it('createReview rejimi gövdədə göndərir', async () => {
+    const calls = captureFetch({ ok: true, applied: 'queued' })
+    await api.createReview('t1', { text: 'düzəlt', mode: 'interrupt' })
+    expect(calls[0]?.url).toBe('/api/tasks/t1/review')
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+      text: 'düzəlt',
+      mode: 'interrupt',
+    })
+  })
+})

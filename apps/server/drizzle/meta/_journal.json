@@ -71,6 +71,27 @@
       "when": 1785354416477,
       "tag": "0009_complete_karen_page",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1785483611545,
+      "tag": "0010_curved_riptide",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1785486962462,
+      "tag": "0011_wise_mercury",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1785492567953,
+      "tag": "0012_tiny_nightcrawler",
+      "breakpoints": true
     }
   ]
 }

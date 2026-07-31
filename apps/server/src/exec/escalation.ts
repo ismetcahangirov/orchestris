@@ -13,23 +13,47 @@ import type { RunEvent } from '@orchestris/shared'
  */
 
 /**
- * İşçinin promptuna əlavə olunan müqavilə.
+ * Vahid siqnal müqaviləsi (Faza 5B).
  *
- * DİQQƏT: bu mətn İSTİFADƏÇİ MESAJINA əlavə olunur, sistem promptuna YOX.
- * CLAUDE.md qayda 1-də ölçülüb: `claude` CLI-nın sistem prompt prefiksini
- * dəyişmək Anthropic prompt-cache-ini sındırır və eyni task 5x bahalaşır.
- * Müqavilə mesajın SONUNA düşür — prefiks toxunulmaz qalır.
+ * Eskalasiya və sual AYRI bloklar kimi verilmir. İki səbəb:
+ *
+ *  - **Qiymət.** Hər blok ~40 token və HƏR işçi icrasında ödənilir. Vahid blok
+ *    ortaq mətni (başlıq, "cavabın TAMI olsun" şərti) bir dəfə yazır.
+ *  - **Aydınlıq.** İki oxşar JSON forması ardıcıl verilsə model onları
+ *    qarışdırır — halbuki ikisi eyni sinifdəndir: "dayan və siqnal ver".
+ *
+ * Bloklar MÜSTƏQİL qapılanır: eskalasiya `PROFILE_RUNGS`-dakı Pillə 6-ya,
+ * suallar isə `contexts.questions_enabled` + insan iştirakına bağlıdır.
+ *
+ * Sistem promptuna DEYİL, istifadəçi mesajının SONUNA əlavə olunur (qayda 1,
+ * 29): prefiks dəyişməsi Anthropic prompt-cache-ini sındırır və eyni task 5x
+ * bahalaşır ($0.0085 → $0.0444).
  */
-export const ESCALATION_CONTRACT = [
-  '---',
-  'ƏMİNLİK MÜQAVİLƏSİ (məcburi):',
-  'Əgər bu taskı əminliklə həll edə bilmirsənsə, cəhd etməyi DAYANDIR və',
-  'cavab olaraq YALNIZ bu JSON-u qaytar (başqa heç nə yazma):',
-  '{"escalate": true, "reason": "niyə əmin deyilsən", "partial": "əldə etdiyin qismən nəticə (ola bilər boş)"}',
-  'Səhv cavab verməkdənsə eskalasiya etmək daha yaxşıdır — task avtomatik',
-  'daha güclü modelə ötürüləcək. Həll edə bilirsənsə bu JSON-u YAZMA, sadəcə',
-  'taskı normal şəkildə həll et.',
-].join('\n')
+export function buildSignalContract(on: {
+  escalate: boolean
+  ask: boolean
+}): string {
+  if (!on.escalate && !on.ask) return ''
+
+  const lines = [
+    '---',
+    'SİQNAL MÜQAVİLƏSİ (məcburi) — aşağıdakılardan YALNIZ biri, cavabın TAMI olaraq:',
+  ]
+  if (on.escalate) {
+    lines.push(
+      'bacarmırsansa:      {"escalate": true, "reason": "niyə", "partial": "qismən nəticə (ola bilər boş)"}',
+    )
+  }
+  if (on.ask) {
+    lines.push(
+      'məlumat lazımdırsa: {"ask": {"question": "sual", "kind": "yes_no|single|multi", "options": ["variant", ...]}}',
+      '  — `yes_no` variant DAŞIMIR; `single`/`multi` ən azı 2 variant tələb edir.',
+      '  — Yalnız cavabını TƏXMİN EDƏ BİLMƏDİYİN məlumat üçün soruş.',
+    )
+  }
+  lines.push('Həll edə bilirsənsə heç birini yazma — taskı normal şəkildə həll et.')
+  return lines.join('\n')
+}
 
 export interface Escalation {
   reason: string

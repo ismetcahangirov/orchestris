@@ -1,10 +1,12 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
 import EventTimeline from '../components/EventTimeline.js'
 import RoutingBadge from '../components/RoutingBadge.js'
 import RunHeader from '../components/RunHeader.js'
 import UsageBadge from '../components/UsageBadge.js'
 import MemoryPanel from '../components/MemoryPanel.js'
+import QuestionPanel from '../components/QuestionPanel.js'
+import ReviewBox from '../components/ReviewBox.js'
 import SubtaskTree from '../components/SubtaskTree.js'
 import WorktreePanel from '../components/WorktreePanel.js'
 import { api, type StoredEventRow, type TaskDetail } from '../lib/api.js'
@@ -37,6 +39,7 @@ function needsPoll(data: TaskDetail | undefined): boolean {
 
 export default function TaskView(): React.JSX.Element {
   const { id } = useParams<{ id: string }>()
+  const qc = useQueryClient()
   const { runs: live, connected } = useRunStream(id)
 
   const { data, error } = useQuery({
@@ -47,8 +50,28 @@ export default function TaskView(): React.JSX.Element {
     refetchInterval: (q) => (needsPoll(q.state.data) ? 1500 : false),
   })
 
+  const invalidate = (): void => {
+    void qc.invalidateQueries({ queryKey: ['task', id] })
+    void qc.invalidateQueries({ queryKey: ['questions', 'pending'] })
+  }
+
+  const answer = useMutation({
+    mutationFn: (input: { questionId: string; answer: boolean | string | string[] }) =>
+      api.answerQuestion(id as string, input.questionId, input.answer),
+    onSuccess: invalidate,
+  })
+
+  const review = useMutation({
+    mutationFn: (input: { text: string; mode: 'next' | 'interrupt' }) =>
+      api.createReview(id as string, input),
+    onSuccess: invalidate,
+  })
+
   if (error !== null) return <p className="text-bad">{String(error)}</p>
   if (data === undefined) return <p className="text-ink-dim">Yüklənir…</p>
+
+  // «İndi kəs» yalnız kəsiləcək icra varsa mənalıdır.
+  const running = data.runs.some((r) => r.status === 'running')
 
   return (
     <div className="max-w-4xl">
@@ -96,6 +119,44 @@ export default function TaskView(): React.JSX.Element {
           sualı "hansı parça hardadır?" olur, valideynin öz jurnalı isə yalnız
           bölgü icrasını daşıyır. */}
       <SubtaskTree subtasks={data.subtasks ?? []} />
+
+      {/* Sual İCRA JURNALINDAN ƏVVƏL gəlir: task cavab gözləyirsə istifadəçinin
+          yeganə vacib işi ona cavab verməkdir. */}
+      {(data.questions ?? []).length > 0 && (
+        <div className="mb-4 space-y-2">
+          {data.questions.map((q) => (
+            <QuestionPanel
+              key={q.id}
+              question={q}
+              pending={answer.isPending}
+              onAnswer={(value) => answer.mutate({ questionId: q.id, answer: value })}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Rəy YALNIZ task hələ bitməyibsə göstərilir? XEYR — bitmiş taska da rəy
+          yazmaq olar: route o halda `--resume` ilə yeni icra başladır. */}
+      <div className="mb-4">
+        <ReviewBox
+          pending={review.isPending}
+          running={running}
+          onSubmit={(text, mode) => review.mutate({ text, mode })}
+        />
+        {review.data !== undefined && (
+          <p className="mt-1 text-xs text-ink-dim">
+            {review.data.applied === 'restarted'
+              ? 'İcra işləmirdi — rəy ilə yeni icra başladıldı.'
+              : 'Rəy növbəyə düşdü; növbəti icrada nəzərə alınacaq.'}
+          </p>
+        )}
+        {answer.data?.delivered === false && (
+          <p className="mt-1 text-xs text-bad">
+            Cavab yazıldı, amma gözləyən icra tapılmadı (server yenidən
+            başladılıb) — task davam etməyəcək.
+          </p>
+        )}
+      </div>
 
       <MemoryPanel ops={data.memory ?? []} />
 
