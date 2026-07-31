@@ -41,6 +41,28 @@ export const contexts = sqliteTable('contexts', {
    * konkret iş sahəsində (məs. gizli repo) onu kənarda saxlaya bilməlidir.
    */
   memoryEnabled: integer('memory_enabled', { mode: 'boolean' }).notNull().default(true),
+  /**
+   * Bu kontekstdə agentin fayl sisteminə icazəsi (Faza 5A).
+   *
+   * `'read-only'` | `'workspace'` | `'extended'`
+   *
+   * Default `'workspace'`-dir, `'read-only'` DEYİL — və bu, qayda 43-ün ƏKS
+   * istiqamətidir. Orada köhnə `max_parallel = 1` istifadəçinin seçimi deyildi
+   * (dəyişdirmək üçün API ümumiyyətlə yox idi), ona görə `0`-a çevrildi.
+   * Burada isə `acceptEdits` FAKTİKİ davranışdır: istifadəçi ona güvənərək
+   * task göndərib. Miqrasiyada `'read-only'` yazsaydıq, işləyən qurulum bir
+   * gecədə səssizcə yazmağı dayandırardı və səbəbi heç yerdə görünməzdi.
+   * Seçilməmiş default-u dəyişmək olar; işləyən davranışı yox.
+   */
+  fileAccess: text('file_access').notNull().default('workspace'),
+  /**
+   * `'extended'` səviyyəsində icazəli ƏLAVƏ qovluqların JSON massivi.
+   *
+   * Ayrıca cədvəl DEYİL: siyahı yalnız bütöv oxunur (icra anında `--add-dir`
+   * arqumentlərinə çevrilir), üzərində sorğu, filtr və ya birləşdirmə yoxdur —
+   * `verify_commands_json` ilə eyni formadır.
+   */
+  extraDirsJson: text('extra_dirs_json').notNull().default('[]'),
   createdAt: integer('created_at').notNull(),
   archivedAt: integer('archived_at'),
 })

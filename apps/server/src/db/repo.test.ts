@@ -21,6 +21,7 @@ import {
   putCacheEntry,
   recordCacheHit,
   setTaskStatus,
+  updateContext,
 } from './repo.js'
 
 const db = () => openDb(':memory:')
@@ -405,5 +406,40 @@ describe('runs.attempt / cachedHit', () => {
     expect(run.attempt).toBe(3)
     expect(run.ladderRung).toBe(2)
     expect(run.cachedHit).toBe(true)
+  })
+})
+
+describe('kontekstin fayl icazəsi', () => {
+  it('default workspace-dir', () => {
+    const ctx = createContext(db(), { name: 'a' })
+    expect(ctx.fileAccess).toBe('workspace')
+    expect(ctx.extraDirsJson).toBe('[]')
+  })
+
+  it('səviyyə və əlavə qovluqlar yenilənir', () => {
+    const d = db()
+    const ctx = createContext(d, { name: 'a' })
+    const up = updateContext(d, ctx.id, {
+      fileAccess: 'extended',
+      extraDirs: ['/tmp/x'],
+    })
+    expect(up.fileAccess).toBe('extended')
+    expect(JSON.parse(up.extraDirsJson)).toEqual(['/tmp/x'])
+  })
+
+  it('cwd null ilə silinir', () => {
+    const d = db()
+    const ctx = createContext(d, { name: 'a', cwd: '/repo' })
+    expect(updateContext(d, ctx.id, { cwd: null }).cwd).toBeNull()
+  })
+
+  it('səviyyə aşağı salınanda əlavə qovluqlar SİLİNMİR', () => {
+    // İstifadəçi səviyyəni müvəqqəti daraldıb geri qaytaranda beş qovluğu
+    // yenidən seçməli olmamalıdır.
+    const d = db()
+    const ctx = createContext(d, { name: 'a' })
+    updateContext(d, ctx.id, { fileAccess: 'extended', extraDirs: ['/tmp/x'] })
+    const down = updateContext(d, ctx.id, { fileAccess: 'workspace' })
+    expect(JSON.parse(down.extraDirsJson)).toEqual(['/tmp/x'])
   })
 })

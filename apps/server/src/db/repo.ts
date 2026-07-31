@@ -19,7 +19,13 @@ function required<T>(row: T | undefined, what: string): T {
 
 export function createContext(
   db: Db,
-  input: { name: string; cwd?: string; verifyCommands?: readonly string[] },
+  input: {
+    name: string
+    cwd?: string
+    verifyCommands?: readonly string[]
+    fileAccess?: string
+    extraDirs?: readonly string[]
+  },
 ): Context {
   const id = randomUUID()
   db.insert(contexts)
@@ -28,6 +34,10 @@ export function createContext(
       name: input.name,
       cwd: input.cwd ?? null,
       verifyCommandsJson: JSON.stringify(input.verifyCommands ?? []),
+      ...(input.fileAccess !== undefined ? { fileAccess: input.fileAccess } : {}),
+      ...(input.extraDirs !== undefined
+        ? { extraDirsJson: JSON.stringify(input.extraDirs) }
+        : {}),
       createdAt: now(),
     })
     .run()
@@ -60,6 +70,16 @@ export interface ContextUpdate {
   budgetTokens?: number | null | undefined
   budgetUsd?: number | null | undefined
   budgetSeconds?: number | null | undefined
+  /**
+   * İş qovluğu. `null` = sil.
+   *
+   * Əvvəl bu sahə YOX İDİ — `cwd` yalnız kontekst yaradılanda verilirdi və
+   * səhv yazılmış yolu düzəltmək üçün kontekst yenidən yaradılmalı idi.
+   */
+  cwd?: string | null | undefined
+  fileAccess?: string | undefined
+  /** YALNIZ `'extended'` səviyyəsində tətbiq olunur (`exec/file-access.ts`). */
+  extraDirs?: readonly string[] | undefined
 }
 
 /**
@@ -87,6 +107,11 @@ export function updateContext(db: Db, id: string, input: ContextUpdate): Context
     ...(input.budgetTokens !== undefined ? { budgetTokens: input.budgetTokens } : {}),
     ...(input.budgetUsd !== undefined ? { budgetUsd: input.budgetUsd } : {}),
     ...(input.budgetSeconds !== undefined ? { budgetSeconds: input.budgetSeconds } : {}),
+    ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+    ...(input.fileAccess !== undefined ? { fileAccess: input.fileAccess } : {}),
+    ...(input.extraDirs !== undefined
+      ? { extraDirsJson: JSON.stringify(input.extraDirs) }
+      : {}),
   }
 
   if (Object.keys(values).length > 0) {
