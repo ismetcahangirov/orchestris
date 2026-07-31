@@ -63,3 +63,37 @@ describe('request başlıqları (issue #50)', () => {
     expect(headerOf(calls[0]?.init, 'Content-Type')).toBeUndefined()
   })
 })
+
+describe('fs endpoint-ləri (Faza 5A)', () => {
+  it('listDir gövdəsiz GET-dir və content-type QOYMUR — qayda 64', async () => {
+    const calls = captureFetch({ path: '/', parent: null, drives: ['/'], entries: [] })
+    await api.listDir('/repo')
+    expect(calls[0]?.init?.body).toBeUndefined()
+    expect(headerOf(calls[0]?.init, 'Content-Type')).toBeUndefined()
+  })
+
+  it('listDir yolu sorğu parametrinə kodlayır', async () => {
+    const calls = captureFetch({ path: '/', parent: null, drives: [], entries: [] })
+    await api.listDir('C:\Users\a b')
+    expect(calls[0]?.url).toBe(`/api/fs/list?path=${encodeURIComponent('C:\Users\a b')}`)
+  })
+
+  it('listDir yolsuz çağırıla bilir — server ev qovluğundan başlayır', async () => {
+    const calls = captureFetch({ path: '/', parent: null, drives: [], entries: [] })
+    await api.listDir()
+    expect(calls[0]?.url).toBe('/api/fs/list')
+  })
+
+  it('checkDir yolu kodlayır', async () => {
+    const calls = captureFetch({ path: '/a', exists: true })
+    await api.checkDir('/a b')
+    expect(calls[0]?.url).toBe(`/api/fs/check?path=${encodeURIComponent('/a b')}`)
+  })
+
+  it('listActiveRuns gövdəsiz GET-dir', async () => {
+    const calls = captureFetch({ runs: [] })
+    await api.listActiveRuns()
+    expect(calls[0]?.url).toBe('/api/runs/active')
+    expect(headerOf(calls[0]?.init, 'Content-Type')).toBeUndefined()
+  })
+})

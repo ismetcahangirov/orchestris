@@ -1,4 +1,5 @@
 import { NavLink } from 'react-router-dom'
+import LiveBar from './LiveBar.js'
 
 const LINKS = [
   { to: '/', label: 'İdarə paneli' },
@@ -12,7 +13,9 @@ const LINKS = [
 export default function Sidebar(): React.JSX.Element {
   return (
     <nav className="w-56 shrink-0 border-r border-white/10 bg-surface-2 p-4">
-      <div className="mb-6 text-lg font-semibold tracking-tight">Orchestris</div>
+      <div className="mb-4 text-lg font-semibold tracking-tight">Orchestris</div>
+      {/* Heç nə işləmirsə komponent `null` qaytarır — boş yer tutmur. */}
+      <LiveBar />
       <ul className="space-y-1">
         {LINKS.map((l) => (
           <li key={l.to}>

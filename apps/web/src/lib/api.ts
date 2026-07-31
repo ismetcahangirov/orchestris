@@ -121,7 +121,54 @@ export interface ContextRow {
   /** `null` = avtomatik (kontekstin öz `id`-si). */
   memoryScope: string | null
   memoryEnabled: boolean
+  /** `'read-only'` | `'workspace'` | `'extended'` (Faza 5A). */
+  fileAccess: string
+  /** YALNIZ `'extended'` səviyyəsində tətbiq olunur. */
+  extraDirsJson: string
   createdAt: number
+}
+
+export interface FsEntry {
+  name: string
+  path: string
+  /** `.git` FAYL və ya QOVLUQ kimi mövcuddur (worktree halı — qayda 44). */
+  isRepo: boolean
+  hidden: boolean
+}
+
+export interface FsListResponse {
+  path: string
+  parent: string | null
+  drives: string[]
+  entries: FsEntry[]
+}
+
+/**
+ * Yazıla bilmə YALNIZ burada gəlir, siyahıda yox: `fs.access(W_OK)` Windows-da
+ * ACL görmür, ona görə server real yazma probu edir və onu hər sətrə tətbiq
+ * etmək bir naviqasiyada onlarla disk əməliyyatı deməkdi.
+ */
+export interface FsCheckResponse {
+  path: string
+  exists: boolean
+  isDirectory: boolean
+  isRepo: boolean
+  writable: boolean
+}
+
+/** Canlı zolaqdakı bir icra (Faza 5A). */
+export interface ActiveRunRow {
+  runId: string
+  taskId: string
+  contextId: string
+  contextName: string
+  promptExcerpt: string
+  modelId: string
+  runnerId: string
+  /** Mənfi dəyər nərdivandan KƏNAR mexanizmdir: -1 distillə, -2 bölgü. */
+  ladderRung: number
+  attempt: number
+  startedAt: number
 }
 
 /**
@@ -454,6 +501,23 @@ export const api = {
   createContext: (body: CreateContextBody) =>
     request<ContextRow>('/api/contexts', { method: 'POST', body: JSON.stringify(body) }),
   listProviders: () => request<ProvidersResponse>('/api/providers'),
+
+  /**
+   * Qovluq brauzeri (Faza 5A) — bir səviyyə, yalnız qovluqlar.
+   *
+   * Brauzerin öz seçiciləri bu iş üçün yararsızdır: `showDirectoryPicker()`
+   * mütləq yolu QƏSDƏN gizlədir, `<input webkitdirectory>` isə nisbi yol verir.
+   */
+  listDir: (path?: string) =>
+    request<FsListResponse>(
+      path === undefined ? '/api/fs/list' : `/api/fs/list?path=${encodeURIComponent(path)}`,
+    ),
+
+  checkDir: (path: string) =>
+    request<FsCheckResponse>(`/api/fs/check?path=${encodeURIComponent(path)}`),
+
+  /** Canlı zolağın başlanğıc anlıq şəkli — WS yalnız dəyişiklikləri yayır. */
+  listActiveRuns: () => request<{ runs: ActiveRunRow[] }>('/api/runs/active'),
 
   listModels: (providerId?: string) =>
     request<ModelRow[]>(
