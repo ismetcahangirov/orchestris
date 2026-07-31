@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { and, asc, eq, gt, inArray, sql } from 'drizzle-orm'
-import type { ErrorClass, RunEvent } from '@orchestris/shared'
+import type { ActiveRun, ErrorClass, RunEvent } from '@orchestris/shared'
 import type { Db } from './client.js'
 import { cacheEntries, contexts, runEvents, runs, tasks, verificationRuns } from './schema.js'
 
@@ -441,4 +441,56 @@ export function listVerifications(db: Db, runId: string): VerificationRun[] {
     .where(eq(verificationRuns.runId, runId))
     .orderBy(asc(verificationRuns.id))
     .all()
+}
+
+/** Zolaqda göstərilən prompt parçasının uzunluğu. */
+const PROMPT_EXCERPT_CHARS = 60
+
+function excerpt(prompt: string): string {
+  // Sətir sonları BİRLƏŞDİRİLİR: zolaq bir sətirlikdir və xam `\n` orada
+  // sadəcə boşluq kimi görünərdi, amma uzunluq hesabını korlayardı.
+  const oneLine = prompt.replace(/\s+/g, ' ').trim()
+  return oneLine.length > PROMPT_EXCERPT_CHARS
+    ? `${oneLine.slice(0, PROMPT_EXCERPT_CHARS)}…`
+    : oneLine
+}
+
+/**
+ * Hazırda işləyən icralar — canlı zolaq üçün (Faza 5A).
+ *
+ * `status = 'running'` filtri kifayətdir: `finishRun` hər terminal halda
+ * statusu dəyişir, server çökməsindən sonra qalanları isə başlanğıcdakı
+ * `markOrphanedRunsInterrupted` təmizləyir.
+ *
+ * Mənfi pillələr (distillə -1, bölgü -2) SÜZÜLMÜR: onlar da pul yandırır və
+ * "niyə hələ gözləyirəm?" sualının cavabı çox vaxt məhz onlardır. Gizlətsək
+ * istifadəçi boş zolağa baxıb sistemi donmuş sayardı.
+ */
+export function listActiveRuns(db: Db): ActiveRun[] {
+  const rows = db
+    .select({
+      runId: runs.id,
+      taskId: runs.taskId,
+      contextId: tasks.contextId,
+      contextName: contexts.name,
+      prompt: tasks.prompt,
+      modelId: runs.modelId,
+      runnerId: runs.runnerId,
+      ladderRung: runs.ladderRung,
+      attempt: runs.attempt,
+      startedAt: runs.startedAt,
+    })
+    .from(runs)
+    .innerJoin(tasks, eq(runs.taskId, tasks.id))
+    .innerJoin(contexts, eq(tasks.contextId, contexts.id))
+    .where(eq(runs.status, 'running'))
+    .orderBy(asc(runs.startedAt))
+    .all()
+
+  return rows.map(({ prompt, ...r }) => ({ ...r, promptExcerpt: excerpt(prompt) }))
+}
+
+/** Tək icra — `activity` yayımında `'started'` yükü üçün. */
+export function getActiveRun(db: Db, runId: string): ActiveRun | undefined {
+  return listActiveRuns(db).find((r) => r.runId === runId)
 }

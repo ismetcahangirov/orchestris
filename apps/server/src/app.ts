@@ -20,6 +20,8 @@ import {
   registerProviderRoutes,
   seedProviders,
 } from './routes/providers.js'
+import { registerFsRoutes } from './routes/fs.js'
+import { registerRunRoutes } from './routes/runs.js'
 import { registerStatsRoutes } from './routes/stats.js'
 import { registerTaskRoutes } from './routes/tasks.js'
 import { registerWorkflowRoutes } from './routes/workflows.js'
@@ -157,6 +159,16 @@ export function buildOrchestris(input: BuildAppInput): OrchestrisApp {
     })
   })
 
+  // Canlı zolaq — YALNIZ həyat dövrü, delta YOX (bax `WsHub.broadcastGlobal`).
+  supervisor.onActivity((msg) => {
+    hub.broadcastGlobal({
+      type: 'activity',
+      kind: msg.kind,
+      runId: msg.runId,
+      ...(msg.run !== undefined ? { run: msg.run } : {}),
+    })
+  })
+
   app.get('/api/health', async () => ({ ok: true, runners: [...runners.keys()] }))
 
   // Provayder cədvəli kataloqdan doldurulur — istifadəçi açar əlavə etməzdən
@@ -167,6 +179,10 @@ export function buildOrchestris(input: BuildAppInput): OrchestrisApp {
   seedCliProviders(db, runners, catalog)
 
   registerContextRoutes(app, db)
+  registerRunRoutes(app, db)
+  // Qovluq seçicisi (Faza 5A). `db` LAZIM DEYİL — bu route-lar yalnız fayl
+  // sistemini oxuyur və heç nə saxlamır.
+  registerFsRoutes(app)
   registerStatsRoutes(app, db)
   registerMemoryRoutes(app, { provider: memoryProvider, active: memory !== undefined })
   registerWorkflowRoutes(app, { db, engine: workflowEngine })
@@ -207,16 +223,31 @@ export function buildOrchestris(input: BuildAppInput): OrchestrisApp {
           return
         }
 
-        if (msg.type === 'subscribe') {
-          if (getTask(db, msg.taskId) === undefined) {
-            socket.send(JSON.stringify({ type: 'error', message: 'Task tapılmadı' }))
+        // `switch` — `if/else` zənciri deyil: köhnə `else` budağı BÜTÜN
+        // naməlum mesajları `cancel` sayırdı. Faza 5A iki yeni mesaj tipi
+        // əlavə edir və o davranışla `subscribe_activity` icra ləğvi kimi
+        // oxunardı.
+        switch (msg.type) {
+          case 'subscribe': {
+            if (getTask(db, msg.taskId) === undefined) {
+              socket.send(JSON.stringify({ type: 'error', message: 'Task tapılmadı' }))
+              return
+            }
+            hub.subscribe(msg.taskId, socket)
             return
           }
-          hub.subscribe(msg.taskId, socket)
-        } else if (msg.type === 'unsubscribe') {
-          hub.unsubscribe(msg.taskId, socket)
-        } else {
-          supervisor.cancel(msg.runId)
+          case 'unsubscribe':
+            hub.unsubscribe(msg.taskId, socket)
+            return
+          case 'subscribe_activity':
+            hub.subscribeGlobal(socket)
+            return
+          case 'unsubscribe_activity':
+            hub.unsubscribeGlobal(socket)
+            return
+          case 'cancel':
+            supervisor.cancel(msg.runId)
+            return
         }
       })
 
