@@ -2,6 +2,7 @@ import type {
   ActiveRun,
   ErrorClass,
   FileAccess,
+  RunCustomizations,
   RunEvent,
   Runner,
 } from '@orchestris/shared'
@@ -41,6 +42,13 @@ export interface ExecuteInput {
    * həmin icra səhv icazə ilə işləməsin.
    */
   fileAccess?: FileAccess
+  /**
+   * MCP / plugin / daxili skill seçimi (Faza 5C).
+   *
+   * Verilməsə runner ÖZ DEFAULT bayraq dəstini işlədir və əmr sətri bayt-bayt
+   * köhnə qalır — mövcud keşlər sınmır.
+   */
+  customizations?: RunCustomizations
   subscriptionBilled?: boolean
   ladderRung?: number
   /** Yoxlama dövrəsində neçənci cəhd. Default 1. */
@@ -187,6 +195,9 @@ export class RunSupervisor {
           model: input.model,
           ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
           ...(input.fileAccess !== undefined ? { fileAccess: input.fileAccess } : {}),
+          ...(input.customizations !== undefined
+            ? { customizations: input.customizations }
+            : {}),
           ...(input.resumeSessionId !== undefined
             ? { resumeSessionId: input.resumeSessionId }
             : {}),

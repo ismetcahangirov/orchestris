@@ -1,10 +1,12 @@
 import {
   AMPLIFICATION_PROFILES,
   type FileAccess,
+  type RunCustomizations,
   type RunEvent,
   type Runner,
 } from '@orchestris/shared'
 import { parseAsk } from './ask.js'
+import type { Customizations } from './customizations.js'
 import { resolveFileAccess } from './file-access.js'
 import {
   buildAnswerPrompt,
@@ -215,6 +217,17 @@ export interface LadderContext {
   extraDirsJson?: string
   /** İşçi bu kontekstdə istifadəçiyə sual verə bilirmi (Faza 5B). Default `true`. */
   questionsEnabled?: boolean
+  /**
+   * MCP / plugin / daxili skill seçimi (Faza 5C) — ARTIQ HƏLL EDİLMİŞ formada.
+   *
+   * Nərdivan seçimi DB-dən oxumur və MCP faylını yazmır: bu iş çağıran tərəfdə
+   * (`routes/tasks.ts`) BİR DƏFƏ görülür. Nərdivan bir taskda bir neçə icra
+   * qaçırır və hər birində faylı yenidən yazsaydıq paralel icralar eyni fayl
+   * üzərində yarışardı.
+   *
+   * `undefined` = fərdiləşdirmə yoxdur → runner köhnə bayraq dəstini işlədir.
+   */
+  customizations?: Customizations
 }
 
 export interface LadderInput {
@@ -1558,6 +1571,7 @@ export class Ladder {
     cwd?: string
     worktreePath?: string
     fileAccess: FileAccess
+    customizations?: RunCustomizations
   } {
     return {
       ...(phase.cwd !== undefined ? { cwd: phase.cwd } : {}),
@@ -1571,6 +1585,12 @@ export class Ladder {
         extraDirsJson: phase.input.context.extraDirsJson ?? '[]',
         cwd: phase.cwd,
       }),
+      // Fərdiləşdirmə (Faza 5C) də BURADAN verilir — eyni səbəb: dörd çağırış
+      // yerindən biri unudulsa, həmin icra FƏRQLİ bayraq dəsti ilə qaçar və
+      // fərqli keş ailəsinə düşərdi.
+      ...(phase.input.context.customizations !== undefined
+        ? { customizations: phase.input.context.customizations }
+        : {}),
     }
   }
 

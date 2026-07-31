@@ -1,5 +1,13 @@
 import { relations, sql } from 'drizzle-orm'
-import { index, integer, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
+import {
+  index,
+  integer,
+  primaryKey,
+  real,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from 'drizzle-orm/sqlite-core'
 
 /** İş sahəsi — istifadəçinin "yeni kontekst başlat" dediyi şey. */
 export const contexts = sqliteTable('contexts', {
@@ -77,6 +85,21 @@ export const contexts = sqliteTable('contexts', {
   questionsEnabled: integer('questions_enabled', { mode: 'boolean' })
     .notNull()
     .default(true),
+  /**
+   * Claude Code-un DAXİLİ 16 skill-i bu kontekstdə açılsınmı (Faza 5C).
+   *
+   * Default SÖNÜLÜDÜR — `file_access`-dən (qayda 65) FƏRQLİ olaraq. Orada
+   * `acceptEdits` FAKTİKİ mövcud davranış idi; burada isə daxili skill-lər heç
+   * vaxt açıq olmayıb və default açsaydıq HƏR mövcud kontekst bir dəfə
+   * ÖLÇÜLMÜŞ +3,648 token ödəyərdi.
+   *
+   * Bu, hamısı-birdən bayraqdır (`--disable-slash-commands`-ın çıxarılması) —
+   * CLI-də ədəd-ədəd söndürmə YOXDUR. Fərdi skill-lər `plugin_sources` ilə
+   * gəlir.
+   */
+  builtinSkillsEnabled: integer('builtin_skills_enabled', { mode: 'boolean' })
+    .notNull()
+    .default(false),
   createdAt: integer('created_at').notNull(),
   archivedAt: integer('archived_at'),
 })
@@ -793,4 +816,75 @@ export const taskReviews = sqliteTable(
     createdAt: integer('created_at').notNull(),
   },
   (t) => [index('reviews_task_idx').on(t.taskId, t.createdAt)],
+)
+
+/**
+ * İstifadəçinin əlavə etdiyi MCP serverləri (Faza 5C).
+ *
+ * SİRLƏR BURADA SAXLANILMIR (qayda 13): `secret_env_json` yalnız dəyişənlərin
+ * ADLARINI daşıyır, dəyərlər OS keychain-dədir (`mcp:<serverId>:<VAR>`).
+ */
+export const mcpServers = sqliteTable('mcp_servers', {
+  id: text('id').primaryKey(),
+  /** Konfiqurasiya faylındakı açar — unikal olmalıdır. */
+  name: text('name').notNull().unique(),
+  /** `stdio` | `http` | `sse` */
+  transport: text('transport').notNull(),
+  command: text('command'),
+  argsJson: text('args_json').notNull().default('[]'),
+  /** SİRSİZ env dəyərləri. */
+  envJson: text('env_json').notNull().default('{}'),
+  /** Yalnız dəyişən ADLARI — dəyərlər keychain-dədir. */
+  secretEnvJson: text('secret_env_json').notNull().default('[]'),
+  url: text('url'),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  createdAt: integer('created_at').notNull(),
+})
+
+/**
+ * Plugin / öz skill dəstlərinin mənbələri (Faza 5C).
+ *
+ * `--plugin-url` DƏSTƏKLƏNMİR: uzaq zip yükləmək istifadəçinin maşınında
+ * yoxlanılmamış kod işlətməkdir və bunun qərarı bizim deyil. İstifadəçi zip-i
+ * özü endirib yolunu verə bilər.
+ */
+export const pluginSources = sqliteTable('plugin_sources', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  /** Qovluq və ya `.zip` faylının yolu. */
+  path: text('path').notNull(),
+  createdAt: integer('created_at').notNull(),
+})
+
+/**
+ * Kontekst → MCP server seçimi.
+ *
+ * Bağlantı CƏDVƏLİDİR, `contexts`-də JSON massiv YOX: burada SORĞU var —
+ * "bu server hansı kontekstlərdə işlədilir?" sualı serveri silməzdən əvvəl
+ * lazımdır. `extra_dirs_json` (qayda 65) fərqlidir: o, yalnız bütöv oxunur.
+ */
+export const contextMcpServers = sqliteTable(
+  'context_mcp_servers',
+  {
+    contextId: text('context_id')
+      .notNull()
+      .references(() => contexts.id, { onDelete: 'cascade' }),
+    mcpServerId: text('mcp_server_id')
+      .notNull()
+      .references(() => mcpServers.id, { onDelete: 'cascade' }),
+  },
+  (t) => [primaryKey({ columns: [t.contextId, t.mcpServerId] })],
+)
+
+export const contextPlugins = sqliteTable(
+  'context_plugins',
+  {
+    contextId: text('context_id')
+      .notNull()
+      .references(() => contexts.id, { onDelete: 'cascade' }),
+    pluginSourceId: text('plugin_source_id')
+      .notNull()
+      .references(() => pluginSources.id, { onDelete: 'cascade' }),
+  },
+  (t) => [primaryKey({ columns: [t.contextId, t.pluginSourceId] })],
 )

@@ -36,6 +36,17 @@ export interface CodexArgOptions {
   outputSchemaPath?: string
 }
 
+/**
+ * DİQQƏT (Faza 5C): `RunRequest.customizations` burada TƏTBİQ OLUNMUR.
+ *
+ * `codex mcp add` və `-c mcp_servers.…` mövcuddur, amma nə işləmə, nə də
+ * QİYMƏTİ ölçülməyib. Uydurma dəstək yazmaq qayda 50-ni pozardı — və burada
+ * zərər böyükdür: istifadəçi MCP seçib task göndərər, task codex-ə düşər və
+ * alətlər səssizcə olmaz. Ona görə dəstək YOXDUR və UI bunu AÇIQ yazır.
+ *
+ * Bu, qayda 65-də düzəltdiyimiz asimmetriyanın qayıtmasıdır; fərq odur ki,
+ * indi o, gizli deyil.
+ */
 export function buildCodexArgs(
   req: RunRequest,
   opts: CodexArgOptions = {},

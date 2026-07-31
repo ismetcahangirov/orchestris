@@ -82,6 +82,26 @@ export interface RunRequest {
    * düşür — mövcud çağırışlar və testlər sınmır.
    */
   fileAccess?: FileAccess
+  /**
+   * MCP / plugin / daxili skill seçimi (Faza 5C).
+   *
+   * `undefined` = fərdiləşdirmə YOXDUR. Bu, sadəcə "boş seçim" deyil: runner
+   * o zaman ÖZ DEFAULT bayraq dəstini işlədir və əmr sətri bayt-bayt köhnə
+   * qalır — mövcud prompt keşlərinin toxunulmazlığı buna bağlıdır.
+   *
+   * Bayraq adları BURADA YOXDUR (qayda 65 ilə eyni prinsip): tərcüməni hər
+   * runner özü edir, paylaşılan müqavilə yalnız NİYYƏTİ daşıyır.
+   */
+  customizations?: RunCustomizations
+}
+
+export interface RunCustomizations {
+  /** MCP konfiqurasiya FAYLININ yolu — JSON heç vaxt argv-yə qoyulmur. */
+  mcpConfigPath?: string
+  /** Plugin qovluqları — DETERMİNİST sıralanmış. */
+  pluginDirs: readonly string[]
+  /** CLI-nin daxili skill dəsti açılsınmı (hamısı-birdən). */
+  builtinSkills: boolean
 }
 
 export interface RunOptions {
