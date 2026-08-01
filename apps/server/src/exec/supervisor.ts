@@ -206,10 +206,20 @@ export class RunSupervisor {
       )
 
       for await (const event of stream) {
-        // Büdcə pozuntusu — hadisəni jurnala YAZMADAN kəsirik. Sərt limitin
-        // mənası odur ki, ondan sonrakı heç nə qəbul edilmir.
+        // HESAB ƏVVƏLCƏ YAZILIR — büdcə qərarından ÖNCƏ.
+        //
+        // `usage` görülmüş işin QEYDİdir, icazə istəyi deyil: ona baxanda pul
+        // ARTIQ xərclənib. Əvvəl bu sətir pozuntu yoxlamasından SONRA idi,
+        // yəni limiti aşan icranın tokenləri DB-yə heç vaxt düşmürdü. Nəticə
+        // ölçülüb (2026-08-01): 26,007 çıxış tokeni `tokens_out = 0` kimi
+        // yazıldı, `RemainingBudget` onları xərcə saymadı və ledger ödənilmiş
+        // pulu gizlətdi — qayda 22/23/49-un birbaşa pozulması.
+        if (event.t === 'usage') applyUsageToRun(this.db, run.id, event)
+
         const violation = guard.check(event)
-        if (violation !== null) {
+        if (violation !== null && violation.enforce) {
+          // Sərt rejim: hadisə jurnala YAZILMADAN kəsilir — limitin mənası
+          // odur ki, ondan sonrakı heç nə qəbul edilmir.
           terminal = {
             status: 'budget_exceeded',
             cls: violation.class,
@@ -218,6 +228,9 @@ export class RunSupervisor {
           ac.abort()
           break
         }
+        // `'report'` rejimində pozuntu icranı DAYANDIRMIR: `usage` işin
+        // sonunda gəlir, yəni burada kəsmək ödənilmiş nəticəni atmaqdan başqa
+        // heç nə etmir. Aşım `runs.tokens_out`-da onsuz da görünür.
 
         this.record(run.id, event)
 
@@ -226,7 +239,6 @@ export class RunSupervisor {
         if (event.t === 'start' || event.t === 'done' || event.t === 'error') {
           sessionId = event.sessionId ?? sessionId
         }
-        if (event.t === 'usage') applyUsageToRun(this.db, run.id, event)
         if (event.t === 'done') sawDone = true
         if (event.t === 'error' && terminal === null) {
           terminal = { status: 'failed', cls: event.class, msg: event.message }

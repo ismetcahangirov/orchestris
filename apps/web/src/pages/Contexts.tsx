@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
+import BudgetPanel from '../components/BudgetPanel.js'
 import CustomizationPanel from '../components/CustomizationPanel.js'
 import FileAccessPanel from '../components/FileAccessPanel.js'
 import FolderPicker from '../components/FolderPicker.js'
@@ -164,6 +165,11 @@ export default function Contexts(): React.JSX.Element {
                 </select>
               </label>
             </div>
+
+            <BudgetPanel
+              context={c}
+              onSave={(patch) => update.mutate({ id: c.id, patch })}
+            />
 
             <FileAccessPanel
               context={c}

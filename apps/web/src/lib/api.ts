@@ -121,6 +121,16 @@ export interface ContextRow {
   autoSubmode: string
   verifyCommandsJson: string
   maxParallel: number
+  /**
+   * Task büdcəsi. `null` = LİMİTSİZ (istifadəçi sahəni boşaldıb).
+   *
+   * `budgetSeconds` İCRA BAŞINADIR, task başına yox: uzun task normaldır,
+   * anormal olan ilişmiş bir icradır. Token və xərc isə taskın bütün icraları
+   * boyu yığılır; bölünmüş taskda hər parça tam limiti alır.
+   */
+  budgetTokens: number | null
+  budgetUsd: number | null
+  budgetSeconds: number | null
   /** `null` = avtomatik (kontekstin öz `id`-si). */
   memoryScope: string | null
   memoryEnabled: boolean
@@ -528,6 +538,8 @@ export interface SubtaskRow {
   taskType: string
   /** Sıra nömrəsi, 0-dan. Bölgü müqaviləsi məhz SIRADIR. */
   subtaskIndex: number | null
+  /** Statusun izahı — icra OLMAYAN hallar üçün (məs. büdcə bitib başlamayıb). */
+  statusReason: string | null
   createdAt: number
   completedAt: number | null
 }
@@ -539,6 +551,13 @@ export interface TaskDetail {
     status: string
     /** Bu task başqa taskın parçasıdırsa valideynin id-si (Faza 4). */
     parentTaskId: string | null
+    /**
+     * Statusun izahı — `null` = izah yoxdur.
+     *
+     * `runs[].errorMessage` YALNIZ icra olan taskda mövcuddur; bu sahə isə icra
+     * OLMAYAN halları izah edir (bölünmüş taskda büdcə bitəndə qalan parçalar).
+     */
+    statusReason: string | null
     createdAt: number
     completedAt: number | null
   }

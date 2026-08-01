@@ -44,12 +44,19 @@ export default function SubtaskTree({
             <span className="mt-0.5 shrink-0 font-mono text-xs text-ink-dim">
               {(sub.subtaskIndex ?? i) + 1}.
             </span>
-            <Link
-              to={`/tasks/${sub.id}`}
-              className="min-w-0 flex-1 break-words hover:underline"
-            >
-              {sub.prompt}
-            </Link>
+            <div className="min-w-0 flex-1">
+              <Link to={`/tasks/${sub.id}`} className="break-words hover:underline">
+                {sub.prompt}
+              </Link>
+              {/*
+                SƏBƏB BURADA GÖSTƏRİLİR: icra OLMAYAN parçanın (büdcə bitib
+                başlamayıb) öz səhifəsində jurnal boşdur — quru `failed`
+                istifadəçiyə heç nə demir.
+              */}
+              {sub.statusReason !== null && (
+                <p className="mt-0.5 text-xs text-warn">{sub.statusReason}</p>
+              )}
+            </div>
             <span
               className={`shrink-0 text-xs ${STATUS_TONE[sub.status] ?? 'text-ink-dim'}`}
             >

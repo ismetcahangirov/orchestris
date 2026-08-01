@@ -210,6 +210,57 @@ describe('RunSupervisor — büdcə mühafizəsi', () => {
     expect(events.some((e) => e.event.t === 'text')).toBe(true)
   })
 
+  it('KƏSİLMİŞ icranın tokenləri yenə də DB-yə yazılır', async () => {
+    // Hadisə jurnala düşmür (yuxarıdakı test), amma HESAB yazılır: `usage`
+    // görülmüş işin qeydidir, icazə istəyi deyil — ona baxanda pul ARTIQ
+    // xərclənib. Əvvəl `applyUsageToRun` pozuntu yoxlamasından SONRA idi və
+    // 26,007 tokenlik real icra `tokens_out = 0` kimi yazılırdı: `RemainingBudget`
+    // onu xərcə saymırdı, ledger isə ödənilmiş pulu gizlədirdi (qayda 22/23/49).
+    const { db, task, sup } = setup()
+    await sup.execute({
+      taskId: task.id,
+      runner: new FakeRunner({
+        events: [
+          { t: 'usage', inputTokens: 7, outputTokens: 500, costUsd: 3, billed: 'real' },
+          { t: 'done', stopReason: 'end_turn' },
+        ],
+      }),
+      model: 'm',
+      prompt: 'p',
+      limits: { maxOutputTokens: 10 },
+    })
+
+    const run = listRunsForTask(db, task.id)[0]
+    expect(run?.tokensOut).toBe(500)
+    expect(run?.costUsd).toBe(3)
+  })
+
+  it('`report` rejimində limit aşılsa da icra DAYANMIR', async () => {
+    // İstifadəçinin əl ilə göndərdiyi taskın rejimi budur: `usage` işin
+    // sonunda gəlir, yəni kəsmək ödənilmiş nəticəni atmaqdan başqa heç nə
+    // etmir — nə pul qaytarır, nə vaxt.
+    const { db, task, sup } = setup()
+    const result = await sup.execute({
+      taskId: task.id,
+      runner: new FakeRunner({
+        events: [
+          { t: 'text', delta: 'tam cavab' },
+          { t: 'usage', inputTokens: 0, outputTokens: 500, billed: 'real' },
+          { t: 'done', stopReason: 'end_turn' },
+        ],
+      }),
+      model: 'm',
+      prompt: 'p',
+      limits: { maxOutputTokens: 10, enforcement: 'report' },
+    })
+
+    expect(result.status).toBe('succeeded')
+    expect(listRunsForTask(db, task.id)[0]?.tokensOut).toBe(500)
+    // Nəticə ATILMIR — cavab jurnalda qalır.
+    const events = listEvents(db, result.runId)
+    expect(events.some((e) => e.event.t === 'done')).toBe(true)
+  })
+
   it('abunəlik icralarında dollar limiti icranı kəsmir', async () => {
     const { task, sup } = setup()
     const result = await sup.execute({

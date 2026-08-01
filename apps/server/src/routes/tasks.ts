@@ -229,7 +229,17 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
     const task = createTask(db, { contextId: body.contextId, prompt: body.prompt })
 
     // Sorğuda verilən limit kontekstin default-unu üstələyir.
+    //
+    // `enforcement: 'report'` — ƏL İLƏ göndərilən taskda limit ÖLÇÜdür, əyləc
+    // deyil: token/xərc aşımı nə icranı kəsir, nə qalan alt-taskları atır (bax
+    // `BUDGET_ENFORCEMENTS`). Vaxt limiti isə hər halda tətbiq olunur — o,
+    // ilişmiş prosesi dayandıran yeganə mexanizmdir.
+    //
+    // Cədvəl və zəncir icraları BU YOLDAN KEÇMİR (`scheduler.ts`,
+    // `workflow-engine.ts`) və orada default `'stop'` qalır: avtomatik icrada
+    // baxan insan yoxdur və qaçmış xərc yalnız hesabda görünərdi (qayda 57).
     const limits: BudgetLimits = {
+      enforcement: 'report',
       ...(body.maxOutputTokens !== undefined
         ? { maxOutputTokens: body.maxOutputTokens }
         : ctx.budgetTokens !== null

@@ -390,7 +390,6 @@ export interface LadderResult {
  * xərcləyə bilərdi.
  */
 export class RemainingBudget {
-  private readonly startedAt = Date.now()
   private outputTokens = 0
   private costUsd = 0
 
@@ -409,10 +408,18 @@ export class RemainingBudget {
     if (run.costUsd !== null) this.costUsd += run.costUsd
   }
 
-  /** Növbəti icraya ötürüləcək limitlər. Baza limit yoxdursa `undefined`. */
+  /**
+   * Növbəti icraya ötürüləcək limitlər. Baza limit yoxdursa `undefined`.
+   *
+   * `maxSeconds` ÇIXILMIR: o, İCRA BAŞINA limitdir (bax `BudgetLimits`).
+   * Əvvəl ondan keçən vaxt çıxılırdı və nəticə ölçülüb (2026-08-01): altı
+   * parçalı task ikinci parçanın 108-ci saniyəsində öldü, qalan dörd parça
+   * bir icra belə etmədən `failed` yazıldı. Uzun task normaldır — anormal olan
+   * uzun İCRADIR, onu isə hər icranın öz `BudgetGuard`-ı tutur.
+   */
   remaining(): BudgetLimits | undefined {
     if (this.base === undefined) return undefined
-    const { maxOutputTokens, maxCostUsd, maxSeconds } = this.base
+    const { maxOutputTokens, maxCostUsd } = this.base
     return {
       ...this.base,
       ...(maxOutputTokens !== undefined
@@ -421,24 +428,23 @@ export class RemainingBudget {
       ...(maxCostUsd !== undefined
         ? { maxCostUsd: Math.max(0, maxCostUsd - this.costUsd) }
         : {}),
-      ...(maxSeconds !== undefined
-        ? { maxSeconds: Math.max(0, maxSeconds - this.elapsedSeconds()) }
-        : {}),
     }
   }
 
   /**
    * Komponentlərdən biri tükənibsə `true` — növbəti icranı BAŞLATMAQ ÖZÜ pul
    * yandırmaq olardı (prompt döşəməsi ~21.7k token).
+   *
+   * `'report'` rejimində HƏMİŞƏ `false`: orada limit ölçü vahididir, əyləc
+   * deyil (bax `BUDGET_ENFORCEMENTS`). Bunu nəzərə almasaydıq, "limit aşılsa da
+   * dayanma" seçimi yalnız İŞLƏYƏN icraya aid olar, növbəti alt-task isə yenə
+   * səssizcə atılardı — yəni istifadəçi üçün heç nə dəyişməzdi.
    */
   exhausted(): boolean {
     const left = this.remaining()
     if (left === undefined) return false
-    return left.maxOutputTokens === 0 || left.maxCostUsd === 0 || left.maxSeconds === 0
-  }
-
-  private elapsedSeconds(): number {
-    return (Date.now() - this.startedAt) / 1000
+    if (left.enforcement === 'report') return false
+    return left.maxOutputTokens === 0 || left.maxCostUsd === 0
   }
 }
 
