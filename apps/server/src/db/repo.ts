@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { and, asc, eq, gt, inArray, sql } from 'drizzle-orm'
-import type { ActiveRun, ErrorClass, RunEvent } from '@orchestris/shared'
+import {
+  DEFAULT_BUDGET_SECONDS,
+  DEFAULT_BUDGET_TOKENS,
+  type ActiveRun,
+  type ErrorClass,
+  type RunEvent,
+} from '@orchestris/shared'
 import type { Db } from './client.js'
 import { cacheEntries, contexts, runEvents, runs, tasks, verificationRuns } from './schema.js'
 
@@ -34,6 +40,11 @@ export function createContext(
       name: input.name,
       cwd: input.cwd ?? null,
       verifyCommandsJson: JSON.stringify(input.verifyCommands ?? []),
+      // Büdcə DEFAULT-u BURADA verilir, `POST /api/tasks`-ın fallback-ında yox.
+      // Səbəb: NULL "limitsiz" DEMƏKDİR (istifadəçi sahəni boşaldıb) — fallback
+      // yazsaydıq o seçim ifadə oluna bilməzdi.
+      budgetTokens: DEFAULT_BUDGET_TOKENS,
+      budgetSeconds: DEFAULT_BUDGET_SECONDS,
       ...(input.fileAccess !== undefined ? { fileAccess: input.fileAccess } : {}),
       ...(input.extraDirs !== undefined
         ? { extraDirsJson: JSON.stringify(input.extraDirs) }
@@ -182,10 +193,23 @@ export function setTaskType(db: Db, id: string, taskType: string): void {
   db.update(tasks).set({ taskType }).where(eq(tasks.id, id)).run()
 }
 
-export function setTaskStatus(db: Db, id: string, status: string): void {
+/**
+ * Taskın statusu — və istəyə görə onun İZAHI.
+ *
+ * `reason` verilməsə NULL yazılır, köhnə dəyər saxlanılmır: status dəyişibsə
+ * əvvəlki izah artıq keçərli deyil və qalsaydı UI-da yeni statusa yapışıb
+ * yanıldardı.
+ */
+export function setTaskStatus(
+  db: Db,
+  id: string,
+  status: string,
+  reason: string | null = null,
+): void {
   db.update(tasks)
     .set({
       status,
+      statusReason: reason,
       ...(TERMINAL_TASK_STATUSES.has(status) ? { completedAt: now() } : {}),
     })
     .where(eq(tasks.id, id))

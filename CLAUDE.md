@@ -836,11 +836,12 @@ parçaların BİRLİKDƏ nəticəsini görür və `verification_runs`-a BÖLGÜ 
 adına yazılır (alt-taskın icrasına yazsaydıq, həmin parça başqasının səhvinə
 görə uğursuz görünərdi).
 
-Büdcə alt-tasklar ARASINDA paylaşılır (`RemainingBudget` — `ladder.ts`-dən
-export olunur): hər alt-task limiti təzədən alsaydı, altı parçalı task büdcənin
-altı mislini xərcləyə bilərdi. Büdcə bitəndə qalan alt-tasklar `pending`
-QALMIR, `failed` işarələnir — UI-da "gözləyir" görünən, əslində heç vaxt
-başlamayacaq task yalandır.
+**DÜZƏLİŞ (qayda 76):** büdcə artıq alt-tasklar arasında BÖLÜNMÜR. Hər parça
+limiti TAM alır, valideyn isə parça sayına görə miqyaslanmış ÜMUMİ tavana
+tabedir (`scaleLimits` / `capLimits`). Köhnə davranışın ölçülmüş nəticəsi
+qayda 76-dadır. Tavan doldurulanda qalan alt-tasklar `pending` QALMIR, səbəbi
+ilə `failed` işarələnir (`tasks.status_reason`) — UI-da "gözləyir" görünən,
+əslində heç vaxt başlamayacaq task yalandır.
 
 ### 54. Zəncirin öz məntiqi SIFIR token xərcləyir
 
@@ -1575,6 +1576,82 @@ işləyər və səbəb heç yerdə görünməz.
 Fayl hər icradan ƏVVƏL üzərinə yazılır və `routes/tasks.ts`-də BİR DƏFƏ
 hesablanır — nərdivanın içində etsəydik, bir taskın bir neçə icrası eyni fayl
 üzərində yarışardı.
+
+### 76. Token limiti ÖLÇÜDÜR, əyləc DEYİL — əyləc yalnız SAATdır
+
+Real hadisə (2026-08-01, `decompose: true` ilə göndərilmiş altı parçalı task).
+Ölçülmüş timeline:
+
+| vaxt | icra | nəticə |
+|---|---|---|
+| +0 → 50.9s | bölgü (rung −2) | ✅ 1,555 token |
+| +51 → 89.5s | parça 0, rung 2 | ✅ 3,959 token |
+| +89.5 → **362.6s** | parça 0, rung 3 (nüsxə) | ❌ `budget_exceeded` — 26,007 > 24,486 |
+| +362 → 492s | parça 1, rung 2 + 3 | ✅ 12,040 token |
+| +492 → **600.5s** | parça 1, rung 3 | ❌ `interrupted` — vaxt bitdi |
+| +600.5s | parça **2, 3, 4, 5** | ❌ `failed` — **bir icra belə etmədilər** |
+
+Dörd səhv üst-üstə düşdü və hər biri ayrıca düzəldildi.
+
+**(a) Limit SABİT KODLANMIŞDI və görünmürdü.** `Dashboard.tsx` hər taska
+`maxOutputTokens: 30_000, maxSeconds: 600` yazırdı; `contexts.budget_*`
+sütunları ilk gündən var idi, amma onlara toxunan yol YOX İDİ. İndi limit
+kontekstdədir (`BudgetPanel`), Dashboard-da göndərməzdən ƏVVƏL göstərilir və
+boş sahə "limitsiz" deməkdir. Default `DEFAULT_BUDGET_TOKENS = 200_000` /
+`DEFAULT_BUDGET_SECONDS = 3_600` — `@orchestris/shared`-dədir, çünki eyni rəqəm
+həm serverin, həm UI-ın yazısında lazımdır.
+
+Miqrasiya 0013 mövcud NULL-ları default-a çevirir — qayda 43-ün eyni
+mühakiməsi: bazadakı NULL istifadəçinin "limitsiz" seçimi deyildi, ayarın
+mövcud olmaması idi.
+
+**(b) Token limiti heç vaxt qənaət etmirdi — yalnız ödənilmişi məhv edirdi.**
+`usage` HƏR runner-də işin SONUNDA gəlir (qayda 3: CLI parser-i onu yalnız
+`result` sətrindən emit edir; qayda 17: API parser-i yalnız `finish`-dən). Yəni
+limitin aşıldığını biz İŞ BİTDİKDƏN SONRA öyrənirik. Yuxarıdakı 273 saniyəlik
+icra TAM cavab yazmışdı və atıldı: pul qaldı, iş getdi.
+
+Ona görə `BudgetLimits.enforcement` var (`'stop'` | `'report'`) və
+`BudgetViolation.enforce` sahəsi bunu daşıyır:
+
+| Limit | `'stop'` (cədvəl, zəncir) | `'report'` (əl ilə göndərilən task) |
+|---|---|---|
+| token / xərc | kəsir | **kəsmir** — yalnız qeyd olunur |
+| **vaxt** | kəsir | **kəsir** |
+
+Vaxt istisnadır və bu, güzəşt deyil: o, iş GEDƏRKƏN yoxlanılır, yəni kəsmək
+həqiqətən qalan xərcin qarşısını alır. İlişmiş `claude` prosesini dayandıran
+YEGANƏ mexanizm budur (qayda 6). Default `'stop'`-dur — mövcud hər çağırış
+(cədvəl, zəncir, testlər) davranışını bayt-bayt saxlayır (qayda 57).
+
+**(c) `maxSeconds` TASK başına idi, indi İCRA başınadır.** `RemainingBudget`
+ondan keçən vaxtı çıxırdı, yəni saat bütün task boyu işləyirdi və 600-cü
+saniyədə hər şey ölürdü. Uzun task NORMALDIR (altı parça ardıcıl qaçır);
+anormal olan uzun İCRADIR. İndi hər icra tam limiti alır və `RemainingBudget`
+yalnız token/xərci izləyir.
+
+**(d) Kəsilmiş icranın tokenləri `0` yazılırdı.** `supervisor.ts` pozuntuda
+hadisəni jurnala yazmadan kəsirdi — `applyUsageToRun` da o sətirdən SONRA idi.
+Nəticə: 26,007 real çıxış tokeni `tokens_out = 0, cost_usd = NULL` kimi düşdü,
+`RemainingBudget` onu xərcə saymadı və ledger ödənilmiş pulu gizlətdi. Bu,
+qayda 22/23/49-un birbaşa pozulmasıdır. İndi `usage` büdcə qərarından ƏVVƏL
+tətbiq olunur: hadisə hələ də jurnala düşmür (sərt rejimdə), amma HESAB yazılır.
+
+Bunun ölçülmüş yan təsiri var və o, DÜZƏLİŞDİR: `scheduler.test.ts`-də cədvəlin
+`spent_usd`-i $0.6 → **$1.2** oldu. İkinci $0.6 həmişə xərclənirdi, sadəcə
+görünmürdü — məhz bu, USD tavanını kor edən mexanizm idi.
+
+**Bölünmüş taskda büdcə artıq BÖLÜNMÜR** (qayda 53-ün düzəlişi). Hər parça
+limiti TAM alır; valideyn `scaleLimits(limits, parça sayı)` tavanına tabedir və
+hər parçaya `capLimits` ilə tavandan ÇOX verilmir. Köhnə davranışda task nə
+qədər çox parçaya bölünsəydi, hər parçaya bir o qədər AZ büdcə qalırdı — halbuki
+task məhz BÖYÜK olduğu üçün bölünür. Bölünmə taskı kiçiltmir.
+
+**Səbəb DB-yə yazılır** — `tasks.status_reason`. Başlamayan parçanın icra sətri
+yoxdur, yəni `runs[].error_message` boşdur və ekranda quru `failed` görünürdü:
+istifadəçi "niyə?" sualının cavabını heç yerdə tapa bilmirdi. Sütun status
+dəyişəndə sıfırlanır (`setTaskStatus`) — köhnə izah yeni statusa yapışsaydı
+yanıldardı.
 
 ## Amplification Ladder
 

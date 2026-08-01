@@ -389,20 +389,24 @@ describe('Decomposer — worktree izolyasiyası', () => {
   })
 })
 
+/** `outputTokens` qədər çıxış yazan işçi cavabı. */
+function costlyAnswer(outputTokens: number): RunEvent[] {
+  return [
+    { t: 'text', delta: 'cavab' },
+    { t: 'usage', inputTokens: 10, outputTokens, billed: 'real' },
+    { t: 'done', stopReason: 'end_turn' },
+  ]
+}
+
 describe('Decomposer — büdcə', () => {
-  it('büdcə alt-tasklar ARASINDA paylaşılır', async () => {
-    // Hər alt-task limiti təzədən alsaydı, altı parçalı task büdcənin altı
-    // mislini xərcləyə bilərdi. Burada BİRİNCİ alt-task limitin hamısını yeyir
-    // → qalan ikisi ümumiyyətlə başlamır.
+  it('hər alt-task limiti TAM alır', async () => {
+    // ƏVVƏLKİ DAVRANIŞ: limit bütün parçalar arasında BÖLÜNÜRDÜ, yəni task nə
+    // qədər çox parçaya bölünsəydi hər parçaya bir o qədər AZ büdcə qalırdı.
+    // Ölçülmüş nəticə (2026-08-01): altı parçalı taskın DÖRDÜ bir icra belə
+    // etmədən `failed` yazıldı. Bölünmə taskı kiçiltmir — onu hissələrə ayırır.
     const { db, decomposer, ctx, newTask } = setup({
       boss: [split('bir', 'iki', 'üç')],
-      worker: [
-        [
-          { t: 'text', delta: 'cavab' },
-          { t: 'usage', inputTokens: 10, outputTokens: 100, billed: 'real' },
-          { t: 'done', stopReason: 'end_turn' },
-        ],
-      ],
+      worker: [costlyAnswer(100)],
     })
     const task = newTask()
 
@@ -417,12 +421,63 @@ describe('Decomposer — büdcə', () => {
     const executed = listSubtasks(db, task.id).filter(
       (s) => listRunsForTask(db, s.id).length > 0,
     )
-    expect(executed).toHaveLength(1)
-    // İcra olunmayan alt-tasklar `pending` QALMIR — UI-da "gözləyir" görünən,
-    // əslində heç vaxt başlamayacaq task yalandır.
-    expect(result.subtasks.slice(1).map((s) => s.status)).toEqual([
-      'budget_exceeded',
-      'budget_exceeded',
+    expect(executed).toHaveLength(3)
+    expect(result.subtasks.map((s) => s.status)).toEqual([
+      'succeeded',
+      'succeeded',
+      'succeeded',
     ])
+  })
+
+  it('valideynin ÜMUMİ tavanı qaçmış bölgünü dayandırır', async () => {
+    // Hər parça tam limiti alır, AMMA valideyn parça sayına görə miqyaslanmış
+    // tavana tabedir: hər icra öz limitindən ARTIQ yazsa (sərfiyyat yalnız
+    // sonda bilinir) tavan yığılır və nəhayət qalan parçalar başlamır.
+    const { db, decomposer, ctx, newTask } = setup({
+      boss: [split('bir', 'iki', 'üç')],
+      worker: [costlyAnswer(250)],
+    })
+    const task = newTask()
+
+    const result = await decomposer.run({
+      task,
+      context: ctx,
+      requested: true,
+      limits: { maxOutputTokens: 100 },
+    })
+
+    expect(result.subtasks.at(-1)?.status).toBe('budget_exceeded')
+    // İcra olunmayan alt-task `pending` QALMIR — UI-da "gözləyir" görünən,
+    // əslində heç vaxt başlamayacaq task yalandır.
+    const last = listSubtasks(db, task.id).at(-1)
+    expect(last?.status).toBe('failed')
+    // SƏBƏB DB-DƏDİR: icra sətri yoxdur, yəni `runs[].errorMessage` boşdur və
+    // quru `failed` istifadəçiyə heç nə demir.
+    expect(last?.statusReason).toContain('büdcə')
+    expect(getTask(db, task.id)?.statusReason).toContain('büdcə')
+  })
+
+  it('`report` rejimində HEÇ BİR parça büdcəyə görə atılmır', async () => {
+    // İstifadəçinin əl ilə göndərdiyi taskda limit ÖLÇÜdür, əyləc deyil
+    // (`BUDGET_ENFORCEMENTS`). Bunu yalnız işləyən icraya tətbiq etsəydik,
+    // növbəti parça yenə səssizcə atılardı — yəni heç nə dəyişməzdi.
+    const { db, decomposer, ctx, newTask } = setup({
+      boss: [split('bir', 'iki', 'üç')],
+      worker: [costlyAnswer(250)],
+    })
+    const task = newTask()
+
+    const result = await decomposer.run({
+      task,
+      context: ctx,
+      requested: true,
+      limits: { maxOutputTokens: 100, enforcement: 'report' },
+    })
+
+    expect(result.subtasks.map((s) => s.status)).not.toContain('budget_exceeded')
+    const executed = listSubtasks(db, task.id).filter(
+      (s) => listRunsForTask(db, s.id).length > 0,
+    )
+    expect(executed).toHaveLength(3)
   })
 })

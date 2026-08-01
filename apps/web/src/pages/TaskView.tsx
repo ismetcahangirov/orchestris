@@ -89,6 +89,14 @@ export default function TaskView(): React.JSX.Element {
           <p className="mt-1 whitespace-pre-wrap break-words text-sm text-ink-dim">
             {data.task.prompt}
           </p>
+          {/*
+            Statusun İZAHI — `runs[].errorMessage`-dən fərqli olaraq bu, icra
+            OLMAYAN halları da izah edir (bölünmüş taskda büdcə bitəndə qalan
+            parçalar). Onsuz ekranda yalnız quru `failed` görünürdü.
+          */}
+          {data.task.statusReason !== null && (
+            <p className="mt-1 text-sm text-warn">{data.task.statusReason}</p>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-3">
           <span className={`text-xs ${connected ? 'text-good' : 'text-ink-dim'}`}>

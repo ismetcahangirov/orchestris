@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { BudgetGuard } from './budget.js'
+import { BudgetGuard, capLimits, scaleLimits } from './budget.js'
 
 const usage = (o: {
   out?: number
@@ -127,5 +127,80 @@ describe('BudgetGuard — pozuntu formatı', () => {
   it('pozuntu retryable: false olur — sərt kəsimdir', () => {
     const g = new BudgetGuard({ maxOutputTokens: 1 })
     expect(g.check(usage({ out: 2 }))?.retryable).toBe(false)
+  })
+})
+
+describe('BudgetGuard — tətbiq rejimi', () => {
+  it('rejim verilməsə token pozuntusu KƏSİR (köhnə davranış)', () => {
+    // Cədvəl və zəncir icraları bu yoldan keçir — orada baxan insan yoxdur.
+    const g = new BudgetGuard({ maxOutputTokens: 1 })
+    expect(g.check(usage({ out: 2 }))?.enforce).toBe(true)
+  })
+
+  it('`report` rejimində token pozuntusu KƏSMİR', () => {
+    // `usage` HƏR runner-də işin SONUNDA gəlir (qayda 3, 17): o anda kəsmək
+    // ödənilmiş nəticəni atmaqdan başqa heç nə etmir.
+    const g = new BudgetGuard({ maxOutputTokens: 1, enforcement: 'report' })
+    const v = g.check(usage({ out: 2 }))
+    expect(v?.enforce).toBe(false)
+    // Pozuntu YOX OLMUR — sadəcə icranı dayandırmır.
+    expect(v?.message).toContain('Output token limiti aşıldı')
+  })
+
+  it('`report` rejimində xərc pozuntusu da KƏSMİR', () => {
+    const g = new BudgetGuard({ maxCostUsd: 0.001, enforcement: 'report' })
+    expect(g.check(usage({ out: 1, cost: 1 }))?.enforce).toBe(false)
+  })
+
+  it('VAXT pozuntusu `report` rejimində də KƏSİR', () => {
+    // Yeganə mexanizm budur ki, ilişmiş prosesi dayandıra bilir (qayda 6).
+    // Onu da söndürsək, cavab verməyən icra əbədi token yandırardı.
+    vi.useFakeTimers()
+    try {
+      const g = new BudgetGuard({ maxSeconds: 5, enforcement: 'report' })
+      vi.advanceTimersByTime(6_000)
+      expect(g.checkClock()?.enforce).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('scaleLimits / capLimits', () => {
+  it('parça sayına görə yalnız YIĞILAN resurslar miqyaslanır', () => {
+    // `maxSeconds` icra başınadır, cəmlənən resurs deyil — miqyaslasaydıq
+    // "hər icra 6 saat işləyə bilər" mənası çıxardı.
+    expect(scaleLimits({ maxOutputTokens: 100, maxCostUsd: 2, maxSeconds: 60 }, 3)).toEqual({
+      maxOutputTokens: 300,
+      maxCostUsd: 6,
+      maxSeconds: 60,
+    })
+  })
+
+  it('limit yoxdursa miqyaslama da yoxdur', () => {
+    expect(scaleLimits(undefined, 5)).toBeUndefined()
+    expect(scaleLimits({ maxSeconds: 60 }, 5)).toEqual({ maxSeconds: 60 })
+  })
+
+  it('capLimits daha DAR olanı seçir', () => {
+    expect(
+      capLimits({ maxOutputTokens: 100 }, { maxOutputTokens: 40 }),
+    ).toEqual({ maxOutputTokens: 40 })
+    expect(
+      capLimits({ maxOutputTokens: 100 }, { maxOutputTokens: 400 }),
+    ).toEqual({ maxOutputTokens: 100 })
+  })
+
+  it('`undefined` = limit yoxdur, yəni digəri həmişə daha dardır', () => {
+    expect(capLimits({ maxOutputTokens: 100 }, {})).toEqual({ maxOutputTokens: 100 })
+    expect(capLimits({}, { maxOutputTokens: 40 })).toEqual({ maxOutputTokens: 40 })
+    expect(capLimits(undefined, undefined)).toBeUndefined()
+  })
+
+  it('rejim miqyaslamada və kəsmədə QORUNUR', () => {
+    // İtsəydi, valideynin tavanı `'stop'`-a qayıdar və "dayanmasın" seçimi
+    // yalnız alt-taskın öz limitində qalardı.
+    expect(scaleLimits({ enforcement: 'report' }, 3)?.enforcement).toBe('report')
+    expect(capLimits({ enforcement: 'report' }, {})?.enforcement).toBe('report')
   })
 })

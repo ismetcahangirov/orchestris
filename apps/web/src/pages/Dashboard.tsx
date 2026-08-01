@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import ModelRolePanel from '../components/ModelRolePanel.js'
 import { selectableModels } from '../lib/selectableModels.js'
+import { summarizeBudget } from '../lib/budgetLabel.js'
 import SavingsPanel from '../components/SavingsPanel.js'
 import { api } from '../lib/api.js'
 
@@ -81,13 +82,17 @@ export default function Dashboard(): React.JSX.Element {
         // hər sorğuya `decompose: false` qoymaq köhnə klientləri fərqləndirilməz
         // edərdi.
         ...(decompose ? { decompose: true } : {}),
-        // Sərt limit: ilk versiyada hər task ən çox 30k output token və 10 dəqiqə.
+        // LİMİT BURADA VERİLMİR — o, kontekstin ayarındadır.
         //
-        // Limit BÖLÜNMÜŞ taskda da BÜTÖVDÜR: alt-tasklar onu öz aralarında
-        // paylaşır (`Decomposer` → `RemainingBudget`), yoxsa altı parçalı task
-        // limitin altı mislini xərcləyə bilərdi.
-        maxOutputTokens: 30_000,
-        maxSeconds: 600,
+        // Əvvəl burada `maxOutputTokens: 30_000, maxSeconds: 600` SABİT
+        // KODLANMIŞDI. İstifadəçi onu nə görürdü, nə dəyişə bilirdi; limit
+        // dəyəndə isə ekranda yalnız `failed` görünürdü. Ölçülmüş nəticə
+        // (2026-08-01): altı parçaya bölünmüş task 600-cü saniyədə öldü,
+        // parçaların dördü bir icra belə etmədən atıldı.
+        //
+        // Kontekstdəki dəyər `POST /api/tasks`-da tətbiq olunur; sahə boşdursa
+        // limit ÜMUMİYYƏTLƏ yoxdur. Aşağıda həmin dəyər göndərməzdən ƏVVƏL
+        // göstərilir.
       }),
     onSuccess: (r) => navigate(`/tasks/${r.taskId}`),
   })
@@ -126,6 +131,10 @@ export default function Dashboard(): React.JSX.Element {
 
   const selected = options.find((o) => o.id === runner)
   const blocked = selected !== undefined && !selected.ready
+
+  // Limit GÖNDƏRMƏZDƏN ƏVVƏL göstərilir: sonradan göstərmək "task niyə
+  // dayandı?" sualını yaradır, əvvəlcədən göstərmək isə onu heç yaratmır.
+  const budget = summarizeBudget(contexts?.find((c) => c.id === contextId))
 
 
   return (
@@ -222,10 +231,24 @@ export default function Dashboard(): React.JSX.Element {
             <span className="block text-ink-dim/70">
               Başçı bir dəfə bölgü yazır, hər parça ayrıca nərdivandan keçir.
               Bir başçı icrası + parça sayı qədər dövrə ödənilir — yalnız
-              həqiqətən böyük tasklarda özünü ödəyir.
+              həqiqətən böyük tasklarda özünü ödəyir. Hər parça büdcəni TAM
+              alır, yəni xərc parça sayına görə artır.
             </span>
           </span>
         </label>
+
+        {contextId !== '' && (
+          <p className="text-xs text-ink-dim">
+            Büdcə:{' '}
+            <span className={budget.unlimited ? 'text-warn' : 'text-ink'}>
+              {budget.text}
+            </span>{' '}
+            · limit aşılsa task DAYANMIR, yalnız qeyd olunur{' '}
+            <Link to="/contexts" className="text-accent hover:underline">
+              dəyiş
+            </Link>
+          </p>
+        )}
 
         {blocked && (
           <p className="text-sm text-warn">{`${runner} hazır deyil: ${selected?.detail ?? ''}`}</p>

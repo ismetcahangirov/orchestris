@@ -11,7 +11,7 @@ import {
 import { recordSavings } from '../db/savings-repo.js'
 import { classifyTask } from '../routing/classify.js'
 import type { WorkerRouter } from '../routing/decide.js'
-import type { BudgetLimits } from './budget.js'
+import { capLimits, scaleLimits, type BudgetLimits } from './budget.js'
 import {
   buildDecomposeRequestPrompt,
   DECOMPOSE_RUNG,
@@ -156,7 +156,7 @@ export class Decomposer {
     const worktree = input.worktree ?? (await this.openWorktree(input))
 
     try {
-      const outcomes = await this.runSubtasks(input, rows, worktree, budget)
+      const outcomes = await this.runSubtasks(input, rows, worktree, split.runId)
       const verification = await this.verifyOnce(input, worktree, split.runId)
       const status = this.settle(input.task.id, outcomes, verification)
 
@@ -268,22 +268,41 @@ export class Decomposer {
    * fərqdir — 4 parçadan 3-ü hazır olan nəticə istifadəçi üçün 1 parçadan
    * yaxşıdır, halbuki hər ikisi `failed` sayılır. Yekun status onsuz da bunu
    * gizlətmir.
+   *
+   * BÜDCƏ: hər alt-task TAM limiti alır, valideyn isə parça sayına görə
+   * miqyaslanmış ÜMUMİ tavana tabedir (`scaleLimits`). Əvvəl limit bütöv
+   * paylaşılırdı və ölçülmüş nəticə budur (2026-08-01, altı parçalı task):
+   * bölgü + iki parça büdcəni yedi, qalan DÖRD parça bir icra belə etmədən
+   * `failed` yazıldı. Bölünmə taskı KİÇİLTMİR — onu hissələrə ayırır; büdcəni
+   * bölmək isə hər parçanı öz işini bitirə bilməyəcək hala salırdı.
    */
   private async runSubtasks(
     input: DecomposeInput,
     rows: readonly { id: string; prompt: string }[],
     worktree: Worktree | undefined,
-    budget: RemainingBudget,
+    decomposeRunId: string | null,
   ): Promise<SubtaskOutcome[]> {
     const outcomes: SubtaskOutcome[] = []
+    const ceiling = new RemainingBudget(scaleLimits(input.limits, rows.length))
+    // Bölgü icrası da valideynin tavanına yazılır: o, orkestrasiya xərcidir
+    // (qayda 51), amma ödənilmiş pul ödənilmiş puldur.
+    if (decomposeRunId !== null) ceiling.charge(getRun(this.db, decomposeRunId))
 
     for (const [index, row] of rows.entries()) {
-      const remaining = budget.remaining()
-      if (budget.exhausted()) {
+      if (ceiling.exhausted()) {
         // Büdcə bitdi — qalan alt-tasklar İCRA OLUNMUR, amma `pending` da
         // qalmır: UI-da "gözləyir" görünən, əslində heç vaxt başlamayacaq task
         // yalandır.
-        setTaskStatus(this.db, row.id, 'failed')
+        //
+        // SƏBƏB DB-YƏ YAZILIR. Əvvəl yalnız `'failed'` yazılırdı və səbəb
+        // yaddaşdakı `outcome` obyektində qalırdı — icra sətri də olmadığı
+        // üçün istifadəçi "niyə?" sualının cavabını HEÇ YERDƏ tapa bilmirdi.
+        setTaskStatus(
+          this.db,
+          row.id,
+          'failed',
+          'Valideyn taskın ümumi büdcəsi bitdi — bu parça başlamadı',
+        )
         outcomes.push({
           taskId: row.id,
           index,
@@ -294,6 +313,8 @@ export class Decomposer {
         continue
       }
 
+      const limits = capLimits(input.limits, ceiling.remaining())
+
       const result = await this.ladder.run({
         task: { id: row.id, prompt: row.prompt },
         context: { ...input.context, verifyCommandsJson: '[]' },
@@ -301,11 +322,11 @@ export class Decomposer {
           ? { runner: input.runner, model: input.model }
           : {}),
         ...(worktree !== undefined ? { worktree } : {}),
-        ...(remaining !== undefined ? { limits: remaining } : {}),
+        ...(limits !== undefined ? { limits } : {}),
         ...(input.interactive !== undefined ? { interactive: input.interactive } : {}),
       })
 
-      for (const run of listRunsForTask(this.db, row.id)) budget.charge(run)
+      for (const run of listRunsForTask(this.db, row.id)) ceiling.charge(run)
 
       outcomes.push({
         taskId: row.id,
@@ -371,7 +392,29 @@ export class Decomposer {
       : verification === false
         ? 'verification_failed'
         : 'succeeded'
-    setTaskStatus(this.db, parentTaskId, status === 'succeeded' ? 'succeeded' : 'failed')
+
+    // Səbəb MƏTNİ statusla birlikdə yazılır: `failed` tək başına "hansı parça,
+    // niyə?" sualına cavab vermir və istifadəçi cavabı DB-də əl ilə axtarmalı
+    // olurdu.
+    const skipped = outcomes.filter((o) => o.status === 'budget_exceeded').length
+    const failed = outcomes.filter(
+      (o) => o.status !== 'succeeded' && o.status !== 'budget_exceeded',
+    ).length
+    const reason =
+      status === 'succeeded'
+        ? null
+        : verification === false
+          ? 'Yekun avtomatik yoxlama keçmədi'
+          : skipped > 0
+            ? `${outcomes.length} parçadan ${skipped}-i büdcə bitdiyi üçün başlamadı`
+            : `${outcomes.length} parçadan ${failed}-i uğursuz oldu`
+
+    setTaskStatus(
+      this.db,
+      parentTaskId,
+      status === 'succeeded' ? 'succeeded' : 'failed',
+      reason,
+    )
     return status
   }
 

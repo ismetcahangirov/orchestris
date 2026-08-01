@@ -169,13 +169,20 @@ describe('Scheduler — vaxt', () => {
 })
 
 describe('Scheduler — sərt büdcə (issue #12)', () => {
-  it('icranın REAL xərci cədvələ yığılır', async () => {
+  it('icranın REAL xərci cədvələ yığılır — KƏSİLMİŞ icra da daxil', async () => {
+    // İki icra baş verir: işçi ($0.6) və Pillə 3-ün nüsxəsi. Nüsxəyə qalan
+    // limit $0.4-dür, o isə yenə $0.6 xərcləyir → `BudgetGuard` onu kəsir.
+    //
+    // ƏVVƏL bu ikinci $0.6 HEÇ YERDƏ SAYILMIRDI: `usage` hadisəsi pozuntu
+    // yoxlamasından SONRA tətbiq olunurdu, yəni kəsilmiş icranın `cost_usd`
+    // sütunu NULL qalırdı və cədvəlin USD tavanı ödənilmiş pulu görmürdü.
+    // Məhz bu, tavanı kor edən mexanizm idi (issue #12-nin əks istiqaməti).
     const { db, scheduler, schedule } = setup({ events: paidAnswer(0.6) })
     const s = schedule({ budgetUsdTotal: 10 })
 
     await scheduler.tick(T0)
 
-    expect(getSchedule(db, s.id)?.spentUsd).toBeCloseTo(0.6, 5)
+    expect(getSchedule(db, s.id)?.spentUsd).toBeCloseTo(1.2, 5)
     expect(getSchedule(db, s.id)?.enabled).toBe(true)
   })
 

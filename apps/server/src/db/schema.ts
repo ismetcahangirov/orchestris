@@ -126,6 +126,19 @@ export const tasks = sqliteTable(
     prompt: text('prompt').notNull(),
     taskType: text('task_type').notNull().default('unknown'),
     status: text('status').notNull().default('pending'),
+    /**
+     * Statusun İZAHI — NULL = izah yoxdur (adi hal).
+     *
+     * `runs` sətrində onsuz da `error_message` var, amma o, YALNIZ icra olan
+     * taskda mövcuddur. Bu sütun məhz icra OLMAYAN halları izah edir:
+     * dekompozisiyada büdcə bitəndə qalan parçalar bir icra belə etmədən
+     * `failed` yazılır və istifadəçi üçün səbəb HEÇ YERDƏ görünmürdü (real
+     * hadisə, 2026-08-01: altı parçadan dördü səbəbsiz `failed`).
+     *
+     * Status dəyişəndə sıfırlanır (`setTaskStatus`): köhnə izah yeni statusa
+     * aid deyil və qalsaydı yanıldıcı olardı.
+     */
+    statusReason: text('status_reason'),
     createdAt: integer('created_at').notNull(),
     completedAt: integer('completed_at'),
   },
